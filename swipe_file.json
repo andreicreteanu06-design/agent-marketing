@@ -1,0 +1,49 @@
+{
+  "_comment": "Formule de direct response cu incarcatura emotionala. Textele example_ad respecta deja limitele Google Ads (headline <= 30, description <= 90) ca sa serveasca drept sabloane bune pentru generator si drept context RAG pentru un LLM real.",
+  "frameworks": [
+    {
+      "name": "Problem-Agitation-Solution (PAS) - Frica / Urgenta",
+      "style": "pas",
+      "trigger": "Frica / Urgenta - defectiuni, pierderi financiare, riscuri care se agraveaza daca sunt ignorate",
+      "structure": "H1 = numeste problema (intrebare directa). H2 = agita miza (ce se intampla daca ignori). Descriere = solutia + apel la actiune + urgenta.",
+      "example_ad": {
+        "headline_1": "Simti smucituri in cutia auto?",
+        "headline_2": "Uleiul ars ucide mecatronica",
+        "description": "O diagnoza costa putin, o cutie noua o avere. Nu amana - programeaza azi."
+      }
+    },
+    {
+      "name": "Status & Exclusivitate - Dorinta",
+      "style": "status",
+      "trigger": "Statut / Validare sociala - bijuterii, moda, lifestyle premium, produse care spun ceva despre tine",
+      "structure": "H1 = imaginea dorita (cum te vad ceilalti). H2 = transformarea + pretul inteligent. Descriere = detaliu senzorial + dovada sociala.",
+      "example_ad": {
+        "headline_1": "Bratara pe care toti o remarca",
+        "headline_2": "Sclipire de diamant, pret mic",
+        "description": "Otel inoxidabil, zirconiu taiat perfect. Prietenele vor crede ca ai dat o avere."
+      }
+    },
+    {
+      "name": "FOMO / Scarcitate - Aversiune fata de pierdere",
+      "style": "fomo",
+      "trigger": "FOMO / Lipsa - stoc limitat, oferta pe timp scurt, locuri putine, pret care creste",
+      "structure": "H1 = ce e pe cale sa dispara. H2 = deadline-ul concret. Descriere = ce pierzi daca eziti + apel la rezervare acum.",
+      "example_ad": {
+        "headline_1": "Ultimele locuri disponibile",
+        "headline_2": "Pretul creste de luni",
+        "description": "Grupa de toamna e aproape plina. Rezerva locul acum, nu rata pretul de azi."
+      }
+    },
+    {
+      "name": "AIDA - Curiozitate catre Beneficiu",
+      "style": "aida",
+      "trigger": "Curiozitate / Beneficiu - SaaS, servicii, unelte care economisesc timp sau bani, cu rezultat masurabil",
+      "structure": "H1 = beneficiul concret si surprinzator (cifra). H2 = obiectia depasita. Descriere = cum functioneaza pe scurt + apel la actiune fara risc.",
+      "example_ad": {
+        "headline_1": "Facturezi in 30 de secunde",
+        "headline_2": "Fara contabil, fara stres",
+        "description": "Emiti, trimiti si incasezi dintr-un loc. e-Factura inclusa. Incepe gratuit."
+      }
+    }
+  ]
+}

@@ -21,8 +21,9 @@ env/
 .env
 *.log
 
-# Iesirile agentului (seturi de modificari propuse)
+# Iesirile agentului (seturi de modificari propuse + coada de anunturi HITL)
 proposed_changes*.json
+proposed_ads_queue.json
 
 # Configurare locala a marketerului (poate contine domenii/branduri private)
 config.yaml

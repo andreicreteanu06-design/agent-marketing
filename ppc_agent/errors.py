@@ -50,3 +50,29 @@ class BudgetAllocationError(DecisionError):
 
 class AttributionError(DecisionError):
     """Intrare invalida pentru atribuirea Markov (fara parcursuri sau fara conversii)."""
+
+
+class CopywriterError(PpcAgentError):
+    """Eroare in modulul de copywriting (generare de anunturi)."""
+
+
+class SwipeFileError(CopywriterError):
+    """``swipe_file.json`` lipseste, e invalid, sau nu contine framework-ul cerut."""
+
+
+class AdsLimitError(CopywriterError):
+    """Un text de anunt depaseste limita Google Ads (headline 30 / descriere 90).
+
+    Attributes:
+        field: Campul care depaseste (ex. ``headline_1``).
+        length: Lungimea reala, in caractere.
+        limit: Limita permisa.
+    """
+
+    def __init__(self, field: str, length: int, limit: int) -> None:
+        self.field = field
+        self.length = length
+        self.limit = limit
+        super().__init__(
+            f"{field} are {length} caractere, peste limita Google Ads de {limit}"
+        )

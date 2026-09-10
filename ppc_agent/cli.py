@@ -1,11 +1,12 @@
 """Interfata linie de comanda a agentului PPC.
 
-Comenzi: ``ingest``, ``plan``, ``propose``, ``execute``, ``status``.
+Comenzi: ``ingest``, ``plan``, ``copy``, ``propose``, ``execute``, ``status``.
 
 Flux tipic::
 
     python -m ppc_agent.cli ingest --url https://exemplu.ro
     python -m ppc_agent.cli plan
+    python -m ppc_agent.cli copy --keyword "program facturare" --usp "..." --trigger fomo
     python -m ppc_agent.cli propose          # scrie proposed_changes_*.json
     python -m ppc_agent.cli status           # arata setul in asteptare
     python -m ppc_agent.cli execute --changeset proposed_changes_XXX.json --confirm
@@ -21,8 +22,11 @@ from rich.console import Console
 
 from ppc_agent.alignment.pipeline import render_alignment, run_alignment
 from ppc_agent.config import AppConfig, load_config
+from ppc_agent.copywriter.engine import AdCopyGenerator
+from ppc_agent.copywriter.llm import MockLLMClient
+from ppc_agent.copywriter.pipeline import append_to_queue, render_copy, run_copy
 from ppc_agent.decision.pipeline import render_plan, run_plan
-from ppc_agent.errors import ApprovalRequiredError, SpendLimitExceeded
+from ppc_agent.errors import ApprovalRequiredError, CopywriterError, SpendLimitExceeded
 from ppc_agent.guardrails.approval_gate import ApprovalGate
 from ppc_agent.guardrails.pipeline import (
     build_proposed_changes,
@@ -71,6 +75,49 @@ def plan(config: _ConfigOption = "config.yaml") -> None:
     factory = ProviderFactory(app_config)
     render_plan(run_plan(factory, app_config), console)
     render_alignment(run_alignment(factory, app_config), console)
+
+
+@app.command()
+def copy(
+    keyword: Annotated[
+        str, typer.Option("--keyword", help="Cuvantul cheie exact-match.")
+    ],
+    usp: Annotated[
+        str, typer.Option("--usp", help="Propunerea unica de valoare a produsului.")
+    ],
+    trigger: Annotated[
+        str,
+        typer.Option(
+            "--trigger", help="Declansator emotional: pas / status / fomo / aida."
+        ),
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Afiseaza fara sa adaugi in coada.")
+    ] = False,
+) -> None:
+    """Genereaza copy emotional (RAG local pe swipe_file.json) si il pune in coada HITL.
+
+    Nimic nu se publica online: copy-ul se adauga in proposed_ads_queue.json pentru
+    aprobare manuala.
+    """
+    generator = AdCopyGenerator(MockLLMClient())
+    try:
+        entry = run_copy(
+            generator,
+            product_usp=usp,
+            target_keyword=keyword,
+            emotion_trigger=trigger,
+        )
+    except CopywriterError as exc:
+        console.print(f"[red]nu s-a putut genera:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    render_copy(entry, console)
+    if dry_run:
+        console.print("\n[dim]--dry-run: nimic adaugat in coada[/dim]")
+        return
+    path = append_to_queue(entry, Path.cwd())
+    console.print(f"\n[green]adaugat in[/green] {path.name} (status: pending_review)")
 
 
 @app.command()

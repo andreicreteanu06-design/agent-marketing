@@ -13,7 +13,7 @@ from ppc_agent.providers.factory import ProviderFactory
 
 runner = CliRunner()
 
-_COMMANDS = ("ingest", "plan", "propose", "execute", "status")
+_COMMANDS = ("ingest", "plan", "copy", "propose", "execute", "status")
 
 
 def test_version_is_pinned() -> None:
