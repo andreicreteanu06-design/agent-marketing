@@ -10,8 +10,8 @@ class ProviderFactory:
     """Construieste furnizori concreti pornind de la :class:`AppConfig`.
 
     Ramura ``mock`` este implementata pentru crawler, GSC, GBP si Keyword Planner
-    (Modulul 1); furnizorul Meta se adauga in Modulul 3. Ramura ``live`` este
-    momentan formata din stub-uri care ridica
+    (Modulul 1) si Google Ads (Modulul 2); furnizorul Meta se adauga in Modulul 3.
+    Ramura ``live`` este momentan formata din stub-uri care ridica
     :class:`ppc_agent.errors.SetupRequiredError`.
     """
 
@@ -46,6 +46,12 @@ class ProviderFactory:
         if self.mode is ProviderMode.LIVE:
             return live.LiveKeywordPlannerProvider()
         return mock.MockKeywordPlannerProvider()
+
+    def google_ads(self) -> base.GoogleAdsProvider:
+        """Returneaza furnizorul Google Ads (performanta + parcursuri) pentru modul activ."""
+        if self.mode is ProviderMode.LIVE:
+            return live.LiveGoogleAdsProvider()
+        return mock.MockGoogleAdsProvider()
 
     def meta(self) -> base.MetaMarketingProvider:
         """Returneaza furnizorul Meta Marketing pentru modul activ."""

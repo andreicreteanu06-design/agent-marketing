@@ -123,6 +123,34 @@ class KeywordPlannerProvider(ABC):
         """
 
 
+class GoogleAdsProvider(ABC):
+    """Acces la performanta campaniilor si la parcursurile de conversie Google Ads."""
+
+    @abstractmethod
+    def campaign_performance(self, customer_id: str) -> pd.DataFrame:
+        """Performanta pe campanii / grupuri de anunturi.
+
+        Args:
+            customer_id: Identificatorul contului Google Ads.
+
+        Returns:
+            ``DataFrame`` cu coloanele ``arm_id``, ``name``, ``clicks``,
+            ``conversions``, ``cost``.
+        """
+
+    @abstractmethod
+    def conversion_paths(self, customer_id: str) -> list[list[str]]:
+        """Parcursurile de client, ca liste de puncte de contact.
+
+        Args:
+            customer_id: Identificatorul contului Google Ads.
+
+        Returns:
+            Lista de parcursuri; fiecare este ``[canal1, canal2, ...,
+            "conversion" | "null"]``.
+        """
+
+
 class MetaMarketingProvider(ABC):
     """Acces la seturile de reclame Meta pentru analiza de lichiditate."""
 

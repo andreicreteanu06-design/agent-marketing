@@ -38,3 +38,15 @@ class CrawlError(PpcAgentError):
 
 class CrawlTimeoutError(CrawlError):
     """Pagina nu a raspuns in intervalul de timp alocat."""
+
+
+class DecisionError(PpcAgentError):
+    """Eroare in motorul matematic de decizie (Modulul 2)."""
+
+
+class BudgetAllocationError(DecisionError):
+    """Intrare invalida pentru alocarea de buget (arme lipsa, buget negativ etc.)."""
+
+
+class AttributionError(DecisionError):
+    """Intrare invalida pentru atribuirea Markov (fara parcursuri sau fara conversii)."""

@@ -69,6 +69,18 @@ class LiveKeywordPlannerProvider(base.KeywordPlannerProvider):
         _not_ready()
 
 
+class LiveGoogleAdsProvider(base.GoogleAdsProvider):
+    """Stub live pentru Google Ads API (performanta + parcursuri de conversie)."""
+
+    def campaign_performance(self, customer_id: str) -> pd.DataFrame:
+        """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
+        _not_ready()
+
+    def conversion_paths(self, customer_id: str) -> list[list[str]]:
+        """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
+        _not_ready()
+
+
 class LiveMetaMarketingProvider(base.MetaMarketingProvider):
     """Stub live pentru Meta Marketing API."""
 

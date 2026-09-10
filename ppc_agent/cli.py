@@ -15,6 +15,7 @@ import typer
 from rich.console import Console
 
 from ppc_agent.config import load_config
+from ppc_agent.decision.pipeline import render_plan, run_plan
 from ppc_agent.ingestion.pipeline import render_ingestion, run_ingestion
 from ppc_agent.providers.factory import ProviderFactory
 
@@ -48,7 +49,9 @@ def ingest(
 @app.command()
 def plan(config: _ConfigOption = "config.yaml") -> None:
     """Modulele 2-3: alocare buget, atribuire Markov, Quality Score, lichiditate Meta."""
-    console.print(f"plan config={config}: {_NOT_IMPLEMENTED}")
+    app_config = load_config(config)
+    factory = ProviderFactory(app_config)
+    render_plan(run_plan(factory, app_config), console)
 
 
 @app.command()
