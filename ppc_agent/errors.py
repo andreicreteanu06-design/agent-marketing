@@ -76,3 +76,15 @@ class AdsLimitError(CopywriterError):
         super().__init__(
             f"{field} are {length} caractere, peste limita Google Ads de {limit}"
         )
+
+
+class CreativeError(PpcAgentError):
+    """Eroare in Modulul 5 (generarea de creatii audio/video)."""
+
+
+class TtsError(CreativeError):
+    """Sinteza vocala (text-to-speech) a esuat."""
+
+
+class VideoAssemblyError(CreativeError):
+    """Asamblarea video (Flick) a esuat sau a primit intrari invalide."""

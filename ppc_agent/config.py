@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     meta_access_token: str = ""
     meta_ad_account_id: str = ""
 
+    # Modulul 5 — creatii audio/video (doar pentru PPC_PROVIDER_MODE=live)
+    fish_speech_url: str = ""
+    fish_speech_voice: str = "ro_default"
+    flick_endpoint: str = ""
+    flick_api_key: str = ""
+
 
 class BudgetConfig(BaseModel):
     """Limite de buget, in moneda contului (siruri parsate ca ``Decimal``)."""

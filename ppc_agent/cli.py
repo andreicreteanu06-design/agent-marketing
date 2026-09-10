@@ -25,8 +25,15 @@ from ppc_agent.config import AppConfig, load_config
 from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.copywriter.llm import MockLLMClient
 from ppc_agent.copywriter.pipeline import append_to_queue, render_copy, run_copy
+from ppc_agent.creative.creative_pipeline import generate_full_ad_creative, render_creative
+from ppc_agent.creative.factory import CreativeFactory
 from ppc_agent.decision.pipeline import render_plan, run_plan
-from ppc_agent.errors import ApprovalRequiredError, CopywriterError, SpendLimitExceeded
+from ppc_agent.errors import (
+    ApprovalRequiredError,
+    CopywriterError,
+    PpcAgentError,
+    SpendLimitExceeded,
+)
 from ppc_agent.guardrails.approval_gate import ApprovalGate
 from ppc_agent.guardrails.pipeline import (
     build_proposed_changes,
@@ -118,6 +125,46 @@ def copy(
         return
     path = append_to_queue(entry, Path.cwd())
     console.print(f"\n[green]adaugat in[/green] {path.name} (status: pending_review)")
+
+
+@app.command()
+def build_creative(
+    keyword: Annotated[
+        str, typer.Option("--keyword", help="Cuvantul cheie exact-match al anuntului.")
+    ],
+    broll: Annotated[
+        str, typer.Option("--broll", help="Cale catre video-ul de fundal (b-roll).")
+    ],
+    usp: Annotated[
+        str, typer.Option("--usp", help="Propunerea unica de valoare (optional).")
+    ] = "",
+    trigger: Annotated[
+        str, typer.Option("--trigger", help="Declansator emotional: pas/status/fomo/aida.")
+    ] = "aida",
+    config: _ConfigOption = "config.yaml",
+) -> None:
+    """Modulul 5: copy emotional -> voce (Fish Speech) -> video (Flick) -> .mp4.
+
+    Totul offline in modul mock; nimic nu se publica. Afiseaza calea .mp4 finala.
+    """
+    app_config = load_config(config)
+    factory = CreativeFactory(app_config)
+    try:
+        result = generate_full_ad_creative(
+            factory.tts(),
+            factory.video(),
+            keyword=keyword,
+            raw_broll_path=broll,
+            emotion_trigger=trigger,
+            product_usp=usp or None,
+            output_dir=Path.cwd() / "creative_output",
+        )
+    except PpcAgentError as exc:
+        console.print(f"[red]generarea creatiei a esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    render_creative(result, console)
+    console.print(f"\n{result.mp4_path}")
 
 
 @app.command()

@@ -21,7 +21,8 @@ stricte cu om in bucla (HITL)**.
 | 4 | Modulul 4 — poarta de aprobare + limitator absolut de cheltuiala | ✅ |
 | + | Modul copywriter — copy direct-response emotional (RAG local pe swipe file) | ✅ |
 | + | Kelly Criterion — dimensionarea plafonului zilnic absolut in functie de ROAS | ✅ |
-| — | Integrare `live` (clienti reali Google Ads / GSC / GBP / Meta / LLM) | ⏳ |
+| 5 | Modul creative — voce (Fish Speech) + video (Flick) -> `.mp4`, mock-first | ✅ |
+| — | Integrare `live` (Google Ads / GSC / GBP / Meta / LLM / Fish Speech / Flick) | ⏳ |
 
 ## Cerinte
 
@@ -63,6 +64,7 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | `ingest --url <domeniu>` | Modulul 1: crawling + date organice + expansiune cuvinte cheie |
 | `plan` | Kelly (plafon zilnic) + Thompson (alocare) + Markov + Quality Score + lichiditate Meta |
 | `copy --keyword <kw> --usp <text> --trigger <pas\|status\|fomo\|aida>` | Genereaza copy emotional; il adauga in `proposed_ads_queue.json` (HITL). `--dry-run` disponibil |
+| `build-creative --keyword <kw> --broll <video>` | Modulul 5: copy -> voce (Fish Speech) -> video (Flick) -> `.mp4` in `creative_output/` |
 | `propose` | Modulul 4: scrie `proposed_changes_*.json` (nu aplica nimic) |
 | `status` | Arata setul de modificari in asteptare si modul furnizorilor |
 | `execute --changeset <fisier> --confirm` | Modulul 4: executa un set confirmat (simulat in v1) |
@@ -188,6 +190,7 @@ ppc_agent/
   alignment/      Modulul 3 — Quality Score + lichiditate Meta
   guardrails/     Modulul 4 — ApprovalGate + AbsoluteSpendLimiter
   copywriter/     copy direct-response emotional (engine, llm, swipe, pipeline)
+  creative/       Modulul 5 — audio_engine (Fish Speech) + video_engine (Flick) + factory
 tests/
   fixtures/       date de test locale
 ```
