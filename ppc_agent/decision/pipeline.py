@@ -11,7 +11,9 @@ from rich.table import Table
 from ppc_agent.config import AppConfig
 from ppc_agent.decision.attribution import Journey, attribute
 from ppc_agent.decision.budget import ThompsonBudgetAllocator
+from ppc_agent.decision.kelly_sizing import size_daily_budget
 from ppc_agent.decision.models import ArmStats, PlanResult
+from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers.factory import ProviderFactory
 
 _CUSTOMER_PLACEHOLDER = "mock-customer"
@@ -29,6 +31,7 @@ def _arms_from_performance(frame: pd.DataFrame) -> list[ArmStats]:
                 clicks=int(record["clicks"]),
                 conversions=int(record["conversions"]),
                 cost=Decimal(str(record["cost"])),
+                revenue=Decimal(str(record.get("revenue", 0))),
             )
         )
     return arms
@@ -40,41 +43,75 @@ def run_plan(
     *,
     seed: int | None = _DEFAULT_SEED,
     n_samples: int = _DEFAULT_SAMPLES,
+    kelly_fraction: float = 0.5,
 ) -> PlanResult:
-    """Executa Modulul 2: alocare de buget si atribuire Markov.
+    """Executa Modulul 2: dimensionare Kelly + alocare Thompson + atribuire Markov.
+
+    Kelly foloseste avantajul contului (ROAS) ca sa stabileasca *plafonul zilnic
+    absolut*; Thompson distribuie apoi acel plafon intre campanii. Plafonul Kelly
+    poate depasi ``budget.max_daily_spend``, dar niciodata ``HARD_CEILING``.
 
     Args:
         factory: Fabrica de furnizori (mock sau live).
         config: Configuratia aplicatiei (buget, praguri).
         seed: Seed pentru esantionarea Thompson (reproducibilitate CLI si teste).
         n_samples: Numarul de esantioane Monte Carlo per posterior.
+        kelly_fraction: Fractia Kelly (``0.5`` = Half-Kelly; ``0`` dezactiveaza scalarea).
 
     Returns:
-        Planul complet: alocare de buget + rezultatul atribuirii.
+        Planul complet: dimensionare Kelly + alocare de buget + atribuire.
     """
     ads = factory.google_ads()
     arms = _arms_from_performance(ads.campaign_performance(_CUSTOMER_PLACEHOLDER))
+
+    kelly = size_daily_budget(
+        arms,
+        baseline_cap=config.budget.max_daily_spend,
+        hard_ceiling=HARD_CEILING,
+        kelly_fraction=kelly_fraction,
+    )
 
     allocator = ThompsonBudgetAllocator(
         min_arm_daily_spend=config.budget.min_arm_daily_spend
     )
     budget_plan = allocator.allocate(
         arms,
-        float(config.budget.max_daily_spend),
+        float(kelly.sized_daily_cap),
         n_samples=n_samples,
         seed=seed,
     )
 
-    journeys = [Journey.from_tokens(path) for path in ads.conversion_paths(_CUSTOMER_PLACEHOLDER)]
+    journeys = [
+        Journey.from_tokens(path)
+        for path in ads.conversion_paths(_CUSTOMER_PLACEHOLDER)
+    ]
     attribution = attribute(journeys)
 
-    return PlanResult(budget_plan=budget_plan, attribution=attribution)
+    return PlanResult(kelly=kelly, budget_plan=budget_plan, attribution=attribution)
 
 
 def render_plan(result: PlanResult, console: Console) -> None:
-    """Afiseaza planul de buget si tabelul de atribuire in consola."""
+    """Afiseaza dimensionarea Kelly, planul de buget si atribuirea in consola."""
+    _render_kelly(result, console)
     _render_budget(result, console)
     _render_attribution(result, console)
+
+
+def _render_kelly(result: PlanResult, console: Console) -> None:
+    kelly = result.kelly
+    console.print(
+        f"\n[bold]Dimensionare Kelly (plafon zilnic absolut)[/bold]  "
+        f"edge={kelly.edge}"
+    )
+    console.print(
+        f"  ROAS cont {kelly.account_roas:.2f}  |  CVR neteda {kelly.smoothed_cvr:.4f}  "
+        f"|  Half-Kelly f={kelly.kelly_fraction:+.3f}  |  x{kelly.multiplier:.2f}"
+    )
+    console.print(
+        f"  plafon: baseline {kelly.baseline_cap} -> [bold]{kelly.sized_daily_cap}[/bold] "
+        f"/ zi  (plafon absolut {kelly.hard_ceiling})"
+    )
+    console.print(f"  [dim]{kelly.rationale}[/dim]")
 
 
 def _render_budget(result: PlanResult, console: Console) -> None:

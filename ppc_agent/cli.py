@@ -138,11 +138,14 @@ def propose(config: _ConfigOption = "config.yaml") -> None:
         budget_plan=decision.budget_plan,
         negatives=ingestion.negative_keywords,
         liquidity=alignment.liquidity_plan,
+        kelly=decision.kelly,
     )
 
+    # Plafonul limitatorului = plafonul dimensionat Kelly (poate depasi
+    # config.budget.max_daily_spend, dar niciodata HARD_CEILING).
     gate = ApprovalGate(
         account=_account_label(app_config),
-        spend_limiter=AbsoluteSpendLimiter(app_config.budget.max_daily_spend),
+        spend_limiter=AbsoluteSpendLimiter(decision.kelly.sized_daily_cap),
         output_dir=Path.cwd(),
     )
     gate.propose_many(changes)
@@ -152,6 +155,10 @@ def propose(config: _ConfigOption = "config.yaml") -> None:
     except SpendLimitExceeded as exc:
         console.print(f"[red]set respins, nimic scris:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[dim]{decision.kelly.rationale}[/dim]"
+    )
 
     render_changeset(gate.build_changeset(), path, console)
     console.print(

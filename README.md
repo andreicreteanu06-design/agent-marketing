@@ -19,7 +19,9 @@ stricte cu om in bucla (HITL)**.
 | 2 | Modulul 2 — alocare buget (Thompson Sampling) + atribuire Markov | ✅ |
 | 3 | Modulul 3 — optimizare Quality Score + lichiditate Meta | ✅ |
 | 4 | Modulul 4 — poarta de aprobare + limitator absolut de cheltuiala | ✅ |
-| — | Integrare `live` (clienti reali Google Ads / GSC / GBP / Meta) | ⏳ |
+| + | Modul copywriter — copy direct-response emotional (RAG local pe swipe file) | ✅ |
+| + | Kelly Criterion — dimensionarea plafonului zilnic absolut in functie de ROAS | ✅ |
+| — | Integrare `live` (clienti reali Google Ads / GSC / GBP / Meta / LLM) | ⏳ |
 
 ## Cerinte
 
@@ -59,8 +61,9 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Comanda | Rol |
 |---------|-----|
 | `ingest --url <domeniu>` | Modulul 1: crawling + date organice + expansiune cuvinte cheie |
-| `plan` | Modulele 2-3: alocare buget, atribuire, Quality Score, lichiditate Meta |
-| `propose` | Modulul 4: scrie `proposed_changes.json` (nu aplica nimic) |
+| `plan` | Kelly (plafon zilnic) + Thompson (alocare) + Markov + Quality Score + lichiditate Meta |
+| `copy --keyword <kw> --usp <text> --trigger <pas\|status\|fomo\|aida>` | Genereaza copy emotional; il adauga in `proposed_ads_queue.json` (HITL). `--dry-run` disponibil |
+| `propose` | Modulul 4: scrie `proposed_changes_*.json` (nu aplica nimic) |
 | `status` | Arata setul de modificari in asteptare si modul furnizorilor |
 | `execute --changeset <fisier> --confirm` | Modulul 4: executa un set confirmat (simulat in v1) |
 
@@ -86,8 +89,29 @@ propose(change)  ->  flush()  ->  proposed_changes_*.json  ->  revizuire umana  
 
 | Nivel | Sursa | Rol |
 |-------|-------|-----|
-| `budget.max_daily_spend` | `config.yaml` | Limita ta zilnica |
-| `HARD_CEILING = 500.00` | hardcodat in `ppc_agent/guardrails/spend_limiter.py` | Plafon absolut; `max_daily_spend` nu il poate depasi (eroare la construirea limitatorului) |
+| `budget.max_daily_spend` | `config.yaml` | Plafonul zilnic **de baza**. Kelly poate scala peste el cand ROAS-ul contului e bun. |
+| plafon dimensionat Kelly | `decision/kelly_sizing.py` | `min(HARD_CEILING, max_daily_spend * multiplicator Half-Kelly)`; devine limita efectiva a `AbsoluteSpendLimiter` in `propose`. |
+| `HARD_CEILING = 500.00` | hardcodat in `ppc_agent/guardrails/spend_limiter.py` | Plafon absolut inviolabil. Nimic (nici Kelly) nu il poate depasi. |
+
+### Kelly Criterion — dimensionarea plafonului zilnic
+
+Thompson Sampling decide *cum se imparte* bugetul intre campanii; Kelly decide
+*cat de mare* e plafonul zilnic total, in functie de avantajul matematic al
+contului:
+
+- **`calculate_kelly_fraction(win_prob, roas_odds, fraction=0.5)`** — Half-Kelly:
+  `f = fraction * (p*b - q) / b`, taiat la `[-1, 1]`.
+- **`size_daily_budget(arms, baseline_cap, hard_ceiling, ...)`** — foloseste ROAS-ul
+  contului: `win_prob = ROAS/(ROAS+1)`, `roas_odds = ROAS - 1`. Multiplicatorul
+  `clamp(1 + f, 0.5, 2.0)` se aplica pe `baseline_cap`, apoi se taie la `HARD_CEILING`.
+  - ROAS > 1 (EV pozitiv) → plafon **peste** `max_daily_spend`, catre `HARD_CEILING`
+  - ROAS ≈ 1 → plafon **mentinut** la `max_daily_spend`
+  - ROAS < 1 (EV negativ) → plafon **redus** (pastrare de capital)
+  - fara click-uri / fara cost → `date_insuficiente`, plafon mentinut (fail-safe)
+- Rationamentul Kelly se adauga la `rationale` fiecarei modificari de buget din
+  `proposed_changes_*.json`. Umanul aproba tot inainte de `execute`.
+
+`run_plan(..., kelly_fraction=0.0)` dezactiveaza scalarea (plafon = `max_daily_spend`).
 
 ### Schema `proposed_changes_*.json`
 
@@ -152,15 +176,18 @@ executorul din `ApprovalGate.execute` trebuie schimbat din "simuleaza" in
 ## Structura
 
 ```
+swipe_file.json   formule de copywriting emotional (RAG local, editabil)
 ppc_agent/
   config.py       configuratie (pydantic-settings + YAML)
   errors.py       tipuri de exceptii partajate
   cli.py          interfata linie de comanda (typer)
+  texttools.py    normalizare / tokenizare / sentiment (modul frunza)
   providers/      adaptoare externe: base (ABC), factory, mock/, live/
-  ingestion/      Modulul 1
-  decision/       Modulul 2
-  alignment/      Modulul 3
-  guardrails/     Modulul 4
+  ingestion/      Modulul 1 — context si ingestie
+  decision/       Modulul 2 — Thompson Sampling + Markov + Kelly (kelly_sizing.py)
+  alignment/      Modulul 3 — Quality Score + lichiditate Meta
+  guardrails/     Modulul 4 — ApprovalGate + AbsoluteSpendLimiter
+  copywriter/     copy direct-response emotional (engine, llm, swipe, pipeline)
 tests/
   fixtures/       date de test locale
 ```

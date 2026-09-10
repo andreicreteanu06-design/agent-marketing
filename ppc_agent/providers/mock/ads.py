@@ -13,13 +13,13 @@ import pandas as pd
 
 from ppc_agent.providers.base import GoogleAdsProvider
 
-_CAMPAIGNS: tuple[tuple[str, str, int, int, float], ...] = (
-    # arm_id, nume, click-uri, conversii, cost
-    ("c_brand", "Search - Brand", 1200, 168, 900.0),
-    ("c_generic", "Search - Generic", 4300, 215, 5400.0),
-    ("c_pmax", "Performance Max", 2600, 130, 3100.0),
-    ("c_display", "Display - Remarketing", 5200, 78, 1600.0),
-    ("c_youtube", "YouTube - Awareness", 3800, 19, 2000.0),
+_CAMPAIGNS: tuple[tuple[str, str, int, int, float, float], ...] = (
+    # arm_id, nume, click-uri, conversii, cost, venit
+    ("c_brand", "Search - Brand", 1200, 168, 900.0, 4200.0),
+    ("c_generic", "Search - Generic", 4300, 215, 5400.0, 12900.0),
+    ("c_pmax", "Performance Max", 2600, 130, 3100.0, 7440.0),
+    ("c_display", "Display - Remarketing", 5200, 78, 1600.0, 2560.0),
+    ("c_youtube", "YouTube - Awareness", 3800, 19, 2000.0, 1200.0),
 )
 
 _CHANNELS: tuple[str, ...] = (
@@ -55,8 +55,9 @@ class MockGoogleAdsProvider(GoogleAdsProvider):
                 "clicks": clicks,
                 "conversions": conversions,
                 "cost": cost,
+                "revenue": revenue,
             }
-            for arm_id, name, clicks, conversions, cost in _CAMPAIGNS
+            for arm_id, name, clicks, conversions, cost, revenue in _CAMPAIGNS
         ]
         return pd.DataFrame(rows)
 

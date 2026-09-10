@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ppc_agent.alignment.models import LiquidityPlan
-from ppc_agent.decision.models import BudgetPlan
+from ppc_agent.decision.models import BudgetPlan, KellySizing
 from ppc_agent.guardrails.models import ChangeSet, ProposedChange
 from ppc_agent.ingestion.models import NegativeKeywordSet
 
@@ -21,11 +21,14 @@ def build_proposed_changes(
     budget_plan: BudgetPlan,
     negatives: NegativeKeywordSet,
     liquidity: LiquidityPlan,
+    kelly: KellySizing | None = None,
 ) -> list[ProposedChange]:
     """Traduce planurile Modulelor 1-3 in modificari propuse, inca neaplicate.
 
     - Buget (Modulul 2): un ``UPDATE`` per campanie cu buget, ``PAUSE`` pentru cele
-      duse la 0. ``projected_daily_spend`` poarta bugetul zilnic rezultat.
+      duse la 0. ``projected_daily_spend`` poarta bugetul zilnic rezultat. Cand
+      ``kelly`` este dat, rationamentul Half-Kelly se adauga la fiecare modificare
+      de buget.
     - Cuvinte cheie negative (Modulul 1): ``CREATE``, fara impact pe cheltuiala.
     - Consolidari Meta (Modulul 3): ``UPDATE``, fara impact pe cheltuiala zilnica
       Google (bugetul Meta este guvernat separat).
@@ -34,14 +37,20 @@ def build_proposed_changes(
         budget_plan: Planul de alocare Thompson.
         negatives: Setul de cuvinte cheie negative.
         liquidity: Planul de lichiditate Meta.
+        kelly: Dimensionarea Kelly a plafonului zilnic (optional).
 
     Returns:
         Lista de :class:`ProposedChange`.
     """
     changes: list[ProposedChange] = []
+    kelly_note = f" {kelly.rationale}" if kelly is not None else ""
 
     for allocation in budget_plan.allocations:
         zeroed = allocation.daily_budget == 0
+        thompson = (
+            allocation.note
+            or f"Thompson Sampling: P(cel mai bun)={allocation.win_probability:.3f}"
+        )
         changes.append(
             ProposedChange(
                 op="PAUSE" if zeroed else "UPDATE",
@@ -50,10 +59,7 @@ def build_proposed_changes(
                 before={},
                 after={"daily_budget": str(allocation.daily_budget)},
                 projected_daily_spend=allocation.daily_budget,
-                rationale=(
-                    allocation.note
-                    or f"Thompson Sampling: P(cel mai bun)={allocation.win_probability:.3f}"
-                ),
+                rationale=f"{thompson}.{kelly_note}",
                 source_module="budget",
             )
         )

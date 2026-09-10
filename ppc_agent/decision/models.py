@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+EdgeLabel = Literal["pozitiv", "neutru", "negativ", "date_insuficiente"]
 
 
 class ArmStats(BaseModel):
@@ -15,11 +18,17 @@ class ArmStats(BaseModel):
     clicks: int = Field(ge=0)
     conversions: int = Field(ge=0)
     cost: Decimal = Decimal("0")
+    revenue: Decimal = Decimal("0")
 
     @property
     def observed_cvr(self) -> float:
         """Rata de conversie observata (0 daca nu exista click-uri)."""
         return self.conversions / self.clicks if self.clicks else 0.0
+
+    @property
+    def roas(self) -> float:
+        """Return on ad spend (venit / cost); 0 daca nu exista cost."""
+        return float(self.revenue / self.cost) if self.cost > 0 else 0.0
 
 
 class BudgetAllocation(BaseModel):
@@ -60,8 +69,25 @@ class AttributionResult(BaseModel):
     channels: list[ChannelAttribution] = Field(default_factory=list)
 
 
-class PlanResult(BaseModel):
-    """Iesirea completa a Modulului 2: alocare buget + atribuire."""
+class KellySizing(BaseModel):
+    """Rezultatul dimensionarii Kelly a plafonului zilnic absolut."""
 
+    smoothed_cvr: float
+    account_roas: float
+    win_prob: float
+    roas_odds: float
+    kelly_fraction: float
+    multiplier: float
+    baseline_cap: Decimal
+    sized_daily_cap: Decimal
+    hard_ceiling: Decimal
+    edge: EdgeLabel
+    rationale: str
+
+
+class PlanResult(BaseModel):
+    """Iesirea completa a Modulului 2: dimensionare Kelly + alocare buget + atribuire."""
+
+    kelly: KellySizing
     budget_plan: BudgetPlan
     attribution: AttributionResult

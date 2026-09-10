@@ -135,7 +135,7 @@ class GoogleAdsProvider(ABC):
 
         Returns:
             ``DataFrame`` cu coloanele ``arm_id``, ``name``, ``clicks``,
-            ``conversions``, ``cost``.
+            ``conversions``, ``cost``, ``revenue`` (venitul din conversii).
         """
 
     @abstractmethod
