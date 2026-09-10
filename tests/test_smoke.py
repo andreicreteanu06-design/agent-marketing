@@ -47,13 +47,12 @@ def test_live_factory_raises_setup_required() -> None:
         factory.meta().ad_sets("act_123")
 
 
-def test_mock_factory_wires_module1_providers() -> None:
+def test_mock_factory_wires_all_providers() -> None:
     config = AppConfig(settings=Settings(_env_file=None, provider_mode=ProviderMode.MOCK))
     factory = ProviderFactory(config)
     assert factory.crawler() is not None
     assert factory.gsc() is not None
     assert factory.gbp() is not None
     assert factory.keyword_planner() is not None
-    # Furnizorul mock Meta se adauga in Modulul 3.
-    with pytest.raises(NotImplementedError):
-        factory.meta()
+    assert factory.google_ads() is not None
+    assert factory.meta() is not None

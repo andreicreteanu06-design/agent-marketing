@@ -1,7 +1,6 @@
 """Implementari ``mock`` deterministice ale furnizorilor.
 
-Datele sunt generate in cod (determinist, fara retea). Modulul 3 va adauga aici
-si furnizorul Meta Marketing.
+Datele sunt generate in cod (determinist, fara retea).
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from ppc_agent.providers.mock.google import (
     MockGscProvider,
     MockKeywordPlannerProvider,
 )
+from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
 
 __all__ = [
     "MockCrawlerProvider",
@@ -20,4 +20,5 @@ __all__ = [
     "MockGoogleAdsProvider",
     "MockGscProvider",
     "MockKeywordPlannerProvider",
+    "MockMetaMarketingProvider",
 ]

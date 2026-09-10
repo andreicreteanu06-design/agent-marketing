@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
+from ppc_agent.alignment.pipeline import render_alignment, run_alignment
 from ppc_agent.config import load_config
 from ppc_agent.decision.pipeline import render_plan, run_plan
 from ppc_agent.ingestion.pipeline import render_ingestion, run_ingestion
@@ -52,6 +53,7 @@ def plan(config: _ConfigOption = "config.yaml") -> None:
     app_config = load_config(config)
     factory = ProviderFactory(app_config)
     render_plan(run_plan(factory, app_config), console)
+    render_alignment(run_alignment(factory, app_config), console)
 
 
 @app.command()

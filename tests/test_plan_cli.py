@@ -23,6 +23,8 @@ def test_plan_command_runs_and_prints_sections() -> None:
         "Atribuire Markov",
         "efect eliminare",
         "last-click",
+        "Quality Score",
+        "Lichiditate Meta",
     ):
         assert section in result.output
 
