@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ppc_agent.copywriter.engine import AdCopyGenerator
-from ppc_agent.copywriter.llm import MockLLMClient
+from ppc_agent.copywriter.llm import BaseLLMClient
 from ppc_agent.copywriter.models import AdCopy
 from ppc_agent.copywriter.swipe import load_swipe_file, retrieve_framework
 from ppc_agent.creative.audio_engine import BaseTtsClient, estimate_duration_seconds
@@ -52,6 +52,7 @@ def synthesize_voiceover(
 
 
 def generate_full_ad_creative(
+    llm_client: BaseLLMClient,
     tts: BaseTtsClient,
     video: BaseVideoBuilder,
     *,
@@ -64,7 +65,11 @@ def generate_full_ad_creative(
 ) -> CreativeResult:
     """Ruleaza intregul lant: copywriter -> Fish Speech -> Flick -> ``.mp4``.
 
+    Toti cei trei clienti sunt injectati (fara instantiere directa in interior),
+    ca sa poata fi comutati intre ``mock`` si ``live`` de catre apelant.
+
     Args:
+        llm_client: Clientul de generare de copy (mock sau live).
         tts: Clientul text-to-speech (mock sau live).
         video: Asamblorul video (mock sau live).
         keyword: Cuvantul cheie exact-match al anuntului.
@@ -87,7 +92,7 @@ def generate_full_ad_creative(
         raise VideoAssemblyError(f"b-roll-ul nu exista: {broll}")
 
     usp = product_usp or f"Solutie pentru {keyword}, rapid si fara batai de cap"
-    generator = AdCopyGenerator(MockLLMClient(), swipe_path=swipe_path)
+    generator = AdCopyGenerator(llm_client, swipe_path=swipe_path)
     copy_dict = generator.generate_emotional_copy(usp, keyword, emotion_trigger)
     ad = AdCopy.model_validate(copy_dict)
 
@@ -122,6 +127,7 @@ def generate_full_ad_creative(
         mp4_path=str(written_mp4),
         duration_seconds=voiceover.duration_seconds,
         manifest={
+            "llm_client": type(llm_client).__name__,
             "tts_engine": voiceover.engine,
             "video_engine": video.engine,
             "framework": framework.name,

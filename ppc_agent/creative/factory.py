@@ -7,6 +7,7 @@ se face dupa ``PPC_PROVIDER_MODE`` din configuratie.
 from __future__ import annotations
 
 from ppc_agent.config import AppConfig, ProviderMode
+from ppc_agent.copywriter.llm import BaseLLMClient, LiveLLMClient, MockLLMClient
 from ppc_agent.creative.audio_engine import (
     BaseTtsClient,
     FishSpeechClient,
@@ -20,7 +21,11 @@ from ppc_agent.creative.video_engine import (
 
 
 class CreativeFactory:
-    """Construieste clientii de sinteza vocala si de asamblare video."""
+    """Construieste clientii pentru lantul de creatie: LLM, sinteza vocala, video.
+
+    Comuta ``mock`` / ``live`` dupa ``PPC_PROVIDER_MODE``, la fel ca
+    :class:`~ppc_agent.providers.factory.ProviderFactory`.
+    """
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
@@ -29,6 +34,12 @@ class CreativeFactory:
     def mode(self) -> ProviderMode:
         """Modul activ (``mock`` sau ``live``)."""
         return self._config.provider_mode
+
+    def llm(self) -> BaseLLMClient:
+        """Clientul de generare de copy pentru modul activ."""
+        if self.mode is ProviderMode.LIVE:
+            return LiveLLMClient(model=self._config.settings.llm_model)
+        return MockLLMClient()
 
     def tts(self) -> BaseTtsClient:
         """Clientul text-to-speech pentru modul activ."""

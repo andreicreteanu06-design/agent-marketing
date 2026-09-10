@@ -9,7 +9,8 @@ from typer.testing import CliRunner
 
 from ppc_agent.cli import app
 from ppc_agent.config import AppConfig, ProviderMode, Settings
-from ppc_agent.copywriter.models import AdCopy
+from ppc_agent.copywriter.llm import BaseLLMClient, LiveLLMClient, MockLLMClient
+from ppc_agent.copywriter.models import AdCopy, CopySpec
 from ppc_agent.creative.audio_engine import FishSpeechClient, MockFishSpeechClient
 from ppc_agent.creative.creative_pipeline import (
     build_vo_script,
@@ -30,6 +31,7 @@ def _broll(tmp_path: Path) -> Path:
 
 def test_full_chain_produces_wav_and_mp4(tmp_path: Path) -> None:
     result = generate_full_ad_creative(
+        MockLLMClient(),
         MockFishSpeechClient(),
         MockFlickBuilder(),
         keyword="revizie cutie automata",
@@ -45,13 +47,46 @@ def test_full_chain_produces_wav_and_mp4(tmp_path: Path) -> None:
     assert result.framework_style == "pas"
     assert "revizie cutie automata" in result.script.lower()
     assert result.duration_seconds > 0
+    assert result.manifest["llm_client"] == "MockLLMClient"
     assert result.manifest["tts_engine"] == "mock-fish-speech"
     assert result.manifest["video_engine"] == "mock-flick"
+
+
+class _SpyLLM(BaseLLMClient):
+    """Client de test care contorizeaza apelurile — dovada ca DI functioneaza."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, spec: CopySpec) -> AdCopy:
+        self.calls += 1
+        return AdCopy(
+            headline_1=spec.target_keyword,
+            headline_2="Nu ignora primele semne",
+            description="Vino azi la o verificare rapida si evita costuri mari.",
+        )
+
+
+def test_llm_client_is_injected_not_hardcoded(tmp_path: Path) -> None:
+    spy = _SpyLLM()
+    result = generate_full_ad_creative(
+        spy,
+        MockFishSpeechClient(),
+        MockFlickBuilder(),
+        keyword="frana uzata",
+        raw_broll_path=_broll(tmp_path),
+        emotion_trigger="frica",
+        output_dir=tmp_path / "out",
+    )
+    assert spy.calls == 1
+    assert result.manifest["llm_client"] == "_SpyLLM"
+    assert "frana uzata" in result.ad_copy.headline_1.lower()
 
 
 def test_missing_broll_raises(tmp_path: Path) -> None:
     with pytest.raises(VideoAssemblyError):
         generate_full_ad_creative(
+            MockLLMClient(),
             MockFishSpeechClient(),
             MockFlickBuilder(),
             keyword="test",
@@ -71,8 +106,10 @@ def test_creative_factory_switches_on_mode() -> None:
     mock_cfg = AppConfig(settings=Settings(_env_file=None, provider_mode=ProviderMode.MOCK))
     live_cfg = AppConfig(settings=Settings(_env_file=None, provider_mode=ProviderMode.LIVE))
 
+    assert isinstance(CreativeFactory(mock_cfg).llm(), MockLLMClient)
     assert isinstance(CreativeFactory(mock_cfg).tts(), MockFishSpeechClient)
     assert isinstance(CreativeFactory(mock_cfg).video(), MockFlickBuilder)
+    assert isinstance(CreativeFactory(live_cfg).llm(), LiveLLMClient)
     assert isinstance(CreativeFactory(live_cfg).tts(), FishSpeechClient)
     assert isinstance(CreativeFactory(live_cfg).video(), FlickVideoBuilder)
 

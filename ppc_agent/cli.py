@@ -33,6 +33,8 @@ from ppc_agent.errors import (
     CopywriterError,
     PpcAgentError,
     SpendLimitExceeded,
+    TtsError,
+    VideoAssemblyError,
 )
 from ppc_agent.guardrails.approval_gate import ApprovalGate
 from ppc_agent.guardrails.pipeline import (
@@ -151,6 +153,7 @@ def build_creative(
     factory = CreativeFactory(app_config)
     try:
         result = generate_full_ad_creative(
+            factory.llm(),
             factory.tts(),
             factory.video(),
             keyword=keyword,
@@ -159,6 +162,12 @@ def build_creative(
             product_usp=usp or None,
             output_dir=Path.cwd() / "creative_output",
         )
+    except TtsError as exc:
+        console.print(f"[red]sinteza vocala (TTS) a esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except VideoAssemblyError as exc:
+        console.print(f"[red]asamblarea video a esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     except PpcAgentError as exc:
         console.print(f"[red]generarea creatiei a esuat:[/red] {exc}")
         raise typer.Exit(code=1) from exc

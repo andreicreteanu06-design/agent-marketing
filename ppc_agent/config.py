@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     meta_access_token: str = ""
     meta_ad_account_id: str = ""
 
+    # Client LLM pentru copywriter (doar pentru PPC_PROVIDER_MODE=live)
+    llm_model: str = "ollama/llama3"
+    llm_endpoint: str = ""
+
     # Modulul 5 — creatii audio/video (doar pentru PPC_PROVIDER_MODE=live)
     fish_speech_url: str = ""
     fish_speech_voice: str = "ro_default"
