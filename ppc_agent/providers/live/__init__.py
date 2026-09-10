@@ -28,9 +28,17 @@ def _not_ready() -> NoReturn:
 
 
 class LiveCrawlerProvider(base.CrawlerProvider):
-    """Stub live pentru crawling-ul domeniului."""
+    """Stub live pentru crawling-ul domeniului.
 
-    def fetch(self, url: str) -> dict[str, object]:
+    Integrarea reala (Playwright cu fallback httpx + BeautifulSoup, plus
+    descarcarea ``robots.txt``) se adauga in faza de integrare live.
+    """
+
+    def fetch(self, url: str) -> base.FetchResult:
+        """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
+        _not_ready()
+
+    def robots_txt(self, base_url: str) -> str | None:
         """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
         _not_ready()
 

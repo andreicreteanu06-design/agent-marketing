@@ -30,3 +30,11 @@ class SpendLimitExceeded(PpcAgentError):
     Sursa limitei: fie ``budget.max_daily_spend`` din configuratie, fie plafonul
     absolut hardcodat in :mod:`ppc_agent.guardrails` (Modulul 4).
     """
+
+
+class CrawlError(PpcAgentError):
+    """Eroare la accesarea unei pagini de catre crawler (Modulul 1)."""
+
+
+class CrawlTimeoutError(CrawlError):
+    """Pagina nu a raspuns in intervalul de timp alocat."""

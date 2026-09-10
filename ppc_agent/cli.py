@@ -1,8 +1,6 @@
 """Interfata linie de comanda a agentului PPC.
 
 Comenzi: ``ingest``, ``plan``, ``propose``, ``execute``, ``status``.
-In Faza 0 toate sunt schelete care afiseaza "neimplementat inca" — logica reala
-se adauga modul cu modul in fazele urmatoare.
 
 Rulare::
 
@@ -15,6 +13,10 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+
+from ppc_agent.config import load_config
+from ppc_agent.ingestion.pipeline import render_ingestion, run_ingestion
+from ppc_agent.providers.factory import ProviderFactory
 
 app = typer.Typer(
     name="ppc-agent",
@@ -37,7 +39,10 @@ def ingest(
     config: _ConfigOption = "config.yaml",
 ) -> None:
     """Modulul 1: crawling domeniu, date organice (GSC/GBP), expansiune cuvinte cheie."""
-    console.print(f"ingest url={url} config={config}: {_NOT_IMPLEMENTED}")
+    app_config = load_config(config)
+    factory = ProviderFactory(app_config)
+    result = run_ingestion(factory, url, app_config)
+    render_ingestion(result, console)
 
 
 @app.command()

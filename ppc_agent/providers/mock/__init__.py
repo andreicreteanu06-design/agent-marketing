@@ -1,7 +1,21 @@
 """Implementari ``mock`` deterministice ale furnizorilor.
 
-Se populeaza in Modulul 1 (crawler, GSC, GBP, Keyword Planner) si Modulul 3
-(Meta Marketing). Datele provin din ``tests/fixtures/`` — niciun apel de retea.
+Datele sunt generate in cod (determinist, fara retea). Modulul 3 va adauga aici
+si furnizorul Meta Marketing.
 """
 
 from __future__ import annotations
+
+from ppc_agent.providers.mock.crawler import MockCrawlerProvider
+from ppc_agent.providers.mock.google import (
+    MockGbpProvider,
+    MockGscProvider,
+    MockKeywordPlannerProvider,
+)
+
+__all__ = [
+    "MockCrawlerProvider",
+    "MockGbpProvider",
+    "MockGscProvider",
+    "MockKeywordPlannerProvider",
+]

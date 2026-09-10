@@ -11,26 +11,60 @@ etc.) se introduc odata cu modulele care le folosesc.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import pandas as pd
 
 
+@dataclass(frozen=True, slots=True)
+class FetchResult:
+    """Rezultatul brut al accesarii unei pagini de catre un crawler.
+
+    Attributes:
+        requested_url: URL-ul cerut initial.
+        final_url: URL-ul final, dupa eventuale redirectari.
+        status_code: Codul HTTP (``0`` daca cererea a esuat inainte de raspuns).
+        html: Continutul HTML brut (sir gol daca nu exista).
+        ok: Adevarat daca pagina a fost obtinuta si are continut utilizabil.
+    """
+
+    requested_url: str
+    final_url: str
+    status_code: int
+    html: str
+    ok: bool
+
+
 class CrawlerProvider(ABC):
-    """Extrage structura si continutul unei pagini de destinatie."""
+    """Acceseaza pagini web si expune ``robots.txt``-ul domeniului."""
 
     @abstractmethod
-    def fetch(self, url: str) -> dict[str, object]:
-        """Descarca si parseaza ``url``.
+    def fetch(self, url: str) -> FetchResult:
+        """Obtine continutul paginii de la ``url``.
 
         Args:
             url: Adresa paginii de analizat.
 
         Returns:
-            Dictionar brut cu titlu, meta description, headings, texte CTA si
-            structura de navigatie. Forma tipizata (``PageContext``) se adauga
-            in Modulul 1.
+            :class:`FetchResult` cu HTML-ul brut si metadatele raspunsului.
+            Parsarea in ``PageContext`` se face in :mod:`ppc_agent.ingestion.crawler`.
+
+        Raises:
+            ppc_agent.errors.CrawlTimeoutError: Daca pagina nu raspunde la timp.
+        """
+
+    @abstractmethod
+    def robots_txt(self, base_url: str) -> str | None:
+        """Returneaza continutul ``robots.txt`` al domeniului, sau ``None``.
+
+        Args:
+            base_url: Originea domeniului (schema + host).
+
+        Returns:
+            Textul ``robots.txt``, sau ``None`` cand nu exista restrictii cunoscute
+            (caz in care accesul este permis).
         """
 
 
