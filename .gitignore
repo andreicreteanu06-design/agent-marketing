@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Cache instrumente
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Mediu virtual
+.venv/
+venv/
+env/
+
+# Configurare si secrete — NU comite niciodata
+.env
+*.log
+
+# Iesirile agentului (seturi de modificari propuse)
+proposed_changes*.json
+
+# Configurare locala a marketerului (poate contine domenii/branduri private)
+config.yaml

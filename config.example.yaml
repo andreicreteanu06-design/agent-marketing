@@ -1,0 +1,26 @@
+# Copiaza in `config.yaml` si ajusteaza. `config.yaml` este in .gitignore
+# (poate contine domenii / branduri private), dar NU contine secrete.
+
+# Domeniul clientului analizat de agent.
+target_domain: "https://exemplu.ro"
+
+# Piata tinta pentru expansiunea de cuvinte cheie si estimari.
+geo: "RO"
+language: "ro"
+
+# Limite de buget, in moneda contului (siruri -> Decimal, fara erori de virgula mobila).
+budget:
+  # Limita ta zilnica. Nu poate depasi plafonul absolut hardcodat in cod (Modulul 4).
+  max_daily_spend: "50.00"
+  # Prag minim zilnic per campanie/grup in alocarea Thompson (Modulul 2).
+  min_arm_daily_spend: "5.00"
+
+# Branduri concurente -> devin automat cuvinte cheie negative (Modulul 1).
+competitor_brands:
+  - "concurent-a"
+  - "concurent-b"
+
+# Parametri pentru alinierea algoritmica Meta (Modulul 3).
+meta:
+  # Prag de conversii/saptamana pentru iesirea din faza de invatare.
+  target_weekly_conversions: 50

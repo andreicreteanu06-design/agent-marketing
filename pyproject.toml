@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppc-agent"
+version = "0.1.0"
+description = "Agent PPC pentru marketeri: planificare Google Ads si Meta Ads cu modele matematice si guardrails HITL"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+include = ["ppc_agent*"]
+
+[tool.setuptools.package-data]
+ppc_agent = ["py.typed"]
+
+# ------------------------------------------------------------------------------
+# Ruff — linting + sortare importuri
+# ------------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+# ------------------------------------------------------------------------------
+# Mypy — verificare stricta de tip pe pachet
+# ------------------------------------------------------------------------------
+# python_version urmeaza interpretorul instalat: stub-urile numpy 2.5 cer 3.12+.
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["ppc_agent"]
+
+# scikit-learn si torch nu au stub-uri complete; le ignoram punctual.
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "torch.*"]
+ignore_missing_imports = true
+
+# ------------------------------------------------------------------------------
+# Pytest
+# ------------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

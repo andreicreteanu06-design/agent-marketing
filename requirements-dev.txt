@@ -1,0 +1,15 @@
+# Dependinte de dezvoltare (includ si dependintele de rulare).
+-r requirements.txt
+
+# Testare
+pytest>=8,<9
+pytest-cov>=5,<7
+
+# Calitate cod
+mypy>=1.11,<2
+ruff>=0.6,<1
+
+# Stub-uri de tip necesare pentru `mypy --strict`
+pandas-stubs
+types-PyYAML
+types-beautifulsoup4
