@@ -1,8 +1,8 @@
 """schema initiala
 
-Revision ID: 64103d1e41ab
+Revision ID: 974ee7590545
 Revises: 
-Create Date: 2026-09-11 16:41:20.404531
+Create Date: 2026-09-11 17:06:47.481746
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 import sqlmodel
 
 # revision identifiers, used by Alembic.
-revision: str = '64103d1e41ab'
+revision: str = '974ee7590545'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -40,7 +40,7 @@ def upgrade() -> None:
     sa.Column('google_ads_customer_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('meta_ad_account_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('tiktok_advertiser_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-    sa.Column('max_daily_spend', sa.Numeric(), nullable=False),
+    sa.Column('max_daily_spend', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenant.id'], ),
     sa.PrimaryKeyConstraint('id')
@@ -82,7 +82,7 @@ def upgrade() -> None:
     sa.Column('resource_type', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('before', sa.JSON(), nullable=True),
     sa.Column('after', sa.JSON(), nullable=True),
-    sa.Column('projected_daily_spend', sa.Numeric(), nullable=False),
+    sa.Column('projected_daily_spend', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('rationale', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('source_module', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('status', sa.Enum('PENDING', 'APPROVED', 'REJECTED', 'EXECUTED', name='changestatus'), nullable=False),

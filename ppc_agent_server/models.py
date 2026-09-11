@@ -19,8 +19,20 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, Numeric
 from sqlmodel import Field, Relationship, SQLModel
+
+
+def _money_column() -> Column[Decimal]:
+    """``Numeric(10, 2)`` explicit pe fiecare camp banesc: fara scala explicita,
+    SQLModel infera un ``sa.Numeric()`` gol, iar SQLite/SQLAlchemy pot intoarce
+    ``Decimal`` cu 10 zecimale in loc de 2 la citire (vazut real: "75.0000000000"
+    in loc de "75.00"). ``nullable=False`` explicit — un ``sa_column`` custom
+    ocoleste inferenta normala de nullability a SQLModel din adnotarea de tip.
+    O functie (nu o singura instanta Column module-level) pentru ca fiecare
+    coloana are nevoie de propriul ei obiect Column — SQLAlchemy nu permite
+    refolosirea aceluiasi Column pe mai multe tabele."""
+    return Column(Numeric(10, 2), nullable=False)
 
 
 class SubscriptionStatus(enum.StrEnum):
@@ -89,7 +101,7 @@ class ClientAccount(SQLModel, table=True):
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
 
-    max_daily_spend: Decimal = Field(default=Decimal("50.00"))
+    max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")
@@ -114,7 +126,7 @@ class ProposedChange(SQLModel, table=True):
     resource_type: str
     before: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     after: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    projected_daily_spend: Decimal = Decimal("0")
+    projected_daily_spend: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
     rationale: str
     source_module: str
 
