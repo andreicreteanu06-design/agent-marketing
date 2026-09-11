@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ppc-agent"
 version = "0.1.0"
-description = "Agent PPC pentru marketeri: planificare Google Ads si Meta Ads cu modele matematice si guardrails HITL"
+description = "Agent PPC pentru marketeri: planificare Google Ads, Meta Ads si TikTok Ads cu modele matematice si guardrails HITL"
 requires-python = ">=3.11"
 readme = "README.md"
 

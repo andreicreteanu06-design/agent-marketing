@@ -1,9 +1,12 @@
 # Agent PPC
 
 Unealta Python, controlata prin configuratie, care ajuta marketerii sa planifice
-si sa gestioneze campanii **Google Ads** si **Meta Ads**, folosind modele
-matematice pentru alocarea bugetului si atribuire, in spatele unor **guardrails
-stricte cu om in bucla (HITL)**.
+si sa gestioneze campanii **Google Ads**, **Meta Ads** si **TikTok Ads**,
+folosind modele matematice pentru alocarea bugetului si atribuire, in spatele
+unor **guardrails stricte cu om in bucla (HITL)**. Doua moduri de rulare:
+**CLI local** (`ppc_agent`, un singur marketer/agentie) si **server B2B
+multi-tenant** (`ppc_agent_server/`, mai multe agentii — [detalii mai jos](#server-backend-multi-tenant)),
+al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 
 > **Versiunea 1 nu face niciun apel real** catre platformele de reclame. Fiecare
 > integrare externa sta in spatele unui adaptor cu implementare `mock`, deci
@@ -25,7 +28,13 @@ stricte cu om in bucla (HITL)**.
 | + | Kelly Criterion — dimensionarea plafonului zilnic absolut in functie de ROAS | ✅ |
 | 5 | Modul creative — voce (Fish Speech) + video (Flick) -> `.mp4`, mock-first | ✅ |
 | + | Client LLM live — Ollama local (gratuit, loopback, `copy` + `build-creative`) | ✅ |
-| — | Integrare `live` (Google Ads / GSC / GBP / Meta / Fish Speech / Flick) | ⏳ |
+| A | RAG creativ TikTok — script UGC 9:16, RAG pe nisa/keyword + ingestie CSV/JSON | ✅ |
+| B | Provider TikTok Ads — performanta + parcursuri de conversie, mock-first | ✅ |
+| C | TikTok ca brate Thompson + touchpoint-uri Markov (combinat cu Google Ads) | ✅ |
+| D | `ppc_agent_server/` — schela FastAPI + SQLModel + Alembic, multi-tenant | ✅ |
+| E | Rute REST (clienti, joburi, propuneri) + poarta HITL DB-backed | ✅ |
+| F | Coada de joburi ARQ+Redis (opt-in) — `InlineJobQueue` ramane implicita | ✅ |
+| — | Integrare `live` (Google Ads / GSC / GBP / Meta / TikTok Ads / Fish Speech / Flick / OAuth) | ⏳ |
 
 ## Cerinte
 
@@ -54,7 +63,7 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Valoare | Efect |
 |---------|-------|
 | `mock` (implicit) | Foloseste date de test deterministice. Niciun apel de retea. |
-| `live` | Clientul LLM (Ollama, vezi mai jos) e functional. Google Ads / GSC / GBP / Meta / Fish Speech / Flick raman stub-uri care ridica `SetupRequiredError`. |
+| `live` | Clientul LLM (Ollama, vezi mai jos) e functional. Google Ads / GSC / GBP / Meta / TikTok Ads / Fish Speech / Flick raman stub-uri care ridica `SetupRequiredError`. |
 
 ## Utilizare
 
@@ -65,12 +74,25 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Comanda | Rol |
 |---------|-----|
 | `ingest --url <domeniu>` | Modulul 1: crawling + date organice + expansiune cuvinte cheie |
-| `plan` | Kelly (plafon zilnic) + Thompson (alocare) + Markov + Quality Score + lichiditate Meta |
-| `copy --keyword <kw> --usp <text> --trigger <pas\|status\|fomo\|aida>` | Genereaza copy emotional; il adauga in `proposed_ads_queue.json` (HITL). `--dry-run` disponibil |
-| `build-creative --keyword <kw> --broll <video>` | Modulul 5: copy -> voce (Fish Speech) -> video (Flick) -> `.mp4` in `creative_output/` |
+| `plan` | Kelly (plafon zilnic) + Thompson (Google Ads + TikTok Ads combinate) + Markov + Quality Score + lichiditate Meta |
+| `copy --keyword <kw> --usp <text> --trigger <pas\|status\|fomo\|aida>` | Genereaza copy emotional (Google); il adauga in `proposed_ads_queue.json` (HITL). `--dry-run` disponibil |
+| `build-creative --keyword <kw> --broll <video> [--platform google\|tiktok]` | Modulul 5: copy -> voce (Fish Speech) -> video (Flick) -> `.mp4` in `creative_output/`. `tiktok` = script UGC, video 9:16 |
+| `ingest-tiktok --input <csv\|json>` | Valideaza anunturi TikTok dovedite si le adauga in `tiktok_swipe_library.json` (fara LLM — alimenteaza RAG-ul de mai sus) |
 | `propose` | Modulul 4: scrie `proposed_changes_*.json` (nu aplica nimic) |
 | `status` | Arata setul de modificari in asteptare si modul furnizorilor |
 | `execute --changeset <fisier> --confirm` | Modulul 4: executa un set confirmat (simulat in v1) |
+
+### TikTok — doua lucruri separate
+
+- **Date de cont** (`providers/mock/tiktok.py`, Faza B): performanta grupurilor de
+  anunturi + parcursuri de conversie, aceeasi forma ca Google Ads — brate Thompson
+  (`platform="tiktok_ads"`, prefix `tt_`) si touchpoint-uri Markov, combinate cu
+  Google Ads intr-un singur plafon/alocare in `plan` (vezi Faza C mai jos).
+- **Creatie** (`copywriter/` + `creative/`, Faza A): script video UGC (hook +
+  body + CTA + `text_overlay`), RAG pe **nisa/cuvant cheie** (nu emotion_trigger
+  ca la Google) peste `tiktok_swipe_library` din `swipe_file.json`, cu
+  `days_active_proxy` ca semnal de departajare (reclama activa mai mult timp =
+  dovedita). `ingest-tiktok` construieste biblioteca proprie din anunturi reale.
 
 ## Modelul de siguranta
 
@@ -145,8 +167,10 @@ contului:
 ### Alte garantii
 
 - **Fara credentiale in cod sau in git.** Doar `.env` local, ignorat de git.
-- **`proposed_changes*.json` si `config.yaml` sunt in `.gitignore`.**
-- **Toate testele ruleaza fara retea** (furnizori `mock` + fixture-uri locale).
+- **`proposed_changes*.json`, `config.yaml` si `*.db` sunt in `.gitignore`.**
+- **Toate testele ruleaza fara retea** (furnizori `mock` + fixture-uri locale +
+  SQLite in-memory pentru server — nici `tests/`, nici `tests_server/` nu ating
+  vreodata Ollama, Redis sau Postgres reale).
 
 ## De la `mock` la `live`
 
@@ -160,8 +184,8 @@ Fiecare furnizor extern are trei parti in `ppc_agent/providers/`:
 
 Pentru a activa un client real:
 
-1. Obtine credentialele (Google Ads developer token + OAuth2, Meta app) si pune-le
-   in `.env`.
+1. Obtine credentialele (Google Ads developer token + OAuth2, Meta app, TikTok
+   Ads `PPC_TIKTOK_ACCESS_TOKEN`/`PPC_TIKTOK_ADVERTISER_ID`) si pune-le in `.env`.
 2. Implementeaza metodele din clasa `Live*Provider` corespunzatoare, folosind
    SDK-ul oficial.
 3. Seteaza `PPC_PROVIDER_MODE=live`. `ProviderFactory` va comuta automat.
@@ -215,6 +239,98 @@ PPC_LLM_ENDPOINT=         # gol => http://localhost:11434
 > modest). Daca se intampla des, incearca un model diferit sau redescarca-l cu
 > `ollama pull`.
 
+## Server (backend multi-tenant)
+
+`ppc_agent_server/` e un backend B2B FastAPI separat de CLI — mai multe
+agentii, fiecare cu clientii ei gestionati, autentificare prin cheie API.
+Import intr-o singura directie: serverul foloseste pipeline-urile pure din
+`ppc_agent` (nu le duplica); `ppc_agent`/CLI nu stie ca serverul exista.
+
+### Instalare si pornire
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-server.txt
+.venv\Scripts\python.exe -m alembic upgrade head   # SQLite implicit - fara nimic de instalat
+.venv\Scripts\python.exe -m uvicorn ppc_agent_server.app:app --reload
+```
+
+Server-only — un utilizator doar-CLI nu instaleaza `requirements-server.txt`
+(FastAPI/SQLModel/Alembic/ARQ/Redis raman straine de `ppc_agent`).
+
+### Autentificare
+
+O agentie (`Tenant`) primeste o cheie API la creare — **operatie administrativa**,
+in afara API-ului (fara auto-inregistrare):
+
+```python
+from sqlmodel import Session
+from ppc_agent_server.db import get_engine
+from ppc_agent_server.auth import create_tenant
+
+with Session(get_engine()) as session:
+    tenant, raw_key = create_tenant(session, "Agentia Mea SRL")
+    print(raw_key)  # aratat o singura data - doar hash-ul SHA-256 se stocheaza
+```
+
+Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
+
+### Variabile de mediu (acelasi `.env`, fara conflict cu `PPC_*`)
+
+| Variabila | Implicit | Efect |
+|-----------|----------|-------|
+| `DATABASE_URL` | `sqlite:///./ppc_agent_server.db` | Postgres real: `postgresql://user:pass@host/db` |
+| `REDIS_URL` | necompletat -> `InlineJobQueue` | Seteaza pentru `ArqJobQueue` reala: `redis://localhost:6379/0` |
+
+### Endpoint-uri
+
+| Ruta | Rol |
+|------|-----|
+| `POST /api/v1/auth/mcc-connect` | Stub (ca toate integrarile live) — ridica `SetupRequiredError` -> 503 |
+| `POST /api/v1/clients` | Inregistreaza un cont gestionat pentru agentia autentificata |
+| `POST /api/v1/jobs/plan` | Dispecerizeaza Kelly + Thompson (Google+TikTok) + Markov pentru un client |
+| `POST /api/v1/jobs/copy` | Dispecerizeaza copy emotional (`platform: google\|tiktok`) -> `AdQueueItem` |
+| `POST /api/v1/jobs/creative` | Dispecerizeaza Modulul 5 (voce+video) -> `CreativeArtifact` |
+| `GET /api/v1/jobs/{task_id}` | Starea unui job (`queued`/`running`/`success`/`failed` + rezultat) |
+| `GET /api/v1/proposals/{client_id}` | Modificarile in asteptare (`status=pending`) ale unui client |
+| `POST /api/v1/proposals/{id}/execute` | Poarta HITL — `confirm=true` obligatoriu, trece prin `AbsoluteSpendLimiter` |
+
+> **Gap semnalat, nu construit:** niciun endpoint nu creeaza inca `ProposedChange`
+> automat dintr-un plan — echivalentul comenzii `propose` din CLI. O extensie
+> naturala, in afara listei de cerinte initiale.
+
+Mapare eroare -> HTTP (Starlette, pe `__mro__`): `SetupRequiredError`→503,
+`SpendLimitExceeded`→409, `ApprovalRequiredError`→403, `CopywriterError`
+(si subclase)→422, `PpcAgentError`→500 (fallback generic).
+
+### De la SQLite la PostgreSQL
+
+| | SQLite (implicit) | PostgreSQL |
+|---|---|---|
+| Instalare | niciuna | `docker compose up -d` (vezi `docker-compose.yml`) |
+| `DATABASE_URL` | necompletat | `postgresql://ppc_agent:ppc_agent@localhost:5432/ppc_agent` |
+| Migratii | `alembic upgrade head` | identic — acelasi Alembic, alt dialect |
+
+### De la coada in proces la ARQ+Redis
+
+| | `InlineJobQueue` (implicit) | `ArqJobQueue` |
+|---|---|---|
+| Instalare | niciuna | `docker compose up -d` + `REDIS_URL=redis://localhost:6379/0` |
+| Executie | sincron, in procesul serverului | proces worker separat: `arq ppc_agent_server.jobs.worker.WorkerSettings` |
+| Contract API | identic (`POST` -> `task_id`, `GET` -> stare) | identic — comutare fara nicio schimbare in router-e |
+
+Comutarea e automata, dupa `REDIS_URL` — niciun cod de apelat diferit.
+
+### Teste server
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests_server
+.venv\Scripts\python.exe -m mypy --strict ppc_agent_server
+```
+
+100% offline — SQLite in-memory, `InlineJobQueue`, zero Redis/Postgres reale
+(la fel ca restul proiectului). `ruff check` (fara argument de cale) acopera
+deja tot, inclusiv `ppc_agent_server/` si `tests_server/`.
+
 ## Dezvoltare
 
 ```powershell
@@ -226,19 +342,38 @@ PPC_LLM_ENDPOINT=         # gol => http://localhost:11434
 ## Structura
 
 ```
-swipe_file.json   formule de copywriting emotional (RAG local, editabil)
-ppc_agent/
+swipe_file.json        formule Google + tiktok_swipe_library (RAG local, editabil)
+docker-compose.yml      Postgres+Redis optionale (productie-like, niciodata necesar)
+alembic.ini              configurare Alembic (script_location -> ppc_agent_server/migrations)
+requirements.txt          dependinte CLI
+requirements-server.txt    dependinte server (include requirements.txt)
+
+ppc_agent/                # CLI, un singur marketer/agentie
   config.py       configuratie (pydantic-settings + YAML)
   errors.py       tipuri de exceptii partajate
-  cli.py          interfata linie de comanda (typer)
+  cli.py          interfata linie de comanda (typer) — ingest/plan/copy/build-creative/ingest-tiktok/propose/status/execute
   texttools.py    normalizare / tokenizare / sentiment (modul frunza)
-  providers/      adaptoare externe: base (ABC), factory, mock/, live/
-  ingestion/      Modulul 1 — context si ingestie
-  decision/       Modulul 2 — Thompson Sampling + Markov + Kelly (kelly_sizing.py)
+  providers/      adaptoare externe: base (ABC), factory, mock/ (incl. tiktok.py), live/
+  ingestion/      Modulul 1 — context, ingestie, tiktok_ingestion.py (biblioteca RAG)
+  decision/       Modulul 2 — Thompson Sampling (Google+TikTok) + Markov + Kelly (kelly_sizing.py)
   alignment/      Modulul 3 — Quality Score + lichiditate Meta
   guardrails/     Modulul 4 — ApprovalGate + AbsoluteSpendLimiter
-  copywriter/     copy direct-response emotional (engine, llm, swipe, pipeline)
-  creative/       Modulul 5 — audio_engine (Fish Speech) + video_engine (Flick) + factory
+  copywriter/     copy emotional Google + script UGC TikTok (engine, llm, swipe, pipeline)
+  creative/       Modulul 5 — audio_engine (Fish Speech) + video_engine (Flick, 16:9/9:16) + factory
 tests/
   fixtures/       date de test locale
+
+ppc_agent_server/          # backend B2B multi-tenant (FastAPI)
+  app.py          fabrica aplicatiei + handler-e de eroare globale
+  settings.py     configurare server (DATABASE_URL, REDIS_URL)
+  db.py           engine + sesiuni SQLModel
+  models.py       schema: Tenant -> ClientAccount -> (ProposedChange, AdQueueItem, CreativeArtifact)
+  auth.py         chei API (generare, hash, create_tenant, get_current_tenant)
+  deps.py         dependinte partajate (apartenenta client -> tenant)
+  schemas.py      scheme Pydantic request/response
+  routers/        auth, clients, jobs, proposals
+  jobs/           queue.py (Protocol + InlineJobQueue), arq_queue.py, worker.py, tasks.py
+  migrations/      Alembic — o singura migratie initiala
+tests_server/
+  conftest.py     SQLite in-memory + client FastAPI, izolate per test
 ```

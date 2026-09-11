@@ -54,7 +54,7 @@ from ppc_agent.providers.factory import ProviderFactory
 
 app = typer.Typer(
     name="ppc-agent",
-    help="Agent PPC pentru marketeri: Google Ads si Meta Ads cu guardrails HITL.",
+    help="Agent PPC pentru marketeri: Google Ads, Meta Ads si TikTok Ads cu guardrails HITL.",
     no_args_is_help=True,
     add_completion=False,
 )
