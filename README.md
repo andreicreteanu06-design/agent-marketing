@@ -34,6 +34,7 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 | D | `ppc_agent_server/` — schela FastAPI + SQLModel + Alembic, multi-tenant | ✅ |
 | E | Rute REST (clienti, joburi, propuneri) + poarta HITL DB-backed | ✅ |
 | F | Coada de joburi ARQ+Redis (opt-in) — `InlineJobQueue` ramane implicita | ✅ |
+| + | RAG omnicanal (Google/Meta/TikTok) — swipe unificat, proxy de performanta, ingestie CSV universala | ✅ |
 | — | Integrare `live` (Google Ads / GSC / GBP / Meta / TikTok Ads / Fish Speech / Flick / OAuth) | ⏳ |
 
 ## Cerinte
@@ -78,6 +79,8 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | `copy --keyword <kw> --usp <text> --trigger <pas\|status\|fomo\|aida>` | Genereaza copy emotional (Google); il adauga in `proposed_ads_queue.json` (HITL). `--dry-run` disponibil |
 | `build-creative --keyword <kw> --broll <video> [--platform google\|tiktok]` | Modulul 5: copy -> voce (Fish Speech) -> video (Flick) -> `.mp4` in `creative_output/`. `tiktok` = script UGC, video 9:16 |
 | `ingest-tiktok --input <csv\|json>` | Valideaza anunturi TikTok dovedite si le adauga in `tiktok_swipe_library.json` (fara LLM — alimenteaza RAG-ul de mai sus) |
+| `ingest-swipes --csv <fisier> --platform <google\|meta\|tiktok>` | Valideaza anunturi dovedite si le adauga in `omnichannel_swipe_library` din `swipe_file.json` (fara LLM) |
+| `copy-omnichannel --niche <text> --usp <text> [--target-platform google\|meta\|tiktok]` | Genereaza copy omnicanal (RAG pe nisa+platforma); doar afiseaza, fara coada HITL proprie |
 | `propose` | Modulul 4: scrie `proposed_changes_*.json` (nu aplica nimic) |
 | `status` | Arata setul de modificari in asteptare si modul furnizorilor |
 | `execute --changeset <fisier> --confirm` | Modulul 4: executa un set confirmat (simulat in v1) |
@@ -93,6 +96,30 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
   ca la Google) peste `tiktok_swipe_library` din `swipe_file.json`, cu
   `days_active_proxy` ca semnal de departajare (reclama activa mai mult timp =
   dovedita). `ingest-tiktok` construieste biblioteca proprie din anunturi reale.
+
+### RAG omnicanal (Google + Meta + TikTok, `copy-omnichannel`)
+
+Separat de `copy`/`ingest-tiktok` de mai sus (care raman neschimbate): o a doua
+cale de generare, `generate_omnichannel_copy`, care acopera toate cele trei
+platforme printr-o singura schema unificata (`OmniSwipeRecord`, cheia
+`omnichannel_swipe_library` din `swipe_file.json`). Diferente cheie fata de
+fluxul original:
+
+- **Recuperare**: filtrare stricta dupa `platform`, apoi RAG pe **nisa**
+  (nu declansator emotional/cuvant cheie exact-match); la egalitate castiga
+  semnalele proxy de performanta — `longevity_days` si `variation_count` — nu
+  un ROI auto-raportat, usor de umflat.
+- **Prompt dinamic per canal**: Google (limite stricte, intentie de cautare,
+  text-only), Meta (formate cu longevitate dovedita, ton advertorial, text mai
+  lung), TikTok (hook 0-3s, pattern interrupt, ritm UGC) — vezi
+  `build_omnichannel_system_prompt` in `copywriter/engine.py`.
+- **Ingestie**: `ingest-swipes --csv <fisier> --platform <x>` scrie direct in
+  `swipe_file.json` (spre deosebire de `ingest-tiktok`, care acumuleaza
+  intr-un fisier separat, generat) — un instrument de curatare a bibliotecii
+  sursa, nu de acumulare bruta.
+
+`copy`/`build-creative`/`ingest-tiktok` raman 100% neschimbate — cele doua
+cai coexista, folosesc acelasi client LLM injectat (mock sau Ollama live).
 
 ## Modelul de siguranta
 
@@ -351,14 +378,14 @@ requirements-server.txt    dependinte server (include requirements.txt)
 ppc_agent/                # CLI, un singur marketer/agentie
   config.py       configuratie (pydantic-settings + YAML)
   errors.py       tipuri de exceptii partajate
-  cli.py          interfata linie de comanda (typer) — ingest/plan/copy/build-creative/ingest-tiktok/propose/status/execute
+  cli.py          interfata linie de comanda (typer) — ingest/plan/copy/build-creative/ingest-tiktok/ingest-swipes/copy-omnichannel/propose/status/execute
   texttools.py    normalizare / tokenizare / sentiment (modul frunza)
   providers/      adaptoare externe: base (ABC), factory, mock/ (incl. tiktok.py), live/
-  ingestion/      Modulul 1 — context, ingestie, tiktok_ingestion.py (biblioteca RAG)
+  ingestion/      Modulul 1 — context, ingestie, tiktok_ingestion.py + swipe_ingestion.py (bibliotecile RAG)
   decision/       Modulul 2 — Thompson Sampling (Google+TikTok) + Markov + Kelly (kelly_sizing.py)
   alignment/      Modulul 3 — Quality Score + lichiditate Meta
   guardrails/     Modulul 4 — ApprovalGate + AbsoluteSpendLimiter
-  copywriter/     copy emotional Google + script UGC TikTok (engine, llm, swipe, pipeline)
+  copywriter/     copy emotional Google + script UGC TikTok + RAG omnicanal (engine, llm, swipe, pipeline)
   creative/       Modulul 5 — audio_engine (Fish Speech) + video_engine (Flick, 16:9/9:16) + factory
 tests/
   fixtures/       date de test locale

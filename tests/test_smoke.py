@@ -19,6 +19,8 @@ _COMMANDS = (
     "copy",
     "build-creative",
     "ingest-tiktok",
+    "ingest-swipes",
+    "copy-omnichannel",
     "propose",
     "execute",
     "status",

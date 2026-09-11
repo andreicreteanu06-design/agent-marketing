@@ -22,6 +22,10 @@ from ppc_agent.copywriter.models import (
     AdCopy,
     CopySpec,
     Framework,
+    OmniAdCopy,
+    OmniCopySpec,
+    OmniPlatform,
+    OmniSwipeRecord,
     TikTokAdCopy,
     TikTokCopySpec,
     TikTokSwipeRecord,
@@ -31,6 +35,7 @@ from ppc_agent.copywriter.swipe import (
     default_swipe_path,
     load_swipe_file,
     retrieve_framework,
+    retrieve_omnichannel_examples,
     retrieve_tiktok_examples,
 )
 from ppc_agent.errors import AdsLimitError, CopywriterError
@@ -141,6 +146,70 @@ def build_tiktok_system_prompt(examples: list[TikTokSwipeRecord]) -> str:
     )
 
 
+_OMNI_PLATFORM_GUIDANCE: dict[str, str] = {
+    "google": (
+        "Google Ads (Search/YouTube): limite stricte de caractere, intentie de "
+        "cautare ridicata - raspunzi direct la ce cauta cineva chiar acum, "
+        "garantii clare, text simplu si direct, fara poveste lunga."
+    ),
+    "meta": (
+        "Meta Ads (Facebook/Instagram): formate cu longevitate dovedita (o "
+        "reclama care ruleaza de saptamani nu se opreste din intamplare), stil "
+        "advertorial de povestire, hook emotional, corp de text mai lung - "
+        "cititorul deruleaza feed-ul, trebuie oprit cu o poveste, nu doar un titlu."
+    ),
+    "tiktok": (
+        "TikTok Ads: hook audio/vizual in primele 3 secunde, intrerupere de "
+        "tipar (pattern interrupt), ritm rapid, scenariu vorbit stil UGC nativ, "
+        "zero limbaj corporate."
+    ),
+}
+
+
+def build_omnichannel_system_prompt(
+    target_platform: OmniPlatform, examples: list[OmniSwipeRecord]
+) -> str:
+    """Construieste system prompt-ul omnicanal, cu ghidaj dinamic per platforma.
+
+    Spre deosebire de :func:`build_tiktok_system_prompt` (un singur canal),
+    aici tonul si structura variaza dupa ``target_platform`` — vezi
+    ``_OMNI_PLATFORM_GUIDANCE``. Exemplele injectate sunt deja filtrate pe
+    platforma (vezi :func:`~ppc_agent.copywriter.swipe.retrieve_omnichannel_examples`)
+    si validate prin semnale proxy (longevitate, numar de variante), nu prin ROI
+    auto-raportat. Schema ceruta e generata direct din
+    ``OmniAdCopy.model_json_schema()`` ca sa ramana sincronizata cu clasa.
+    """
+    schema_types = {
+        name: prop.get("type", "string")
+        for name, prop in OmniAdCopy.model_json_schema()["properties"].items()
+    }
+    example_lines = (
+        "\n".join(
+            f'  - [{example.niche}, {example.performance_signal}] '
+            f'hook ({example.hook_type}): "{example.hook_text}" | '
+            f'problema: "{example.problem_agitation}" | '
+            f'dovada: "{example.mechanism_proof}" | cta: "{example.offer_cta}"'
+            for example in examples
+        )
+        or "  (niciun exemplu recuperat pentru aceasta platforma - improvizeaza in ton)"
+    )
+    return (
+        "Esti copywriter de direct-response, expert in reclame platite pe mai "
+        "multe canale. Scrii concret, fara clisee, fara superlative goale.\n\n"
+        f"PLATFORMA: {target_platform.upper()}\n"
+        f"GHIDAJ: {_OMNI_PLATFORM_GUIDANCE[target_platform]}\n\n"
+        "EXEMPLE DOVEDITE (nu copia - inspira-te din structura si ritm; validate "
+        "prin longevitate si numar de variante active, nu prin ROI auto-raportat):\n"
+        f"{example_lines}\n\n"
+        "REGULI STRICTE:\n"
+        "- hook_type: eticheta scurta a tipului de hook (ex. pattern_interrupt, "
+        "relatable_pain_point, specific_number, high_intent_question)\n"
+        "- problem_agitation: numeste + adanceste problema, nu doar o mentioneaza\n"
+        "- mechanism_proof: de ce functioneaza solutia, concret, nu vag\n"
+        f"- raspunde DOAR cu JSON, exact campurile: {json.dumps(schema_types, ensure_ascii=False)}"
+    )
+
+
 class AdCopyGenerator:
     """Genereaza copy emotional pentru un cuvant cheie, cu un client injectat."""
 
@@ -239,6 +308,43 @@ class AdCopyGenerator:
         if last_error is None:  # pragma: no cover - bucla ruleaza mereu
             raise CopywriterError("generarea de copy a esuat fara un motiv clar")
         raise last_error
+
+    def generate_omnichannel_copy(
+        self, product_usp: str, niche: str, target_platform: OmniPlatform
+    ) -> dict[str, Any]:
+        """Genereaza copy omnicanal (Google/Meta/TikTok) din biblioteca unificata.
+
+        Cale separata de :meth:`generate_emotional_copy`: recuperarea RAG e dupa
+        nisa + platforma (nu declansator emotional), peste
+        ``omnichannel_swipe_library``, cu system prompt dedicat per canal. Fara
+        retry de lungime (limitele Google se aplica doar liniei istorice, nu
+        acesteia) — ``generate_emotional_copy`` ramane neschimbata pentru orice
+        cod existent.
+
+        Args:
+            product_usp: Propunerea unica de valoare a produsului / serviciului.
+            niche: Nisa / segmentul de piata tinta (nu un cuvant cheie exact-match).
+            target_platform: ``"google"``, ``"meta"`` sau ``"tiktok"``.
+
+        Returns:
+            Campurile :class:`~ppc_agent.copywriter.models.OmniAdCopy` ca dict.
+
+        Raises:
+            SwipeFileError: Daca ``omnichannel_swipe_library`` nu are nicio
+                intrare pentru ``target_platform``.
+            CopywriterError: Daca raspunsul clientului nu respecta schema.
+        """
+        examples = retrieve_omnichannel_examples(self._swipe, target_platform, niche)
+        system_prompt = build_omnichannel_system_prompt(target_platform, examples)
+        spec = OmniCopySpec(
+            product_usp=product_usp,
+            niche=" ".join(niche.split()),
+            target_platform=target_platform,
+            examples=examples,
+            system_prompt=system_prompt,
+        )
+        ad = self._client.generate_omnichannel(spec)
+        return ad.as_dict()
 
 
 def _force_keyword(ad: AdCopy, keyword: str) -> AdCopy:

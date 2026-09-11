@@ -23,7 +23,9 @@ from rich.console import Console
 from ppc_agent.alignment.pipeline import render_alignment, run_alignment
 from ppc_agent.config import AppConfig, load_config
 from ppc_agent.copywriter.engine import AdCopyGenerator
+from ppc_agent.copywriter.models import OmniPlatform
 from ppc_agent.copywriter.pipeline import append_to_queue, render_copy, run_copy
+from ppc_agent.copywriter.swipe import default_swipe_path
 from ppc_agent.creative.creative_pipeline import generate_full_ad_creative, render_creative
 from ppc_agent.creative.factory import CreativeFactory
 from ppc_agent.decision.pipeline import render_plan, run_plan
@@ -33,6 +35,7 @@ from ppc_agent.errors import (
     PpcAgentError,
     SetupRequiredError,
     SpendLimitExceeded,
+    SwipeIngestError,
     TikTokIngestError,
     TtsError,
     VideoAssemblyError,
@@ -45,6 +48,7 @@ from ppc_agent.guardrails.pipeline import (
 )
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
 from ppc_agent.ingestion.pipeline import render_ingestion, run_ingestion
+from ppc_agent.ingestion.swipe_ingestion import render_swipe_ingest, run_swipe_ingest
 from ppc_agent.ingestion.tiktok_ingestion import (
     LIBRARY_FILENAME,
     render_tiktok_ingest,
@@ -211,6 +215,68 @@ def ingest_tiktok(
         console.print(f"[red]ingestia a esuat:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     render_tiktok_ingest(added, Path.cwd() / LIBRARY_FILENAME, console)
+
+
+@app.command("ingest-swipes")
+def ingest_swipes(
+    csv_path: Annotated[
+        str, typer.Option("--csv", help="Cale catre CSV cu anunturi dovedite.")
+    ],
+    platform: Annotated[
+        OmniPlatform,
+        typer.Option("--platform", help="Platforma tuturor randurilor din CSV."),
+    ],
+) -> None:
+    """Valideaza anunturi si le adauga in omnichannel_swipe_library (swipe_file.json).
+
+    Fara LLM: intrarile sunt deja structurate, doar se valideaza si deduplica
+    dupa ad_id (derivat din continut). Scrie direct in swipe_file.json (spre
+    deosebire de 'ingest-tiktok', care acumuleaza intr-un fisier separat) —
+    biblioteca omnicanal alimenteaza RAG-ul folosit de 'copy-omnichannel'.
+    """
+    try:
+        added = run_swipe_ingest(csv_path, platform)
+    except SwipeIngestError as exc:
+        console.print(f"[red]ingestia a esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    render_swipe_ingest(added, default_swipe_path(), console)
+
+
+@app.command("copy-omnichannel")
+def copy_omnichannel(
+    niche: Annotated[
+        str, typer.Option("--niche", help="Nisa / segmentul de piata tinta.")
+    ],
+    usp: Annotated[
+        str, typer.Option("--usp", help="Propunerea unica de valoare a produsului.")
+    ],
+    target_platform: Annotated[
+        OmniPlatform,
+        typer.Option("--target-platform", help="google, meta sau tiktok."),
+    ] = "google",
+    config: _ConfigOption = "config.yaml",
+) -> None:
+    """Genereaza copy omnicanal (RAG pe nisa + platforma, swipe unificat).
+
+    Spre deosebire de 'copy' (declansator emotional, google/tiktok), aici
+    recuperarea e dupa nisa filtrata strict pe platforma, cu prompt dedicat per
+    canal (Google/Meta/TikTok). Doar afiseaza rezultatul - fara coada HITL
+    proprie in v1 (nu se publica nimic).
+    """
+    app_config = load_config(config)
+    generator = AdCopyGenerator(CreativeFactory(app_config).llm())
+    try:
+        result = generator.generate_omnichannel_copy(usp, niche, target_platform)
+    except SetupRequiredError as exc:
+        console.print(f"[red]clientul LLM nu e pregatit:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except CopywriterError as exc:
+        console.print(f"[red]nu s-a putut genera:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"\n[bold]Copy omnicanal[/bold] ({target_platform})")
+    for key, value in result.items():
+        console.print(f"  {key}: {value}", markup=False)
 
 
 @app.command()

@@ -87,5 +87,49 @@
       "mechanism_proof": "Nu se agata de haine, inchizatoarea nu se deschide singura, si arata la fel dupa 6 luni de purtat zilnic - nu doar in poza de produs.",
       "cta_text": "Vezi toata colectia din link"
     }
+  ],
+  "omnichannel_swipe_library": [
+    {
+      "ad_id": "om_google_001",
+      "platform": "google",
+      "niche": "reparatii auto cutie de viteze",
+      "format": "search_text",
+      "longevity_days": 90,
+      "variation_count": 6,
+      "performance_signal": "active_90_days_top_impression_share",
+      "hook_type": "high_intent_question",
+      "hook_text": "Cutie de viteze cu probleme? Diagnoza in 20 de minute",
+      "problem_agitation": "Simptomele ignorate acum devin o reparatie de cateva ori mai scumpa peste doar cateva luni.",
+      "mechanism_proof": "Diagnoza computerizata plus verificare mecanica manuala, cost fix comunicat inainte, fara surprize pe factura.",
+      "offer_cta": "Programeaza diagnoza azi"
+    },
+    {
+      "ad_id": "om_meta_001",
+      "platform": "meta",
+      "niche": "bijuterii bratara argint tenis",
+      "format": "advertorial_static",
+      "longevity_days": 75,
+      "variation_count": 12,
+      "performance_signal": "active_75_days_high_variation_count",
+      "hook_type": "relatable_pain_point",
+      "hook_text": "Mi-am dat seama ca toate bratarile mele \"argintii\" se innegresc in doua saptamani",
+      "problem_agitation": "Am cumparat cinci bratari diferite, promise ca argint, si toate au lasat pete verzi pe piele pana la urma.",
+      "mechanism_proof": "Argint 925 verificat cu test de aciditate, certificat de puritate atasat, comparatie directa cu bratara veche in aceeasi poza.",
+      "offer_cta": "Vezi testul complet si comanda din link"
+    },
+    {
+      "ad_id": "om_tiktok_001",
+      "platform": "tiktok",
+      "niche": "reparatii auto revizie mecanica",
+      "format": "ugc_video",
+      "longevity_days": 40,
+      "variation_count": 9,
+      "performance_signal": "active_40_days_high_completion_rate",
+      "hook_type": "pattern_interrupt",
+      "hook_text": "Opreste-te - masina ta iti spune ceva chiar acum",
+      "problem_agitation": "Zgomotul pe care il ignori de doua saptamani nu dispare singur, doar se agraveaza.",
+      "mechanism_proof": "Filmez fiecare diagnoza live si iti arat piesa uzata pe camera inainte sa o schimb, nu doar iti spun.",
+      "offer_cta": "Scrie-mi in comentarii sau link in bio"
+    }
   ]
 }

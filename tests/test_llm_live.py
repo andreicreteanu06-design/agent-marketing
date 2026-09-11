@@ -14,6 +14,7 @@ import pytest
 from ppc_agent.config import AppConfig, ProviderMode, Settings
 from ppc_agent.copywriter.engine import (
     AdCopyGenerator,
+    build_omnichannel_system_prompt,
     build_system_prompt,
     build_tiktok_system_prompt,
 )
@@ -22,6 +23,8 @@ from ppc_agent.copywriter.models import (
     DESCRIPTION_LIMIT,
     HEADLINE_LIMIT,
     CopySpec,
+    OmniCopySpec,
+    OmniSwipeRecord,
     TikTokCopySpec,
     TikTokSwipeRecord,
     char_count,
@@ -77,6 +80,42 @@ def _tiktok_spec(examples: list[TikTokSwipeRecord] | None = None) -> TikTokCopyS
         target_keyword="program facturare",
         emotion_trigger="fomo",
         examples=[resolved] if isinstance(resolved, TikTokSwipeRecord) else resolved,
+        system_prompt=system_prompt,
+    )
+
+
+_OMNI_EXAMPLE = OmniSwipeRecord(
+    ad_id="om1",
+    platform="tiktok",
+    niche="reparatii auto cutie de viteze",
+    format="ugc_video",
+    longevity_days=30,
+    variation_count=4,
+    performance_signal="active_30_days",
+    hook_type="pattern_interrupt",
+    hook_text="hook dovedit",
+    problem_agitation="problema dovedita",
+    mechanism_proof="dovada dovedita",
+    offer_cta="cta dovedit",
+)
+
+_VALID_OMNI_AD = {
+    "hook_type": "pattern_interrupt",
+    "hook_text": "Nu mai face asta",
+    "problem_agitation": "Uite ce se intampla daca ignori",
+    "mechanism_proof": "Uite dovada clara",
+    "offer_cta": "Link in bio",
+}
+
+
+def _omni_spec(examples: list[OmniSwipeRecord] | None = None) -> OmniCopySpec:
+    resolved = [_OMNI_EXAMPLE] if examples is None else examples
+    system_prompt = build_omnichannel_system_prompt("tiktok", resolved)
+    return OmniCopySpec(
+        product_usp=_USP,
+        niche="program facturare",
+        target_platform="tiktok",
+        examples=resolved,
         system_prompt=system_prompt,
     )
 
@@ -320,6 +359,43 @@ def test_generate_tiktok_missing_fields_raises_copywriter_error() -> None:
         client.generate_tiktok(_tiktok_spec())
 
 
+def test_generate_omnichannel_parses_valid_json_content() -> None:
+    client = LiveLLMClient(model="llama3", transport=_ok_transport(_VALID_OMNI_AD))
+    ad = client.generate_omnichannel(_omni_spec())
+    assert ad.hook_text == _VALID_OMNI_AD["hook_text"]
+    assert ad.offer_cta == _VALID_OMNI_AD["offer_cta"]
+
+
+def test_generate_omnichannel_shares_error_handling_with_generate() -> None:
+    """Aceeasi cale (_call_ollama_chat) => aceleasi erori clare, fara duplicare."""
+    client = LiveLLMClient(
+        model="llama3", transport=_raising_transport(httpx.ConnectError("refuzat"))
+    )
+    with pytest.raises(SetupRequiredError, match="ollama serve"):
+        client.generate_omnichannel(_omni_spec())
+
+
+def test_generate_omnichannel_num_gpu_is_included_when_set() -> None:
+    captured: list[httpx.Request] = []
+    client = LiveLLMClient(
+        model="llama3",
+        num_gpu=0,
+        transport=_capturing_transport(_VALID_OMNI_AD, captured),
+    )
+    client.generate_omnichannel(_omni_spec())
+    body = json.loads(captured[0].content)
+    assert body["options"]["num_gpu"] == 0
+
+
+def test_generate_omnichannel_missing_fields_raises_copywriter_error() -> None:
+    client = LiveLLMClient(
+        model="llama3",
+        transport=_raw_content_transport(json.dumps({"hook_text": "doar asta"})),
+    )
+    with pytest.raises(CopywriterError, match="OmniAdCopy"):
+        client.generate_omnichannel(_omni_spec())
+
+
 def test_creative_factory_wires_model_and_endpoint_from_settings() -> None:
     cfg = AppConfig(
         settings=Settings(
@@ -399,3 +475,18 @@ def test_ad_copy_generator_tiktok_end_to_end_with_live_client() -> None:
         "creative_angle",
     }
     assert result["text_overlay"] == _VALID_TIKTOK_AD["text_overlay"]
+
+
+def test_ad_copy_generator_omnichannel_end_to_end_with_live_client() -> None:
+    """Integrare: AdCopyGenerator (RAG pe nisa+platforma) peste un LiveLLMClient simulat."""
+    client = LiveLLMClient(model="llama3", transport=_ok_transport(_VALID_OMNI_AD))
+    generator = AdCopyGenerator(client)
+    result = generator.generate_omnichannel_copy(_USP, "bratara argint", "meta")
+    assert set(result) == {
+        "hook_type",
+        "hook_text",
+        "problem_agitation",
+        "mechanism_proof",
+        "offer_cta",
+    }
+    assert result["offer_cta"] == _VALID_OMNI_AD["offer_cta"]

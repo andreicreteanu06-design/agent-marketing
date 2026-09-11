@@ -68,6 +68,15 @@ class TikTokIngestError(CopywriterError):
     """
 
 
+class SwipeIngestError(CopywriterError):
+    """Ingestia bibliotecii omnicanal a esuat.
+
+    Fisierul CSV de intrare lipseste/e gol/are coloane lipsa, un rand nu respecta
+    schema :class:`~ppc_agent.copywriter.models.OmniSwipeRecord`, sau
+    ``swipe_file.json`` (tinta ingestiei) nu e JSON valid.
+    """
+
+
 class AdsLimitError(CopywriterError):
     """Un text de anunt depaseste limita Google Ads (headline 30 / descriere 90).
 

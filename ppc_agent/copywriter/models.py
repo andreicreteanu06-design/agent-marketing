@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 FrameworkStyle = Literal["pas", "status", "fomo", "aida"]
+OmniPlatform = Literal["google", "meta", "tiktok"]
 
 HEADLINE_LIMIT = 30
 DESCRIPTION_LIMIT = 90
@@ -56,11 +57,73 @@ class TikTokSwipeRecord(BaseModel):
     cta_text: str
 
 
+class OmniSwipeRecord(BaseModel):
+    """O intrare in biblioteca omnicanal (Google/Meta/TikTok) cu performanta dovedita.
+
+    Spre deosebire de :class:`TikTokSwipeRecord` (un singur canal), aceasta
+    schema unifica toate platformele si separa explicit trei zone: identitatea
+    anuntului (asset), semnalele de validare de tip proxy — ``longevity_days``
+    si ``variation_count`` (un anunt care ruleaza mult timp sau are multe
+    variante active e, de regula, profitabil — spre deosebire de un ROI
+    auto-raportat, usor de umflat) — si copy-ul semantic propriu-zis.
+    """
+
+    # Asset
+    ad_id: str
+    platform: OmniPlatform
+    niche: str
+    format: str
+
+    # Validation proxy
+    longevity_days: int | None = None
+    variation_count: int | None = None
+    performance_signal: str
+
+    # Semantic / copy
+    hook_type: str
+    hook_text: str
+    problem_agitation: str
+    mechanism_proof: str
+    offer_cta: str
+
+
+class OmniAdCopy(BaseModel):
+    """Copy-ul final generat pentru un anunt omnicanal (Google/Meta/TikTok)."""
+
+    hook_type: str
+    hook_text: str
+    problem_agitation: str
+    mechanism_proof: str
+    offer_cta: str
+
+    def as_dict(self) -> dict[str, str]:
+        """Forma ceruta la iesire — aceleasi 5 chei semantice ca :class:`OmniSwipeRecord`."""
+        return {
+            "hook_type": self.hook_type,
+            "hook_text": self.hook_text,
+            "problem_agitation": self.problem_agitation,
+            "mechanism_proof": self.mechanism_proof,
+            "offer_cta": self.offer_cta,
+        }
+
+
+class OmniCopySpec(BaseModel):
+    """Tot ce ii trebuie unui :class:`~ppc_agent.copywriter.llm.BaseLLMClient` sa
+    genereze un :class:`OmniAdCopy`."""
+
+    product_usp: str
+    niche: str
+    target_platform: OmniPlatform
+    examples: list[OmniSwipeRecord] = Field(default_factory=list)
+    system_prompt: str
+
+
 class SwipeFile(BaseModel):
     """Continutul ``swipe_file.json``."""
 
     frameworks: list[Framework] = Field(min_length=1)
     tiktok_swipe_library: list[TikTokSwipeRecord] = Field(default_factory=list)
+    omnichannel_swipe_library: list[OmniSwipeRecord] = Field(default_factory=list)
 
     def styles(self) -> list[str]:
         """Stilurile disponibile, in ordine."""

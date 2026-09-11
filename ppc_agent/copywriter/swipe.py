@@ -13,11 +13,17 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ppc_agent.copywriter.models import Framework, SwipeFile, TikTokSwipeRecord
+from ppc_agent.copywriter.models import (
+    Framework,
+    OmniSwipeRecord,
+    SwipeFile,
+    TikTokSwipeRecord,
+)
 from ppc_agent.errors import SwipeFileError
 from ppc_agent.texttools import normalize, tokenize
 
 _DEFAULT_TIKTOK_EXAMPLES = 2
+_DEFAULT_OMNI_EXAMPLES = 2
 
 # Sinonime pentru declansatorul emotional -> stil de framework.
 _TRIGGER_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -157,6 +163,63 @@ def retrieve_tiktok_examples(
         key=lambda record: (
             _niche_overlap(record, keyword_tokens),
             record.days_active_proxy,
+        ),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
+def _omni_niche_overlap(record: OmniSwipeRecord, niche_tokens: set[str]) -> int:
+    haystack = set(tokenize(f"{record.niche} {record.format}"))
+    return len(haystack & niche_tokens)
+
+
+def retrieve_omnichannel_examples(
+    swipe: SwipeFile,
+    target_platform: str,
+    niche: str,
+    *,
+    limit: int = _DEFAULT_OMNI_EXAMPLES,
+) -> list[OmniSwipeRecord]:
+    """Cele mai relevante intrari din ``omnichannel_swipe_library`` pentru
+    ``target_platform`` + ``niche``.
+
+    Filtrare stricta dupa platforma (un anunt Meta nu e un exemplu util de ton
+    pentru Google), apoi acelasi RAG prin suprapunere de jetoane ca la
+    :func:`retrieve_tiktok_examples`. La egalitate de scor, castiga intrarea cu
+    semnale proxy de performanta mai puternice — ``longevity_days`` (activa mai
+    mult timp), apoi ``variation_count`` (mai multe variante active) — nu un ROI
+    auto-raportat, usor de umflat.
+
+    Args:
+        swipe: Continutul swipe file.
+        target_platform: ``"google"``, ``"meta"`` sau ``"tiktok"``.
+        niche: Nisa / segmentul de piata tinta.
+        limit: Numarul maxim de exemple returnate.
+
+    Returns:
+        Pana la ``limit`` intrari, ordonate descrescator dupa relevanta.
+
+    Raises:
+        SwipeFileError: Daca nicio intrare din ``omnichannel_swipe_library`` nu
+            apartine platformei cerute.
+    """
+    candidates = [
+        record for record in swipe.omnichannel_swipe_library if record.platform == target_platform
+    ]
+    if not candidates:
+        raise SwipeFileError(
+            f"omnichannel_swipe_library nu are nicio intrare pentru platforma "
+            f"'{target_platform}' - ruleaza 'ingest-swipes --platform {target_platform}' "
+            "sau adauga intrari manual"
+        )
+    niche_tokens = set(tokenize(niche))
+    ranked = sorted(
+        candidates,
+        key=lambda record: (
+            _omni_niche_overlap(record, niche_tokens),
+            record.longevity_days or 0,
+            record.variation_count or 0,
         ),
         reverse=True,
     )

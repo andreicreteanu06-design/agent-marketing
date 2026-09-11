@@ -22,6 +22,8 @@ from pydantic import ValidationError
 from ppc_agent.copywriter.models import (
     AdCopy,
     CopySpec,
+    OmniAdCopy,
+    OmniCopySpec,
     TikTokAdCopy,
     TikTokCopySpec,
     char_count,
@@ -51,6 +53,17 @@ class BaseLLMClient(ABC):
         """
         raise NotImplementedError(
             f"{type(self).__name__} nu suporta generarea de copy TikTok"
+        )
+
+    def generate_omnichannel(self, spec: OmniCopySpec) -> OmniAdCopy:
+        """Genereaza copy omnicanal (Google/Meta/TikTok) conform ``spec``.
+
+        Metoda concreta (nu abstracta), acelasi motiv ca la
+        :meth:`generate_tiktok`: clientii de test existenti raman instantiabili
+        fara modificari; clientii reali o suprascriu.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} nu suporta generarea de copy omnicanal"
         )
 
 
@@ -229,6 +242,33 @@ class MockLLMClient(BaseLLMClient):
             creative_angle=angle,
         )
 
+    def generate_omnichannel(self, spec: OmniCopySpec) -> OmniAdCopy:
+        """Randeaza :class:`OmniAdCopy` determinist din ``spec``.
+
+        Foloseste cel mai relevant exemplu recuperat (daca exista) ca ancora
+        pentru hook/problema/dovada/cta — nu copiaza text 1:1, la fel ca partea
+        Google si TikTok de mai sus.
+        """
+        niche = " ".join(spec.niche.split())
+        usp = " ".join(spec.product_usp.split()).rstrip(".")
+        example = spec.examples[0] if spec.examples else None
+
+        proof = f"{usp}." if usp else f"Solutie dovedita pentru {niche}."
+        if example is not None:
+            proof = f"{proof} {example.mechanism_proof}"
+
+        return OmniAdCopy(
+            hook_type=example.hook_type if example else "direct_offer",
+            hook_text=example.hook_text if example else f"Ai nevoie de {niche}?",
+            problem_agitation=(
+                example.problem_agitation
+                if example
+                else f"Problema cu {niche} nu se rezolva singura."
+            ),
+            mechanism_proof=proof,
+            offer_cta=example.offer_cta if example else "Afla mai multe",
+        )
+
 
 _DEFAULT_ENDPOINT = "http://localhost:11434"
 _DEFAULT_TIMEOUT = 60.0
@@ -278,6 +318,26 @@ def _build_tiktok_user_prompt(spec: TikTokCopySpec) -> str:
         'Raspunde DOAR cu JSON: {"visual_hook_concept": "...", "audio_hook": "...", '
         '"body_script": "...", "text_overlay": ["...", "..."], "call_to_action": "...", '
         '"creative_angle": "..."}'
+    )
+    return "\n".join(lines)
+
+
+def _build_omni_user_prompt(spec: OmniCopySpec) -> str:
+    """User prompt-ul omnicanal, cu exemplele dovedite (filtrate pe platforma) ca ancora RAG."""
+    lines = [
+        f"Nisa / segment tinta: {spec.niche}",
+        f"Platforma tinta: {spec.target_platform}",
+        f"USP produs/serviciu: {spec.product_usp}",
+    ]
+    for example in spec.examples:
+        lines.append(
+            f"Exemplu dovedit ({example.niche}, {example.performance_signal}): "
+            f'hook "{example.hook_text}" | problema "{example.problem_agitation}" | '
+            f'dovada "{example.mechanism_proof}" | cta "{example.offer_cta}"'
+        )
+    lines.append(
+        'Raspunde DOAR cu JSON: {"hook_type": "...", "hook_text": "...", '
+        '"problem_agitation": "...", "mechanism_proof": "...", "offer_cta": "..."}'
     )
     return "\n".join(lines)
 
@@ -431,4 +491,23 @@ class LiveLLMClient(BaseLLMClient):
             raise CopywriterError(
                 f"raspunsul modelului '{self._model}' nu e JSON valid pentru "
                 f"schema TikTokAdCopy: {exc}"
+            ) from exc
+
+    def generate_omnichannel(self, spec: OmniCopySpec) -> OmniAdCopy:
+        """Cere modelului Ollama copy omnicanal (Google/Meta/TikTok) conform ``spec``.
+
+        Raises:
+            SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
+            CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid cu
+                schema :class:`OmniAdCopy`.
+        """
+        try:
+            parsed = self._call_ollama_chat(
+                spec.system_prompt, _build_omni_user_prompt(spec)
+            )
+            return OmniAdCopy.model_validate(parsed)
+        except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise CopywriterError(
+                f"raspunsul modelului '{self._model}' nu e JSON valid pentru "
+                f"schema OmniAdCopy: {exc}"
             ) from exc
