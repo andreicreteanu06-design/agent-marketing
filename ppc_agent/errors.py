@@ -105,3 +105,20 @@ class TtsError(CreativeError):
 
 class VideoAssemblyError(CreativeError):
     """Asamblarea video (Flick) a esuat sau a primit intrari invalide."""
+
+
+class StoryboardValidationError(CreativeError):
+    """Un storyboard generat nu respecta regulile deterministe de productie video.
+
+    Ridicata de :class:`~ppc_agent.creative.video_qa.StoryboardValidator`.
+    Niciun storyboard care incalca ritmul/tipografia/regula CTA/timeline-ul nu
+    ajunge sa fie salvat.
+
+    Attributes:
+        issues: Toate problemele gasite (nu doar prima).
+    """
+
+    def __init__(self, issues: list[str]) -> None:
+        self.issues = issues
+        joined = "; ".join(issues)
+        super().__init__(f"storyboard invalid ({len(issues)} probleme): {joined}")

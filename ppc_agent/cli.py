@@ -26,7 +26,12 @@ from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.copywriter.models import OmniPlatform
 from ppc_agent.copywriter.pipeline import append_to_queue, render_copy, run_copy
 from ppc_agent.copywriter.swipe import default_swipe_path
-from ppc_agent.creative.creative_pipeline import generate_full_ad_creative, render_creative
+from ppc_agent.creative.creative_pipeline import (
+    generate_and_save_storyboard,
+    generate_full_ad_creative,
+    render_creative,
+    render_storyboard,
+)
 from ppc_agent.creative.factory import CreativeFactory
 from ppc_agent.decision.pipeline import render_plan, run_plan
 from ppc_agent.errors import (
@@ -35,6 +40,7 @@ from ppc_agent.errors import (
     PpcAgentError,
     SetupRequiredError,
     SpendLimitExceeded,
+    StoryboardValidationError,
     SwipeIngestError,
     TikTokIngestError,
     TtsError,
@@ -194,6 +200,46 @@ def build_creative(
 
     render_creative(result, console)
     console.print(f"\n{result.mp4_path}")
+
+
+@app.command("build-storyboard")
+def build_storyboard(
+    keyword: Annotated[
+        str, typer.Option("--keyword", help="Cuvantul cheie / nisa tinta.")
+    ],
+    usp: Annotated[
+        str, typer.Option("--usp", help="Propunerea unica de valoare (optional).")
+    ] = "",
+    config: _ConfigOption = "config.yaml",
+) -> None:
+    """Genereaza un storyboard video programatic (Lead Performance Creative Director).
+
+    LLM-ul regizeaza, nu doar scrie: scene cronometrate, text pozitionat in
+    zone sigure, piste audio separate. Validat determinist (ritm/tipografie/
+    CTA/timeline) inainte de salvare; scrie storyboard_*.json in
+    creative_output/. Fara b-roll/TTS/asamblare video (spre deosebire de
+    'build-creative') - e un document de pre-productie, nu un .mp4 final.
+    """
+    app_config = load_config(config)
+    factory = CreativeFactory(app_config)
+    try:
+        storyboard, path = generate_and_save_storyboard(
+            factory.llm(),
+            product_usp=usp or f"Solutie pentru {keyword}, rapid si fara batai de cap",
+            target_keyword=keyword,
+            output_dir=Path.cwd() / "creative_output",
+        )
+    except SetupRequiredError as exc:
+        console.print(f"[red]clientul LLM nu e pregatit:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except StoryboardValidationError as exc:
+        console.print(f"[red]storyboard invalid:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except CopywriterError as exc:
+        console.print(f"[red]nu s-a putut genera:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    render_storyboard(storyboard, path, console)
 
 
 @app.command()

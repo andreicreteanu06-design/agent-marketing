@@ -15,6 +15,7 @@ from ppc_agent.config import AppConfig, ProviderMode, Settings
 from ppc_agent.copywriter.engine import (
     AdCopyGenerator,
     build_omnichannel_system_prompt,
+    build_storyboard_system_prompt,
     build_system_prompt,
     build_tiktok_system_prompt,
 )
@@ -25,12 +26,14 @@ from ppc_agent.copywriter.models import (
     CopySpec,
     OmniCopySpec,
     OmniSwipeRecord,
+    StoryboardSpec,
     TikTokCopySpec,
     TikTokSwipeRecord,
     char_count,
 )
 from ppc_agent.copywriter.swipe import default_swipe_path, load_swipe_file, retrieve_framework
 from ppc_agent.creative.factory import CreativeFactory
+from ppc_agent.creative.video_qa import StoryboardValidator
 from ppc_agent.errors import CopywriterError, SetupRequiredError
 
 _USP = "Emite facturi in 30 de secunde, cu e-Factura inclusa"
@@ -115,6 +118,47 @@ def _omni_spec(examples: list[OmniSwipeRecord] | None = None) -> OmniCopySpec:
         product_usp=_USP,
         niche="program facturare",
         target_platform="tiktok",
+        examples=resolved,
+        system_prompt=system_prompt,
+    )
+
+
+_VALID_STORYBOARD_JSON = {
+    "job_id": "live1",
+    "duration_seconds": 20.0,
+    "canvas": {"width": 1080, "height": 1920, "fps": 30, "safe_zone_profile": "tiktok_9x16"},
+    "scenes": [
+        {
+            "id": "s1",
+            "start_time": 0.0,
+            "end_time": 20.0,
+            "purpose": "hook",
+            "visual_broll_prompt": "zoom rapid, intrerupere de tipar",
+            "text_layers": [
+                {
+                    "type": "cta",
+                    "text": "Comanda acum din link",
+                    "start_time": 15.0,
+                    "duration": 5.0,
+                    "anchor_position": "safe_center",
+                    "highlight_words": [],
+                    "contrast_mode": "adaptive_backplate",
+                }
+            ],
+            "audio": [
+                {"type": "voiceover", "asset_ref": "a.wav", "start_time": 0.0, "volume": 1.0}
+            ],
+        }
+    ],
+}
+
+
+def _storyboard_spec(examples: list[TikTokSwipeRecord] | None = None) -> StoryboardSpec:
+    resolved = [_TIKTOK_EXAMPLE] if examples is None else examples
+    system_prompt = build_storyboard_system_prompt(resolved)
+    return StoryboardSpec(
+        product_usp=_USP,
+        target_keyword="program facturare",
         examples=resolved,
         system_prompt=system_prompt,
     )
@@ -396,6 +440,45 @@ def test_generate_omnichannel_missing_fields_raises_copywriter_error() -> None:
         client.generate_omnichannel(_omni_spec())
 
 
+def test_generate_storyboard_parses_valid_json_content() -> None:
+    client = LiveLLMClient(model="llama3", transport=_ok_transport(_VALID_STORYBOARD_JSON))
+    storyboard = client.generate_storyboard(_storyboard_spec())
+    assert storyboard.job_id == "live1"
+    assert storyboard.duration_seconds == 20.0
+    assert storyboard.scenes[0].purpose == "hook"
+    assert storyboard.scenes[0].text_layers[0].type == "cta"
+
+
+def test_generate_storyboard_shares_error_handling_with_generate() -> None:
+    """Aceeasi cale (_call_ollama_chat) => aceleasi erori clare, fara duplicare."""
+    client = LiveLLMClient(
+        model="llama3", transport=_raising_transport(httpx.ConnectError("refuzat"))
+    )
+    with pytest.raises(SetupRequiredError, match="ollama serve"):
+        client.generate_storyboard(_storyboard_spec())
+
+
+def test_generate_storyboard_num_gpu_is_included_when_set() -> None:
+    captured: list[httpx.Request] = []
+    client = LiveLLMClient(
+        model="llama3",
+        num_gpu=0,
+        transport=_capturing_transport(_VALID_STORYBOARD_JSON, captured),
+    )
+    client.generate_storyboard(_storyboard_spec())
+    body = json.loads(captured[0].content)
+    assert body["options"]["num_gpu"] == 0
+
+
+def test_generate_storyboard_missing_fields_raises_copywriter_error() -> None:
+    client = LiveLLMClient(
+        model="llama3",
+        transport=_raw_content_transport(json.dumps({"job_id": "doar asta"})),
+    )
+    with pytest.raises(CopywriterError, match="Storyboard"):
+        client.generate_storyboard(_storyboard_spec())
+
+
 def test_creative_factory_wires_model_and_endpoint_from_settings() -> None:
     cfg = AppConfig(
         settings=Settings(
@@ -490,3 +573,12 @@ def test_ad_copy_generator_omnichannel_end_to_end_with_live_client() -> None:
         "offer_cta",
     }
     assert result["offer_cta"] == _VALID_OMNI_AD["offer_cta"]
+
+
+def test_ad_copy_generator_storyboard_end_to_end_with_live_client() -> None:
+    """Integrare: AdCopyGenerator (RAG + validare QA) peste un LiveLLMClient simulat."""
+    client = LiveLLMClient(model="llama3", transport=_ok_transport(_VALID_STORYBOARD_JSON))
+    generator = AdCopyGenerator(client)
+    storyboard = generator.generate_storyboard(_USP, "cutie de viteze auto")
+    assert storyboard.job_id == "live1"
+    StoryboardValidator().validate(storyboard)  # nu ridica - deja validat la generare

@@ -11,16 +11,20 @@ from typer.testing import CliRunner
 from ppc_agent.cli import app
 from ppc_agent.config import AppConfig, ProviderMode, Settings
 from ppc_agent.copywriter.llm import BaseLLMClient, LiveLLMClient, MockLLMClient
-from ppc_agent.copywriter.models import AdCopy, CopySpec, TikTokAdCopy
+from ppc_agent.copywriter.models import AdCopy, CopySpec, StoryboardSpec, TikTokAdCopy
 from ppc_agent.creative.audio_engine import FishSpeechClient, MockFishSpeechClient
 from ppc_agent.creative.creative_pipeline import (
     build_tiktok_vo_script,
     build_vo_script,
+    generate_and_save_storyboard,
     generate_full_ad_creative,
+    save_storyboard,
 )
 from ppc_agent.creative.factory import CreativeFactory
 from ppc_agent.creative.video_engine import FlickVideoBuilder, MockFlickBuilder
-from ppc_agent.errors import VideoAssemblyError
+from ppc_agent.creative.video_models import Scene, Storyboard
+from ppc_agent.creative.video_qa import StoryboardValidator
+from ppc_agent.errors import StoryboardValidationError, VideoAssemblyError
 
 runner = CliRunner()
 
@@ -125,6 +129,68 @@ def test_build_tiktok_vo_script_combines_hook_body_cta() -> None:
     assert script == "Nu mai face asta. Uite dovada. Link in bio."
 
 
+def test_generate_and_save_storyboard_writes_json_file(tmp_path: Path) -> None:
+    storyboard, path = generate_and_save_storyboard(
+        MockLLMClient(),
+        product_usp="Diagnoza in 30 de minute, pret fix",
+        target_keyword="cutie de viteze auto",
+        output_dir=tmp_path / "out",
+    )
+    assert path.is_file()
+    assert path.name.startswith("storyboard_")
+    assert "cutie-de-viteze-auto" in path.name
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["job_id"] == storyboard.job_id
+    assert len(raw["scenes"]) == len(storyboard.scenes)
+    StoryboardValidator().validate(storyboard)  # nu ridica
+
+
+def test_save_storyboard_uses_keyword_not_job_id_for_filename(tmp_path: Path) -> None:
+    storyboard, _ = generate_and_save_storyboard(
+        MockLLMClient(),
+        product_usp="x",
+        target_keyword="bratara argint",
+        output_dir=tmp_path / "unused",
+    )
+    path = save_storyboard(storyboard, "alt cuvant cheie", tmp_path / "out2")
+    assert "alt-cuvant-cheie" in path.name
+    assert storyboard.job_id not in path.name
+
+
+def test_generate_and_save_storyboard_rejects_invalid_output(tmp_path: Path) -> None:
+    """Un storyboard care incalca regulile QA nu ajunge sa fie salvat."""
+
+    class _BadStoryboardLLM(BaseLLMClient):
+        def generate(self, spec: CopySpec) -> AdCopy:
+            raise AssertionError("nu ar trebui apelat")
+
+        def generate_storyboard(self, spec: StoryboardSpec) -> Storyboard:
+            return Storyboard(
+                job_id="bad",
+                duration_seconds=99.0,  # depaseste plafonul de 30s
+                scenes=[
+                    Scene(
+                        id="s1",
+                        start_time=0.0,
+                        end_time=99.0,
+                        purpose="hook",
+                        visual_broll_prompt="x",
+                    )
+                ],
+            )
+
+    out_dir = tmp_path / "out"
+    with pytest.raises(StoryboardValidationError):
+        generate_and_save_storyboard(
+            _BadStoryboardLLM(),
+            product_usp="x",
+            target_keyword="test",
+            output_dir=out_dir,
+        )
+    assert not out_dir.exists() or not list(out_dir.glob("storyboard_*.json"))
+
+
 def test_missing_broll_raises(tmp_path: Path) -> None:
     with pytest.raises(VideoAssemblyError):
         generate_full_ad_creative(
@@ -207,6 +273,22 @@ def test_cli_build_creative_tiktok_platform_produces_9_16_mp4(
     assert len(produced) == 1
     manifest = json.loads(Path(f"{produced[0]}.manifest.json").read_text(encoding="utf-8"))
     assert manifest["aspect_ratio"] == "9:16"
+
+
+def test_cli_build_storyboard_writes_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["build-storyboard", "--keyword", "cutie de viteze auto", "--usp", "Diagnoza rapida"]
+    )
+    assert result.exit_code == 0
+    assert "Storyboard generat" in result.output
+
+    produced = list((tmp_path / "creative_output").glob("storyboard_*.json"))
+    assert len(produced) == 1
+    raw = json.loads(produced[0].read_text(encoding="utf-8"))
+    assert raw["scenes"]
 
 
 def test_cli_build_creative_missing_broll_exits_nonzero(

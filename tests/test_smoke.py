@@ -18,6 +18,7 @@ _COMMANDS = (
     "plan",
     "copy",
     "build-creative",
+    "build-storyboard",
     "ingest-tiktok",
     "ingest-swipes",
     "copy-omnichannel",

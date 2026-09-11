@@ -26,11 +26,13 @@ from ppc_agent.copywriter.models import (
     OmniCopySpec,
     OmniPlatform,
     OmniSwipeRecord,
+    StoryboardSpec,
     TikTokAdCopy,
     TikTokCopySpec,
     TikTokSwipeRecord,
     char_count,
 )
+from ppc_agent.copywriter.prompts import ART_DIRECTOR_INSTRUCTIONS, STORYBOARD_FORMAT_EXAMPLE
 from ppc_agent.copywriter.swipe import (
     default_swipe_path,
     load_swipe_file,
@@ -38,6 +40,8 @@ from ppc_agent.copywriter.swipe import (
     retrieve_omnichannel_examples,
     retrieve_tiktok_examples,
 )
+from ppc_agent.creative.video_models import Storyboard
+from ppc_agent.creative.video_qa import StoryboardValidator
 from ppc_agent.errors import AdsLimitError, CopywriterError
 from ppc_agent.texttools import contains_phrase
 
@@ -210,6 +214,51 @@ def build_omnichannel_system_prompt(
     )
 
 
+def build_storyboard_system_prompt(examples: list[TikTokSwipeRecord]) -> str:
+    """Construieste system prompt-ul pentru storyboard-uri video programatice.
+
+    Spre deosebire de :func:`build_tiktok_system_prompt` (script plat: hook/
+    body/cta ca text), aici LLM-ul e Lead Performance Creative Director - iese
+    un :class:`~ppc_agent.creative.video_models.Storyboard` cu scene
+    cronometrate, text pozitionat in zone sigure si piste audio separate,
+    productie-ready. Regulile de regie vin din ``ART_DIRECTOR_INSTRUCTIONS``;
+    formatul cerut e un exemplu construit din instantierea reala a modelelor
+    (``STORYBOARD_FORMAT_EXAMPLE``) - nu poate deveni tacit inconsistent cu
+    schema (vezi ``copywriter/prompts.py``).
+    """
+    example_lines = (
+        "\n".join(
+            f'  - [{example.niche}, activ {example.days_active_proxy} zile] '
+            f'hook: "{example.hook_audio}" | dovada: "{example.mechanism_proof}" | '
+            f'cta: "{example.cta_text}"'
+            for example in examples
+        )
+        or "  (niciun exemplu recuperat - improvizeaza in stilul UGC TikTok)"
+    )
+    example_json = json.dumps(
+        STORYBOARD_FORMAT_EXAMPLE.model_dump(), ensure_ascii=False, indent=2
+    )
+    return (
+        "Esti Lead Performance Creative Director - regizezi reclame video "
+        "scurte (9:16, 1080x1920, 30fps) ca pentru productie reala, nu doar "
+        "scrii text de citit.\n\n"
+        f"{ART_DIRECTOR_INSTRUCTIONS}\n\n"
+        "EXEMPLE DOVEDITE DIN BIBLIOTECA (nu copia continutul - inspira-te din "
+        "ritm si structura):\n"
+        f"{example_lines}\n\n"
+        "REGULI STRICTE DE FORMAT:\n"
+        "- duration_seconds <= 30\n"
+        "- fiecare scena: end_time > start_time, fara goluri neasteptate intre scene\n"
+        "- caption-uri (text_layers de tip 'caption'): 24-32 caractere, durata "
+        "minima 0.9 secunde (ideal 1.5)\n"
+        "- un overlay de tip 'cta' trebuie sa apara in ultimele 3-6 secunde ale "
+        "video-ului si sa ramana vizibil minimum 2.0 secunde\n"
+        "- raspunde DOAR cu JSON valid, EXACT aceasta structura (doar formatul, "
+        "nu continutul din exemplu):\n"
+        f"{example_json}"
+    )
+
+
 class AdCopyGenerator:
     """Genereaza copy emotional pentru un cuvant cheie, cu un client injectat."""
 
@@ -345,6 +394,46 @@ class AdCopyGenerator:
         )
         ad = self._client.generate_omnichannel(spec)
         return ad.as_dict()
+
+    def generate_storyboard(self, product_usp: str, target_keyword: str) -> Storyboard:
+        """Genereaza si valideaza un storyboard video programatic.
+
+        Cale noua, separata de ``generate_emotional_copy``/
+        ``generate_omnichannel_copy``: LLM-ul e regizor de creatie (Lead
+        Performance Creative Director), nu copywriter - iese un
+        :class:`~ppc_agent.creative.video_models.Storyboard` cu scene
+        cronometrate, nu text plat. Validat determinist
+        (:class:`~ppc_agent.creative.video_qa.StoryboardValidator`) inainte de
+        returnare - niciun storyboard care incalca regulile de productie
+        (ritm/tipografie/CTA/timeline) nu ajunge la apelant.
+
+        Args:
+            product_usp: Propunerea unica de valoare a produsului / serviciului.
+            target_keyword: Cuvantul cheie / nisa tinta - RAG pe
+                ``tiktok_swipe_library``, acelasi mecanism ca
+                ``generate_emotional_copy(platform="tiktok")``.
+
+        Returns:
+            Storyboard-ul validat.
+
+        Raises:
+            SwipeFileError: Daca ``tiktok_swipe_library`` e goala.
+            CopywriterError: Raspunsul clientului nu respecta schema Storyboard.
+            StoryboardValidationError: Storyboard-ul respecta schema, dar
+                incalca regulile de productie video.
+        """
+        keyword = " ".join(target_keyword.split())
+        examples = retrieve_tiktok_examples(self._swipe, keyword)
+        system_prompt = build_storyboard_system_prompt(examples)
+        spec = StoryboardSpec(
+            product_usp=product_usp,
+            target_keyword=keyword,
+            examples=examples,
+            system_prompt=system_prompt,
+        )
+        storyboard = self._client.generate_storyboard(spec)
+        StoryboardValidator().validate(storyboard)
+        return storyboard
 
 
 def _force_keyword(ad: AdCopy, keyword: str) -> AdCopy:

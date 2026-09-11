@@ -24,9 +24,17 @@ from ppc_agent.copywriter.models import (
     CopySpec,
     OmniAdCopy,
     OmniCopySpec,
+    StoryboardSpec,
     TikTokAdCopy,
     TikTokCopySpec,
     char_count,
+)
+from ppc_agent.creative.video_models import (
+    AudioTrack,
+    Scene,
+    Storyboard,
+    TextOverlay,
+    VideoCanvas,
 )
 from ppc_agent.errors import CopywriterError, SetupRequiredError
 
@@ -64,6 +72,20 @@ class BaseLLMClient(ABC):
         """
         raise NotImplementedError(
             f"{type(self).__name__} nu suporta generarea de copy omnicanal"
+        )
+
+    def generate_storyboard(self, spec: StoryboardSpec) -> Storyboard:
+        """Genereaza un storyboard video programatic conform ``spec``.
+
+        Metoda concreta (nu abstracta), acelasi motiv ca la
+        :meth:`generate_tiktok`/:meth:`generate_omnichannel`: clientii de test
+        existenti raman instantiabili fara modificari; clientii reali o
+        suprascriu. Rezultatul NU e validat aici (vezi
+        :class:`~ppc_agent.creative.video_qa.StoryboardValidator`, aplicat de
+        apelant - :meth:`~ppc_agent.copywriter.engine.AdCopyGenerator.generate_storyboard`).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} nu suporta generarea de storyboard"
         )
 
 
@@ -171,6 +193,34 @@ _TIKTOK_VISUAL: dict[str, str] = {
 }
 
 
+_CAPTION_MIN = 24
+_CAPTION_MAX = 32
+_CAPTION_FILLER = " - vezi acum cum functioneaza exact"
+
+
+def _fit_caption(text: str) -> str:
+    """Ajusteaza ``text`` sa incapa strict in fereastra 24-32 caractere.
+
+    Text sursa (hook/USP recuperat din swipe library) poate avea orice
+    lungime - taie la granita de cuvant daca depaseste maximul, completeaza cu
+    un filler fix daca nu atinge minimul. Garanteaza regula de tipografie a
+    lui StoryboardValidator indiferent de continutul sursa (inclusiv gol).
+    """
+    cleaned = " ".join(text.split()).strip(" -,.;")
+    while len(cleaned) < _CAPTION_MIN:
+        cleaned = (cleaned + _CAPTION_FILLER).strip()
+    if len(cleaned) > _CAPTION_MAX:
+        words = cleaned.split(" ")
+        out = ""
+        for word in words:
+            candidate = word if not out else f"{out} {word}"
+            if len(candidate) > _CAPTION_MAX:
+                break
+            out = candidate
+        cleaned = out if len(out) >= _CAPTION_MIN else cleaned[:_CAPTION_MAX]
+    return cleaned
+
+
 class MockLLMClient(BaseLLMClient):
     """Generator determinist care randeaza copy pe stilul framework-ului.
 
@@ -269,6 +319,101 @@ class MockLLMClient(BaseLLMClient):
             offer_cta=example.offer_cta if example else "Afla mai multe",
         )
 
+    def generate_storyboard(self, spec: StoryboardSpec) -> Storyboard:
+        """Randeaza un :class:`Storyboard` de 3 scene (hook/proof/cta), 22s.
+
+        Determinist si construit sa respecte StoryboardValidator prin design:
+        caption-ul din scena de dovada trece prin :func:`_fit_caption`
+        (headline-urile si CTA nu au limita de caractere), iar CTA-ul intra in
+        fereastra finala (start=17s, durata=5s, pe un total de 22s).
+        """
+        keyword = " ".join(spec.target_keyword.split())
+        example = spec.examples[0] if spec.examples else None
+
+        hook_text = example.hook_audio if example else f"Atentie la {keyword or 'asta'}"
+        proof_caption = _fit_caption(
+            example.mechanism_proof if example else "Rezultatul se vede din prima zi"
+        )
+        cta_text = example.cta_text if example else "Afla mai multe din link"
+        hook_broll = (
+            example.hook_visual if example else "Zoom rapid, intrerupere de tipar"
+        )
+
+        return Storyboard(
+            job_id="mock_storyboard",
+            duration_seconds=22.0,
+            canvas=VideoCanvas(),
+            scenes=[
+                Scene(
+                    id="scene_1_hook",
+                    start_time=0.0,
+                    end_time=2.5,
+                    purpose="hook",
+                    visual_broll_prompt=hook_broll,
+                    text_layers=[
+                        TextOverlay(
+                            type="headline",
+                            text=hook_text,
+                            start_time=0.2,
+                            duration=2.0,
+                            anchor_position="safe_center",
+                            highlight_words=[keyword] if keyword else [],
+                            contrast_mode="adaptive_backplate",
+                        )
+                    ],
+                    audio=[
+                        AudioTrack(
+                            type="voiceover", asset_ref="mock_hook.wav", start_time=0.0
+                        )
+                    ],
+                ),
+                Scene(
+                    id="scene_2_proof",
+                    start_time=2.5,
+                    end_time=16.0,
+                    purpose="proof",
+                    visual_broll_prompt="Split-screen inainte / dupa, prim-plan pe detaliu",
+                    text_layers=[
+                        TextOverlay(
+                            type="caption",
+                            text=proof_caption,
+                            start_time=4.0,
+                            duration=1.5,
+                            anchor_position="bottom_center",
+                            contrast_mode="adaptive_backplate",
+                        )
+                    ],
+                    audio=[
+                        AudioTrack(
+                            type="voiceover", asset_ref="mock_proof.wav", start_time=2.5
+                        )
+                    ],
+                ),
+                Scene(
+                    id="scene_3_cta",
+                    start_time=16.0,
+                    end_time=22.0,
+                    purpose="cta",
+                    visual_broll_prompt="Produsul in cadru static, logo vizibil",
+                    text_layers=[
+                        TextOverlay(
+                            type="cta",
+                            text=cta_text,
+                            start_time=17.0,
+                            duration=5.0,
+                            anchor_position="safe_center",
+                            contrast_mode="adaptive_backplate",
+                        )
+                    ],
+                    audio=[
+                        AudioTrack(
+                            type="voiceover", asset_ref="mock_cta.wav", start_time=16.0
+                        )
+                    ],
+                ),
+            ],
+        )
+
 
 _DEFAULT_ENDPOINT = "http://localhost:11434"
 _DEFAULT_TIMEOUT = 60.0
@@ -338,6 +483,25 @@ def _build_omni_user_prompt(spec: OmniCopySpec) -> str:
     lines.append(
         'Raspunde DOAR cu JSON: {"hook_type": "...", "hook_text": "...", '
         '"problem_agitation": "...", "mechanism_proof": "...", "offer_cta": "..."}'
+    )
+    return "\n".join(lines)
+
+
+def _build_storyboard_user_prompt(spec: StoryboardSpec) -> str:
+    """User prompt-ul pentru storyboard, cu exemplele dovedite ca ancora RAG."""
+    lines = [
+        f"Cuvant cheie / nisa: {spec.target_keyword}",
+        f"USP produs/serviciu: {spec.product_usp}",
+    ]
+    for example in spec.examples:
+        lines.append(
+            f"Exemplu dovedit ({example.niche}, activ {example.days_active_proxy} zile): "
+            f'hook "{example.hook_audio}" | dovada "{example.mechanism_proof}" | '
+            f'cta "{example.cta_text}"'
+        )
+    lines.append(
+        "Raspunde DOAR cu JSON valid conform schemei Storyboard din system prompt "
+        "(job_id, duration_seconds, canvas, scenes)."
     )
     return "\n".join(lines)
 
@@ -510,4 +674,27 @@ class LiveLLMClient(BaseLLMClient):
             raise CopywriterError(
                 f"raspunsul modelului '{self._model}' nu e JSON valid pentru "
                 f"schema OmniAdCopy: {exc}"
+            ) from exc
+
+    def generate_storyboard(self, spec: StoryboardSpec) -> Storyboard:
+        """Cere modelului Ollama un storyboard video conform ``spec``.
+
+        Nu valideaza fata de regulile de productie (StoryboardValidator) -
+        doar fata de schema. Apelantul (AdCopyGenerator.generate_storyboard)
+        aplica validarea determinista dupa aceasta parsare.
+
+        Raises:
+            SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
+            CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid pentru
+                schema Storyboard.
+        """
+        try:
+            parsed = self._call_ollama_chat(
+                spec.system_prompt, _build_storyboard_user_prompt(spec)
+            )
+            return Storyboard.model_validate(parsed)
+        except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise CopywriterError(
+                f"raspunsul modelului '{self._model}' nu e JSON valid pentru "
+                f"schema Storyboard: {exc}"
             ) from exc

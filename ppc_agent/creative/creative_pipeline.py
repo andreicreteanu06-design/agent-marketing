@@ -16,10 +16,12 @@ from ppc_agent.copywriter.swipe import load_swipe_file, retrieve_framework
 from ppc_agent.creative.audio_engine import BaseTtsClient, estimate_duration_seconds
 from ppc_agent.creative.models import CreativeResult, VoiceoverResult
 from ppc_agent.creative.video_engine import BaseVideoBuilder
+from ppc_agent.creative.video_models import Storyboard
 from ppc_agent.errors import VideoAssemblyError
 
 _OUTPUT_DIR = "creative_output"
 _DEFAULT_TRIGGER = "aida"
+_STORYBOARD_FILENAME_PREFIX = "storyboard_"
 Platform = Literal["google", "tiktok"]
 
 
@@ -189,6 +191,63 @@ def generate_full_ad_creative(
             "framework": framework.name,
         },
     )
+
+
+def save_storyboard(
+    storyboard: Storyboard, target_keyword: str, output_dir: Path | str = _OUTPUT_DIR
+) -> Path:
+    """Scrie storyboard-ul validat ca ``storyboard_<keyword>_<timestamp>.json``.
+
+    Numele fisierului foloseste ``target_keyword`` (controlat de apelant), nu
+    ``storyboard.job_id`` (poate fi orice string intors de LLM) - unicitatea
+    vine oricum din timestamp, nu conteaza pe continutul generat.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
+    path = out_dir / f"{_STORYBOARD_FILENAME_PREFIX}{_slug(target_keyword)}_{stamp}.json"
+    path.write_text(storyboard.model_dump_json(indent=2), encoding="utf-8")
+    return path
+
+
+def generate_and_save_storyboard(
+    llm_client: BaseLLMClient,
+    *,
+    product_usp: str,
+    target_keyword: str,
+    output_dir: Path | str = _OUTPUT_DIR,
+    swipe_path: Path | str | None = None,
+) -> tuple[Storyboard, Path]:
+    """Genereaza, valideaza si salveaza un storyboard video programatic.
+
+    Fara TTS/asamblare video (spre deosebire de :func:`generate_full_ad_creative`)
+    - storyboard-ul JSON e artefactul final aici, gata pentru un editor uman
+    sau un pipeline de asamblare ulterior.
+
+    Raises:
+        SwipeFileError / CopywriterError: din pasul de generare (vezi
+            :meth:`~ppc_agent.copywriter.engine.AdCopyGenerator.generate_storyboard`).
+        StoryboardValidationError: storyboard-ul incalca regulile de productie.
+    """
+    generator = AdCopyGenerator(llm_client, swipe_path=swipe_path)
+    storyboard = generator.generate_storyboard(product_usp, target_keyword)
+    path = save_storyboard(storyboard, target_keyword, output_dir)
+    return storyboard, path
+
+
+def render_storyboard(storyboard: Storyboard, path: Path, console: Console) -> None:
+    """Afiseaza rezumatul storyboard-ului generat (scene, timing, b-roll)."""
+    console.print(
+        f"\n[bold]Storyboard generat[/bold]  job_id={storyboard.job_id}  "
+        f"durata={storyboard.duration_seconds:.1f}s  scene={len(storyboard.scenes)}"
+    )
+    for scene in storyboard.scenes:
+        console.print(
+            f"  [{scene.start_time:.1f}-{scene.end_time:.1f}s] {scene.purpose}: "
+            f"{scene.visual_broll_prompt}",
+            markup=False,
+        )
+    console.print(f"\n[green]scris[/green] {path}")
 
 
 def render_creative(result: CreativeResult, console: Console) -> None:

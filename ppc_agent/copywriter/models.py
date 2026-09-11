@@ -186,6 +186,16 @@ class TikTokCopySpec(BaseModel):
     system_prompt: str
 
 
+class StoryboardSpec(BaseModel):
+    """Tot ce ii trebuie unui :class:`~ppc_agent.copywriter.llm.BaseLLMClient` sa
+    genereze un :class:`~ppc_agent.creative.video_models.Storyboard`."""
+
+    product_usp: str
+    target_keyword: str
+    examples: list[TikTokSwipeRecord] = Field(default_factory=list)
+    system_prompt: str
+
+
 class QueuedAd(BaseModel):
     """O intrare in coada de aprobare umana ``proposed_ads_queue.json``."""
 
