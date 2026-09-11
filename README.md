@@ -8,7 +8,9 @@ stricte cu om in bucla (HITL)**.
 > **Versiunea 1 nu face niciun apel real** catre platformele de reclame. Fiecare
 > integrare externa sta in spatele unui adaptor cu implementare `mock`, deci
 > intreaga logica este testabila acum. Clientii `live` se adauga intr-o faza
-> ulterioara.
+> ulterioara — singura exceptie e clientul LLM de copywriting, care poate
+> rula deja `live` impotriva unui [Ollama](https://ollama.com) local (loopback,
+> gratuit — [detalii mai jos](#client-llm-live-ollama-local)).
 
 ## Stare
 
@@ -22,7 +24,8 @@ stricte cu om in bucla (HITL)**.
 | + | Modul copywriter — copy direct-response emotional (RAG local pe swipe file) | ✅ |
 | + | Kelly Criterion — dimensionarea plafonului zilnic absolut in functie de ROAS | ✅ |
 | 5 | Modul creative — voce (Fish Speech) + video (Flick) -> `.mp4`, mock-first | ✅ |
-| — | Integrare `live` (Google Ads / GSC / GBP / Meta / LLM / Fish Speech / Flick) | ⏳ |
+| + | Client LLM live — Ollama local (gratuit, loopback, `copy` + `build-creative`) | ✅ |
+| — | Integrare `live` (Google Ads / GSC / GBP / Meta / Fish Speech / Flick) | ⏳ |
 
 ## Cerinte
 
@@ -51,7 +54,7 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Valoare | Efect |
 |---------|-------|
 | `mock` (implicit) | Foloseste date de test deterministice. Niciun apel de retea. |
-| `live` | Momentan un stub: ridica `SetupRequiredError` cu instructiuni. |
+| `live` | Clientul LLM (Ollama, vezi mai jos) e functional. Google Ads / GSC / GBP / Meta / Fish Speech / Flick raman stub-uri care ridica `SetupRequiredError`. |
 
 ## Utilizare
 
@@ -166,6 +169,51 @@ Pentru a activa un client real:
 Guardrails-urile din Modulul 4 raman active identic in modul `live`; in plus,
 executorul din `ApprovalGate.execute` trebuie schimbat din "simuleaza" in
 "apeleaza SDK-ul" — un singur loc in cod.
+
+## Client LLM live: Ollama local
+
+Spre deosebire de Google Ads / Meta / Fish Speech / Flick, clientul LLM folosit
+de `copy` si `build-creative` (`LiveLLMClient`, in `copywriter/llm.py`) **este
+functional in modul `live`** — nu un stub. Ruleaza impotriva unui server
+[Ollama](https://ollama.com) local:
+
+- **Gratis** — fara cheie API, fara cost per-token.
+- **Datele nu parasesc masina** — e singurul apel de retea din tot agentul, dar
+  ramane strict loopback (`http://localhost:11434` implicit).
+- **Testele raman offline** — suita foloseste `httpx.MockTransport` (vezi
+  `tests/test_llm_live.py`); niciun test nu atinge un Ollama real.
+
+### Setup
+
+```powershell
+# 1) instaleaza Ollama (https://ollama.com/download), apoi:
+ollama serve
+ollama pull llama3        # sau orice alt model instalat local
+```
+
+```ini
+# .env
+PPC_PROVIDER_MODE=live
+PPC_LLM_MODEL=llama3      # sau "ollama/llama3" — prefixul se elimina automat
+PPC_LLM_ENDPOINT=         # gol => http://localhost:11434
+```
+
+### Erori clare, nu traceback-uri
+
+`LiveLLMClient` distinge explicit intre cauze, cu mesaje actionabile:
+
+| Situatie | Eroare | Mesaj |
+|----------|--------|-------|
+| Ollama nu ruleaza | `SetupRequiredError` | indica `ollama serve` |
+| timeout (model prea mare / hardware lent) | `SetupRequiredError` | sugereaza un model mai mic |
+| modelul cerut nu e descarcat | `SetupRequiredError` | listeaza modelele instalate local + `ollama pull <model>` |
+| raspuns intrerupt (`"done": false"`) | `CopywriterError` | model corupt / incarcare esuata — verifica `ollama ps` |
+| JSON invalid / campuri lipsa | `CopywriterError` | raspunsul modelului nu respecta schema ceruta |
+
+> **Nota din testare reala:** modelele mici/quantizate pot produce ocazional
+> raspunsuri incomplete sau incoerente (vazut cu un model de 1.5B pe hardware
+> modest). Daca se intampla des, incearca un model diferit sau redescarca-l cu
+> `ollama pull`.
 
 ## Dezvoltare
 

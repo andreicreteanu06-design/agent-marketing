@@ -23,7 +23,6 @@ from rich.console import Console
 from ppc_agent.alignment.pipeline import render_alignment, run_alignment
 from ppc_agent.config import AppConfig, load_config
 from ppc_agent.copywriter.engine import AdCopyGenerator
-from ppc_agent.copywriter.llm import MockLLMClient
 from ppc_agent.copywriter.pipeline import append_to_queue, render_copy, run_copy
 from ppc_agent.creative.creative_pipeline import generate_full_ad_creative, render_creative
 from ppc_agent.creative.factory import CreativeFactory
@@ -32,6 +31,7 @@ from ppc_agent.errors import (
     ApprovalRequiredError,
     CopywriterError,
     PpcAgentError,
+    SetupRequiredError,
     SpendLimitExceeded,
     TtsError,
     VideoAssemblyError,
@@ -103,13 +103,15 @@ def copy(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Afiseaza fara sa adaugi in coada.")
     ] = False,
+    config: _ConfigOption = "config.yaml",
 ) -> None:
     """Genereaza copy emotional (RAG local pe swipe_file.json) si il pune in coada HITL.
 
     Nimic nu se publica online: copy-ul se adauga in proposed_ads_queue.json pentru
-    aprobare manuala.
+    aprobare manuala. Clientul LLM (mock sau Ollama live) e ales dupa PPC_PROVIDER_MODE.
     """
-    generator = AdCopyGenerator(MockLLMClient())
+    app_config = load_config(config)
+    generator = AdCopyGenerator(CreativeFactory(app_config).llm())
     try:
         entry = run_copy(
             generator,
@@ -117,6 +119,9 @@ def copy(
             target_keyword=keyword,
             emotion_trigger=trigger,
         )
+    except SetupRequiredError as exc:
+        console.print(f"[red]clientul LLM nu e pregatit:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     except CopywriterError as exc:
         console.print(f"[red]nu s-a putut genera:[/red] {exc}")
         raise typer.Exit(code=1) from exc

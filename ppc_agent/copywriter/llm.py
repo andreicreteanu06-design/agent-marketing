@@ -3,17 +3,24 @@
 - :class:`BaseLLMClient` — interfata; ``AdCopyGenerator`` primeste un client prin constructor.
 - :class:`MockLLMClient` — determinist, fara retea; randeaza copy emotional pe stilul
   framework-ului recuperat. Testabil acum.
-- :class:`LiveLLMClient` — stub pentru un client real (Ollama / API), ridica
-  :class:`~ppc_agent.errors.SetupRequiredError` pana la conectare.
+- :class:`LiveLLMClient` — client real pentru un model Ollama local (gratuit, datele
+  nu parasesc masina). E singurul apel de retea din tot agentul, dar ramane
+  loopback (``localhost``); daca Ollama nu ruleaza sau modelul nu e descarcat,
+  ridica :class:`~ppc_agent.errors.SetupRequiredError` cu instructiuni concrete.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from abc import ABC, abstractmethod
+from typing import Any
+
+import httpx
+from pydantic import ValidationError
 
 from ppc_agent.copywriter.models import AdCopy, CopySpec, char_count
-from ppc_agent.errors import SetupRequiredError
+from ppc_agent.errors import CopywriterError, SetupRequiredError
 
 
 class BaseLLMClient(ABC):
@@ -153,20 +160,142 @@ class MockLLMClient(BaseLLMClient):
         )
 
 
-class LiveLLMClient(BaseLLMClient):
-    """Stub pentru un client real (Ollama sau API). Ridica pana la conectare.
+_DEFAULT_ENDPOINT = "http://localhost:11434"
+_DEFAULT_TIMEOUT = 60.0
+_OLLAMA_PREFIX = "ollama/"
 
-    ``spec.system_prompt`` este deja construit de :class:`AdCopyGenerator` cu
-    framework-ul injectat; o implementare reala doar il trimite modelului impreuna
-    cu un user prompt si parseaza JSON-ul returnat.
+
+def _normalize_model_tag(model: str) -> str:
+    """Elimina prefixul stil-LiteLLM ``ollama/`` — API-ul Ollama vrea doar tag-ul."""
+    if model.lower().startswith(_OLLAMA_PREFIX):
+        return model[len(_OLLAMA_PREFIX) :]
+    return model
+
+
+def _build_user_prompt(spec: CopySpec) -> str:
+    """User prompt-ul trimis modelului; cere explicit mai putina lungime la retry."""
+    lines = [
+        f"Cuvant cheie exact: {spec.target_keyword}",
+        f"USP produs/serviciu: {spec.product_usp}",
+        f"Declansator emotional: {spec.emotion_trigger}",
+    ]
+    if spec.tighten > 0:
+        lines.append(
+            "Incercarea anterioara a fost prea lunga - fii mai concis, taie orice "
+            "cuvant care nu e strict necesar."
+        )
+    lines.append(
+        'Raspunde DOAR cu JSON: {"headline_1": "...", "headline_2": "...", '
+        '"description": "..."}'
+    )
+    return "\n".join(lines)
+
+
+def _list_local_models(endpoint: str, transport: httpx.BaseTransport | None) -> list[str]:
+    """Cele mai bune eforturi: modelele deja descarcate, pentru mesaje de eroare utile."""
+    try:
+        with httpx.Client(transport=transport, timeout=5.0) as client:
+            response = client.get(f"{endpoint}/api/tags")
+            response.raise_for_status()
+            data = response.json()
+        return [name for item in data.get("models", []) if (name := item.get("name"))]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return []
+
+
+class LiveLLMClient(BaseLLMClient):
+    """Client real pentru un model Ollama local (``/api/chat``, implicit ``:11434``).
+
+    Nu e nevoie de cheie API si niciun text nu paraseste masina — e loopback pur.
+    Testele injecteaza un ``transport`` fals (``httpx.MockTransport``), deci suita
+    ramane fara retea reala.
     """
 
-    def __init__(self, model: str = "neconfigurat") -> None:
-        self._model = model
+    def __init__(
+        self,
+        model: str = "neconfigurat",
+        endpoint: str = "",
+        *,
+        timeout: float = _DEFAULT_TIMEOUT,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._model = _normalize_model_tag(model)
+        self._endpoint = (endpoint or _DEFAULT_ENDPOINT).rstrip("/")
+        self._timeout = timeout
+        self._transport = transport
+
+    @property
+    def model(self) -> str:
+        """Tag-ul de model Ollama folosit (fara prefixul ``ollama/``)."""
+        return self._model
+
+    @property
+    def endpoint(self) -> str:
+        """Adresa serverului Ollama (implicit ``http://localhost:11434``)."""
+        return self._endpoint
 
     def generate(self, spec: CopySpec) -> AdCopy:
-        """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
-        raise SetupRequiredError(
-            "client LLM live neimplementat. Ruleaza cu MockLLMClient sau conecteaza "
-            f"un client Ollama/API (model tinta configurat: {self._model})."
-        )
+        """Cere modelului Ollama copy conform ``spec``; parseaza JSON-ul returnat.
+
+        Raises:
+            SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
+            CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid cu
+                campurile asteptate.
+        """
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": spec.system_prompt},
+                {"role": "user", "content": _build_user_prompt(spec)},
+            ],
+            "format": "json",
+            "stream": False,
+            "options": {"temperature": 0.6},
+        }
+        try:
+            with httpx.Client(transport=self._transport, timeout=self._timeout) as client:
+                response = client.post(f"{self._endpoint}/api/chat", json=payload)
+        except httpx.ConnectError as exc:
+            raise SetupRequiredError(
+                f"Ollama nu raspunde la {self._endpoint}. Porneste-l cu 'ollama serve' "
+                "sau corecteaza PPC_LLM_ENDPOINT in .env."
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise SetupRequiredError(
+                f"Ollama nu a raspuns in {self._timeout:.0f}s (modelul '{self._model}' "
+                "poate fi prea mare pentru hardware-ul disponibil - incearca unul mai mic)."
+            ) from exc
+
+        if response.status_code == 404:
+            available = _list_local_models(self._endpoint, self._transport)
+            hint = (
+                f" Modele instalate local: {', '.join(available)}."
+                if available
+                else " Niciun model instalat local inca."
+            )
+            raise SetupRequiredError(
+                f"Modelul '{self._model}' nu e descarcat in Ollama.{hint} "
+                f"Descarca-l cu: ollama pull {self._model}"
+            )
+        if response.status_code >= 400:
+            raise CopywriterError(
+                f"Ollama a raspuns cu eroarea {response.status_code}: {response.text[:200]}"
+            )
+
+        try:
+            data = response.json()
+            if data.get("done") is False:
+                raise CopywriterError(
+                    f"Ollama a intrerupt generarea pentru '{self._model}' inainte de a "
+                    "termina raspunsul (posibil model corupt sau incarcare esuata). "
+                    "Verifica 'ollama ps' si log-urile serverului, sau redescarca-l: "
+                    f"ollama pull {self._model}"
+                )
+            content = data["message"]["content"]
+            parsed = json.loads(content)
+            return AdCopy.model_validate(parsed)
+        except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise CopywriterError(
+                f"raspunsul modelului '{self._model}' nu e JSON valid cu campurile "
+                f"asteptate (headline_1/headline_2/description): {exc}"
+            ) from exc

@@ -38,7 +38,8 @@ class CreativeFactory:
     def llm(self) -> BaseLLMClient:
         """Clientul de generare de copy pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
-            return LiveLLMClient(model=self._config.settings.llm_model)
+            settings = self._config.settings
+            return LiveLLMClient(model=settings.llm_model, endpoint=settings.llm_endpoint)
         return MockLLMClient()
 
     def tts(self) -> BaseTtsClient:
