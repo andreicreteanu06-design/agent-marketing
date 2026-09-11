@@ -10,9 +10,9 @@ class ProviderFactory:
     """Construieste furnizori concreti pornind de la :class:`AppConfig`.
 
     Ramura ``mock`` este implementata pentru toti furnizorii: crawler, GSC, GBP,
-    Keyword Planner (Modulul 1), Google Ads (Modulul 2) si Meta Marketing
-    (Modulul 3). Ramura ``live`` este momentan formata din stub-uri care ridica
-    :class:`ppc_agent.errors.SetupRequiredError`.
+    Keyword Planner (Modulul 1), Google Ads + TikTok Ads (Modulul 2) si Meta
+    Marketing (Modulul 3). Ramura ``live`` este momentan formata din stub-uri care
+    ridica :class:`ppc_agent.errors.SetupRequiredError`.
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -58,3 +58,9 @@ class ProviderFactory:
         if self.mode is ProviderMode.LIVE:
             return live.LiveMetaMarketingProvider()
         return mock.MockMetaMarketingProvider()
+
+    def tiktok_ads(self) -> base.TikTokAdsProvider:
+        """Returneaza furnizorul TikTok Ads (performanta + parcursuri) pentru modul activ."""
+        if self.mode is ProviderMode.LIVE:
+            return live.LiveTikTokAdsProvider()
+        return mock.MockTikTokAdsProvider()

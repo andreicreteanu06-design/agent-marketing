@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     meta_access_token: str = ""
     meta_ad_account_id: str = ""
 
+    # TikTok Ads API
+    tiktok_access_token: str = ""
+    tiktok_advertiser_id: str = ""
+
     # Client LLM pentru copywriter (doar pentru PPC_PROVIDER_MODE=live)
     llm_model: str = "ollama/llama3"
     llm_endpoint: str = ""

@@ -165,3 +165,36 @@ class MetaMarketingProvider(ABC):
             ``DataFrame`` cu coloanele ``id``, ``audience_def``,
             ``weekly_conversions``, ``weekly_spend``, ``learning_phase``.
         """
+
+
+class TikTokAdsProvider(ABC):
+    """Acces la performanta grupurilor de anunturi si parcursurile de conversie TikTok.
+
+    Aceeasi forma ca :class:`GoogleAdsProvider` (coloane identice, acelasi format
+    de parcurs) — TikTok participa la Modulul 2 (Thompson Sampling + atribuire
+    Markov) ca un al doilea set de brate, nu doar la lichiditate ca Meta.
+    """
+
+    @abstractmethod
+    def campaign_performance(self, advertiser_id: str) -> pd.DataFrame:
+        """Performanta pe grupuri de anunturi TikTok.
+
+        Args:
+            advertiser_id: Identificatorul contului de reclame TikTok.
+
+        Returns:
+            ``DataFrame`` cu coloanele ``arm_id``, ``name``, ``clicks``,
+            ``conversions``, ``cost``, ``revenue`` (venitul din conversii).
+        """
+
+    @abstractmethod
+    def conversion_paths(self, advertiser_id: str) -> list[list[str]]:
+        """Parcursurile de client, ca liste de puncte de contact.
+
+        Args:
+            advertiser_id: Identificatorul contului de reclame TikTok.
+
+        Returns:
+            Lista de parcursuri; fiecare este ``[canal1, canal2, ...,
+            "conversion" | "null"]``.
+        """

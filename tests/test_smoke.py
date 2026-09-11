@@ -54,6 +54,8 @@ def test_live_factory_raises_setup_required() -> None:
         factory.gsc().top_queries("https://exemplu.ro/")
     with pytest.raises(SetupRequiredError):
         factory.meta().ad_sets("act_123")
+    with pytest.raises(SetupRequiredError):
+        factory.tiktok_ads().campaign_performance("adv_123")
 
 
 def test_mock_factory_wires_all_providers() -> None:
@@ -65,3 +67,4 @@ def test_mock_factory_wires_all_providers() -> None:
     assert factory.keyword_planner() is not None
     assert factory.google_ads() is not None
     assert factory.meta() is not None
+    assert factory.tiktok_ads() is not None

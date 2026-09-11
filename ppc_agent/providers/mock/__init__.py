@@ -13,6 +13,7 @@ from ppc_agent.providers.mock.google import (
     MockKeywordPlannerProvider,
 )
 from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
+from ppc_agent.providers.mock.tiktok import MockTikTokAdsProvider
 
 __all__ = [
     "MockCrawlerProvider",
@@ -21,4 +22,5 @@ __all__ = [
     "MockGscProvider",
     "MockKeywordPlannerProvider",
     "MockMetaMarketingProvider",
+    "MockTikTokAdsProvider",
 ]
