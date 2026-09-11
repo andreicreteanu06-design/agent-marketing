@@ -134,6 +134,7 @@ class ThompsonBudgetAllocator:
             BudgetAllocation(
                 arm_id=arm.arm_id,
                 name=arm.name,
+                platform=arm.platform,
                 win_probability=round(win_probs[index], 6),
                 final_share=float(money[index] / total) if total > 0 else 0.0,
                 daily_budget=money[index],

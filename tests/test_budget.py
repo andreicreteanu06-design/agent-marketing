@@ -17,8 +17,28 @@ from ppc_agent.errors import BudgetAllocationError
 _SEED = 42
 
 
-def _arm(arm_id: str, clicks: int, conversions: int) -> ArmStats:
-    return ArmStats(arm_id=arm_id, name=arm_id, clicks=clicks, conversions=conversions)
+def _arm(
+    arm_id: str, clicks: int, conversions: int, *, platform: str = "google_ads"
+) -> ArmStats:
+    return ArmStats(
+        arm_id=arm_id, name=arm_id, clicks=clicks, conversions=conversions, platform=platform
+    )
+
+
+def test_platform_defaults_to_google_ads() -> None:
+    arm = ArmStats(arm_id="x", name="x", clicks=10, conversions=1)
+    assert arm.platform == "google_ads"
+
+
+def test_allocation_carries_arm_platform_through() -> None:
+    arms = [
+        _arm("c_brand", 500, 50, platform="google_ads"),
+        _arm("tt_spark", 500, 30, platform="tiktok_ads"),
+    ]
+    plan = ThompsonBudgetAllocator().allocate(arms, 100.0, n_samples=3000, seed=_SEED)
+    platforms = {a.arm_id: a.platform for a in plan.allocations}
+    assert platforms["c_brand"] == "google_ads"
+    assert platforms["tt_spark"] == "tiktok_ads"
 
 
 def test_fixed_seed_is_deterministic() -> None:

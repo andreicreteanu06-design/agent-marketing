@@ -27,6 +27,7 @@ def test_plan_command_runs_and_prints_sections() -> None:
         "last-click",
         "Quality Score",
         "Lichiditate Meta",
+        "platforma",
     ):
         assert section in result.output
 
@@ -73,3 +74,24 @@ def test_plan_is_reproducible() -> None:
     first = run_plan(factory, config, seed=7, n_samples=3000)
     second = run_plan(factory, config, seed=7, n_samples=3000)
     assert first.model_dump() == second.model_dump()
+
+
+def test_plan_combines_google_and_tiktok_arms() -> None:
+    """Modulul 2 trateaza TikTok ca brate suplimentare, nu un canal separat."""
+    config = AppConfig(settings=Settings(_env_file=None))
+    factory = ProviderFactory(config)
+    plan = run_plan(factory, config, n_samples=4000)
+
+    platforms = {allocation.platform for allocation in plan.budget_plan.allocations}
+    assert platforms == {"google_ads", "tiktok_ads"}
+
+    google_arms = [a for a in plan.budget_plan.allocations if a.platform == "google_ads"]
+    tiktok_arms = [a for a in plan.budget_plan.allocations if a.platform == "tiktok_ads"]
+    assert len(google_arms) == 5  # cele 5 campanii mock din providers/mock/ads.py
+    assert len(tiktok_arms) == 4  # cele 4 grupuri mock din providers/mock/tiktok.py
+
+    total = sum(
+        (allocation.daily_budget for allocation in plan.budget_plan.allocations),
+        Decimal("0"),
+    )
+    assert total == plan.budget_plan.daily_budget == plan.kelly.sized_daily_cap

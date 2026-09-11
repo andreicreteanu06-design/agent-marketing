@@ -17,11 +17,12 @@ from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers.factory import ProviderFactory
 
 _CUSTOMER_PLACEHOLDER = "mock-customer"
+_ADVERTISER_PLACEHOLDER = "mock-advertiser"
 _DEFAULT_SEED = 20260101
 _DEFAULT_SAMPLES = 20_000
 
 
-def _arms_from_performance(frame: pd.DataFrame) -> list[ArmStats]:
+def _arms_from_performance(frame: pd.DataFrame, *, platform: str = "google_ads") -> list[ArmStats]:
     arms: list[ArmStats] = []
     for record in frame.to_dict(orient="records"):
         arms.append(
@@ -32,6 +33,7 @@ def _arms_from_performance(frame: pd.DataFrame) -> list[ArmStats]:
                 conversions=int(record["conversions"]),
                 cost=Decimal(str(record["cost"])),
                 revenue=Decimal(str(record.get("revenue", 0))),
+                platform=platform,
             )
         )
     return arms
@@ -48,8 +50,14 @@ def run_plan(
     """Executa Modulul 2: dimensionare Kelly + alocare Thompson + atribuire Markov.
 
     Kelly foloseste avantajul contului (ROAS) ca sa stabileasca *plafonul zilnic
-    absolut*; Thompson distribuie apoi acel plafon intre campanii. Plafonul Kelly
-    poate depasi ``budget.max_daily_spend``, dar niciodata ``HARD_CEILING``.
+    absolut*; Thompson distribuie apoi acel plafon intre campanii/grupuri de
+    anunturi — pe tot contul, indiferent de platforma. Bratele Google Ads si
+    TikTok Ads se combina intr-o singura lista inainte de Kelly/Thompson (un
+    singur plafon, o singura alocare): asta e sensul unui bandit — bugetul curge
+    spre bratul cel mai bun, nu spre platforma cea mai bun. La fel, parcursurile
+    de conversie de pe ambele platforme se combina inainte de atribuirea Markov.
+    Plafonul Kelly poate depasi ``budget.max_daily_spend``, dar niciodata
+    ``HARD_CEILING``.
 
     Args:
         factory: Fabrica de furnizori (mock sau live).
@@ -62,7 +70,15 @@ def run_plan(
         Planul complet: dimensionare Kelly + alocare de buget + atribuire.
     """
     ads = factory.google_ads()
-    arms = _arms_from_performance(ads.campaign_performance(_CUSTOMER_PLACEHOLDER))
+    tiktok_ads = factory.tiktok_ads()
+
+    google_arms = _arms_from_performance(
+        ads.campaign_performance(_CUSTOMER_PLACEHOLDER), platform="google_ads"
+    )
+    tiktok_arms = _arms_from_performance(
+        tiktok_ads.campaign_performance(_ADVERTISER_PLACEHOLDER), platform="tiktok_ads"
+    )
+    arms = google_arms + tiktok_arms
 
     kelly = size_daily_budget(
         arms,
@@ -83,7 +99,10 @@ def run_plan(
 
     journeys = [
         Journey.from_tokens(path)
-        for path in ads.conversion_paths(_CUSTOMER_PLACEHOLDER)
+        for path in (
+            *ads.conversion_paths(_CUSTOMER_PLACEHOLDER),
+            *tiktok_ads.conversion_paths(_ADVERTISER_PLACEHOLDER),
+        )
     ]
     attribution = attribute(journeys)
 
@@ -121,11 +140,12 @@ def _render_budget(result: PlanResult, console: Console) -> None:
         f"(buget {plan.daily_budget} / zi, {plan.n_samples} esantioane, seed {plan.seed})"
     )
     table = Table()
-    for name in ("campanie", "P(cel mai bun)", "cota", "buget/zi", "nota"):
+    for name in ("campanie", "platforma", "P(cel mai bun)", "cota", "buget/zi", "nota"):
         table.add_column(name)
     for item in plan.allocations:
         table.add_row(
             item.name,
+            item.platform,
             f"{item.win_probability:.3f}",
             f"{item.final_share:.3f}",
             f"{item.daily_budget}",

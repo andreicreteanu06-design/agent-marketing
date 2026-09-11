@@ -11,7 +11,13 @@ EdgeLabel = Literal["pozitiv", "neutru", "negativ", "date_insuficiente"]
 
 
 class ArmStats(BaseModel):
-    """Performanta istorica a unui "brat" (campanie sau grup de anunturi)."""
+    """Performanta istorica a unui "brat" (campanie sau grup de anunturi).
+
+    ``platform`` e ``str`` simplu, nu ``Literal`` — o a patra platforma viitoare
+    nu cere sa editezi un tip aici, doar sa o adaugi la sursa (``ProviderFactory``
+    + ``run_plan``). Implicit ``"google_ads"`` ca toate bratele existente
+    (construite fara acest argument) sa ramana identice.
+    """
 
     arm_id: str
     name: str
@@ -19,6 +25,7 @@ class ArmStats(BaseModel):
     conversions: int = Field(ge=0)
     cost: Decimal = Decimal("0")
     revenue: Decimal = Decimal("0")
+    platform: str = "google_ads"
 
     @property
     def observed_cvr(self) -> float:
@@ -36,6 +43,7 @@ class BudgetAllocation(BaseModel):
 
     arm_id: str
     name: str
+    platform: str = "google_ads"
     win_probability: float
     final_share: float
     daily_budget: Decimal

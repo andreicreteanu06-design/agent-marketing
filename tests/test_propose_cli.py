@@ -32,6 +32,13 @@ def test_propose_writes_valid_changeset(
     assert "budget" in modules
     assert float(payload["total_projected_daily_spend"]) <= float(payload["spend_limit"])
 
+    resources = {change["resource"] for change in payload["changes"]}
+    resource_types = {change["resource_type"] for change in payload["changes"]}
+    assert any(r.startswith("campaign/") for r in resources)
+    assert any(r.startswith("tiktok_ad_group/") for r in resources)
+    assert "campaign" in resource_types
+    assert "ad_group" in resource_types
+
 
 def test_status_shows_pending_changeset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
