@@ -45,5 +45,47 @@
         "description": "Emiti, trimiti si incasezi dintr-un loc. e-Factura inclusa. Incepe gratuit."
       }
     }
+  ],
+  "tiktok_swipe_library": [
+    {
+      "ad_id": "tt_auto_001",
+      "niche": "reparatii auto cutie de viteze",
+      "format": "talking_head_warning",
+      "days_active_proxy": 45,
+      "hook_visual": "Camera usor instabila, mana arata cutia de viteze deschisa, ulei ars pe deget",
+      "hook_audio": "Nu mai merge asa daca auzi un declic cand schimbi in doi",
+      "mechanism_proof": "Am aratat pe camera exact ce se intampla in mecatronica dupa 80.000 km fara schimb de ulei - piesele uzate, filtrul infundat. Diagnoza dureaza 20 de minute si iti arata clar daca esti in siguranta.",
+      "cta_text": "Suna acum, link in bio"
+    },
+    {
+      "ad_id": "tt_auto_002",
+      "niche": "reparatii auto revizie mecanica",
+      "format": "objection_first",
+      "days_active_proxy": 21,
+      "hook_visual": "Vorbeste direct in camera, in fata atelierului",
+      "hook_audio": "Stiu ce gandesti - ca orice mecanic iti gaseste ceva de reparat",
+      "mechanism_proof": "De-asta filmez fiecare diagnoza si iti arat piesa uzata inainte sa o schimb, nu doar iti spun. Vezi tot pe camera, decizi tu.",
+      "cta_text": "Programeaza-te din bio"
+    },
+    {
+      "ad_id": "tt_jewelry_001",
+      "niche": "bijuterii bratara argint tenis",
+      "format": "unboxing_durability_demo",
+      "days_active_proxy": 60,
+      "hook_visual": "Despachetare in prim-plan, apoi bratara bagata direct sub jet de apa",
+      "hook_audio": "Am pus bratara asta de argint sub apa 3 zile ca sa vad ce patineste",
+      "mechanism_proof": "Argint 925 cu pietre zirconiu fixate manual - nu se innegreste, nu isi pierde sclipirea, verificat cu lupa dupa test. Comparatia cu o bratara ieftina de bazar e clara in cadru.",
+      "cta_text": "Comanda din link, stoc limitat"
+    },
+    {
+      "ad_id": "tt_jewelry_002",
+      "niche": "bijuterii cadouri femei accesorii",
+      "format": "ugc_reasons",
+      "days_active_proxy": 18,
+      "hook_visual": "3 cadre rapide, camera la nivelul mainii care poarta bijuteria",
+      "hook_audio": "3 motive pentru care bratara asta mi-a devenit preferata",
+      "mechanism_proof": "Nu se agata de haine, inchizatoarea nu se deschide singura, si arata la fel dupa 6 luni de purtat zilnic - nu doar in poza de produs.",
+      "cta_text": "Vezi toata colectia din link"
+    }
   ]
 }

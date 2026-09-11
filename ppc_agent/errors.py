@@ -60,6 +60,14 @@ class SwipeFileError(CopywriterError):
     """``swipe_file.json`` lipseste, e invalid, sau nu contine framework-ul cerut."""
 
 
+class TikTokIngestError(CopywriterError):
+    """Ingestia bibliotecii TikTok a esuat.
+
+    Fisierul de intrare lipseste, are extensie necunoscuta, sau o intrare nu
+    respecta schema :class:`~ppc_agent.copywriter.models.TikTokSwipeRecord`.
+    """
+
+
 class AdsLimitError(CopywriterError):
     """Un text de anunt depaseste limita Google Ads (headline 30 / descriere 90).
 

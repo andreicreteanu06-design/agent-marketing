@@ -85,3 +85,34 @@ def test_live_builder_raises_setup_required(tmp_path: Path) -> None:
             subtitle_text=_SUBTITLE,
             out_path=tmp_path / "ad.mp4",
         )
+
+
+def test_mock_defaults_are_backward_compatible(tmp_path: Path) -> None:
+    """Fara parametrii noi, comportamentul si manifestul raman ca inainte + aspect_ratio."""
+    broll, wav = _inputs(tmp_path)
+    out = tmp_path / "ad.mp4"
+    MockFlickBuilder().build(
+        broll_path=broll, voiceover_path=wav, subtitle_text=_SUBTITLE, out_path=out
+    )
+    manifest = json.loads(manifest_path(out).read_text(encoding="utf-8"))
+    assert manifest["aspect_ratio"] == "16:9"
+    assert "visual_hook_concept" not in manifest
+    assert "text_overlay" not in manifest
+
+
+def test_mock_captures_tiktok_metadata(tmp_path: Path) -> None:
+    broll, wav = _inputs(tmp_path)
+    out = tmp_path / "ad.mp4"
+    MockFlickBuilder().build(
+        broll_path=broll,
+        voiceover_path=wav,
+        subtitle_text=_SUBTITLE,
+        out_path=out,
+        visual_hook_concept="Zoom rapid pe produs",
+        text_overlay=["Dovedit", "Comanda acum"],
+        aspect_ratio="9:16",
+    )
+    manifest = json.loads(manifest_path(out).read_text(encoding="utf-8"))
+    assert manifest["aspect_ratio"] == "9:16"
+    assert manifest["visual_hook_concept"] == "Zoom rapid pe produs"
+    assert manifest["text_overlay"] == ["Dovedit", "Comanda acum"]

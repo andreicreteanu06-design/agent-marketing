@@ -11,7 +11,9 @@ Fluxul:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any, Literal
 
 from ppc_agent.copywriter.llm import BaseLLMClient
 from ppc_agent.copywriter.models import (
@@ -20,17 +22,22 @@ from ppc_agent.copywriter.models import (
     AdCopy,
     CopySpec,
     Framework,
+    TikTokAdCopy,
+    TikTokCopySpec,
+    TikTokSwipeRecord,
     char_count,
 )
 from ppc_agent.copywriter.swipe import (
     default_swipe_path,
     load_swipe_file,
     retrieve_framework,
+    retrieve_tiktok_examples,
 )
 from ppc_agent.errors import AdsLimitError, CopywriterError
 from ppc_agent.texttools import contains_phrase
 
 _MAX_ATTEMPTS = 4
+Platform = Literal["google", "tiktok"]
 
 
 def check_google_limits(
@@ -89,6 +96,51 @@ def build_system_prompt(
     )
 
 
+def build_tiktok_system_prompt(examples: list[TikTokSwipeRecord]) -> str:
+    """Construieste system prompt-ul pentru scripturi TikTok, cu exemple RAG injectate.
+
+    Persona: creator de continut nativ, nu copywriter corporate. Ritmul (fereastra
+    de hook, structura, durata) e ancorat in cercetare reala despre reclame TikTok
+    cu conversie mare (hook 1.5-3s = intrerupere de tipar, apoi problema -> dovada
+    -> CTA nativ, scenariu vorbit de 15-30s). Schema ceruta e generata direct din
+    ``TikTokAdCopy.model_json_schema()`` ca sa ramana sincronizata cu clasa.
+    """
+    schema_types = {
+        name: prop.get("type", "string")
+        for name, prop in TikTokAdCopy.model_json_schema()["properties"].items()
+    }
+    example_lines = (
+        "\n".join(
+            f'  - [{example.niche}, activ {example.days_active_proxy} zile] '
+            f'hook: "{example.hook_audio}" | dovada: "{example.mechanism_proof}" | '
+            f'cta: "{example.cta_text}"'
+            for example in examples
+        )
+        or "  (niciun exemplu recuperat - improvizeaza in stilul UGC TikTok)"
+    )
+    return (
+        "Esti creator de continut nativ TikTok, nu un copywriter corporate. Scrii "
+        "scripturi video verticale (9:16) in limba romana, conversationale, "
+        "energice, ca pentru propriul tau canal — zero limbaj corporate, zero "
+        "superlative goale.\n\n"
+        "RITM OBLIGATORIU:\n"
+        "- primele 1.5-3 secunde (audio_hook): intrerupere de tipar - opreste "
+        "scrollul, nu introduce contextul incet\n"
+        "- restul (body_script): numeste problema, agit-o pe scurt, arata "
+        "solutia / dovada ca functioneaza\n"
+        "- ultimele 3-5 secunde (call_to_action): CTA nativ platformei, scurt\n"
+        "- durata totala vizata a scenariului vorbit: 15-30 secunde\n\n"
+        "EXEMPLE DOVEDITE (din biblioteca proprie, nu copia — inspira-te din ritm):\n"
+        f"{example_lines}\n\n"
+        "REGULI STRICTE:\n"
+        "- fara jargon corporate, fara propozitii lungi si formale\n"
+        "- text_overlay: 2-4 fraze scurte (sub-titrari dinamice), nu propozitii intregi\n"
+        "- alege creative_angle descriptiv (ex. contrarian_warning, problem_solution, "
+        "ugc_unboxing, objection_first, mistake_opener)\n"
+        f"- raspunde DOAR cu JSON, exact campurile: {json.dumps(schema_types, ensure_ascii=False)}"
+    )
+
+
 class AdCopyGenerator:
     """Genereaza copy emotional pentru un cuvant cheie, cu un client injectat."""
 
@@ -110,25 +162,51 @@ class AdCopyGenerator:
         return self._swipe.styles()
 
     def generate_emotional_copy(
-        self, product_usp: str, target_keyword: str, emotion_trigger: str
-    ) -> dict[str, str]:
+        self,
+        product_usp: str,
+        target_keyword: str,
+        emotion_trigger: str,
+        platform: Platform = "google",
+    ) -> dict[str, Any]:
         """Genereaza copy pentru un anunt si il returneaza strict ca dict.
 
         Args:
             product_usp: Propunerea unica de valoare a produsului / serviciului.
-            target_keyword: Cuvantul cheie exact-match (fortat intr-un headline).
+            target_keyword: Cuvantul cheie exact-match (Google) / nisa tinta (TikTok).
             emotion_trigger: Declansatorul emotional (``"frica"``, ``"status"``,
                 ``"fomo"``, sau o descriere).
+            platform: ``"google"`` (implicit, comportament neschimbat: headline/desc
+                cu retry pe limite) sau ``"tiktok"`` (script video, RAG pe nisa/cuvant
+                cheie peste ``tiktok_swipe_library``, fara retry — limitele Google nu
+                se aplica).
 
         Returns:
-            ``{"headline_1": "...", "headline_2": "...", "description": "..."}``.
+            Pentru ``google``: ``{"headline_1", "headline_2", "description"}``.
+            Pentru ``tiktok``: campurile :class:`~ppc_agent.copywriter.models.TikTokAdCopy`
+            (``text_overlay`` e o lista, deci tipul de returnare e ``dict[str, Any]``).
 
         Raises:
-            SwipeFileError: Daca declansatorul nu se potriveste cu niciun framework.
-            AdsLimitError: Daca dupa toate incercarile copy-ul tot depaseste limitele.
-            CopywriterError: Daca cuvantul cheie e mai lung decat limita de headline.
+            SwipeFileError: Daca declansatorul/nisa nu se potriveste cu nimic
+                (google), sau ``tiktok_swipe_library`` e goala (tiktok).
+            AdsLimitError: Google, daca dupa toate incercarile tot depaseste limitele.
+            CopywriterError: Cuvantul cheie e mai lung decat limita de headline
+                (google), sau raspunsul clientului nu respecta schema (ambele).
         """
         keyword = " ".join(target_keyword.split())
+
+        if platform == "tiktok":
+            examples = retrieve_tiktok_examples(self._swipe, keyword)
+            system_prompt = build_tiktok_system_prompt(examples)
+            tiktok_spec = TikTokCopySpec(
+                product_usp=product_usp,
+                target_keyword=keyword,
+                emotion_trigger=emotion_trigger,
+                examples=examples,
+                system_prompt=system_prompt,
+            )
+            tiktok_ad = self._client.generate_tiktok(tiktok_spec)
+            return tiktok_ad.as_dict()
+
         if char_count(keyword) > HEADLINE_LIMIT:
             raise CopywriterError(
                 f"cuvantul cheie '{keyword}' are {char_count(keyword)} caractere si "

@@ -13,9 +13,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ppc_agent.copywriter.models import Framework, SwipeFile
+from ppc_agent.copywriter.models import Framework, SwipeFile, TikTokSwipeRecord
 from ppc_agent.errors import SwipeFileError
 from ppc_agent.texttools import normalize, tokenize
+
+_DEFAULT_TIKTOK_EXAMPLES = 2
 
 # Sinonime pentru declansatorul emotional -> stil de framework.
 _TRIGGER_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -114,3 +116,48 @@ def retrieve_framework(swipe: SwipeFile, emotion_trigger: str) -> Framework:
             f"Disponibile: {available}"
         )
     return best
+
+
+def _niche_overlap(record: TikTokSwipeRecord, keyword_tokens: set[str]) -> int:
+    haystack = set(tokenize(f"{record.niche} {record.format}"))
+    return len(haystack & keyword_tokens)
+
+
+def retrieve_tiktok_examples(
+    swipe: SwipeFile, target_keyword: str, *, limit: int = _DEFAULT_TIKTOK_EXAMPLES
+) -> list[TikTokSwipeRecord]:
+    """Cele mai relevante intrari din ``tiktok_swipe_library`` pentru ``target_keyword``.
+
+    RAG simplu, ca la :func:`retrieve_framework`: suprapunere de jetoane intre
+    cuvantul cheie tinta si campurile ``niche``/``format`` ale fiecarei intrari,
+    fara embeddings. La egalitate de scor, castiga intrarea activa mai mult timp
+    (``days_active_proxy``) — o reclama dovedita e un exemplu mai de incredere.
+    Nu ridica eroare la suprapunere zero (un exemplu generic tot ajuta un LLM ca
+    ghidaj de ritm/ton); ridica doar daca biblioteca e complet goala.
+
+    Args:
+        swipe: Continutul swipe file.
+        target_keyword: Cuvantul cheie / nisa tinta a anuntului.
+        limit: Numarul maxim de exemple returnate.
+
+    Returns:
+        Pana la ``limit`` intrari, ordonate descrescator dupa relevanta.
+
+    Raises:
+        SwipeFileError: Daca ``tiktok_swipe_library`` e goala.
+    """
+    if not swipe.tiktok_swipe_library:
+        raise SwipeFileError(
+            "tiktok_swipe_library este goala in swipe_file.json - ruleaza "
+            "'ingest-tiktok' sau adauga intrari manual"
+        )
+    keyword_tokens = set(tokenize(target_keyword))
+    ranked = sorted(
+        swipe.tiktok_swipe_library,
+        key=lambda record: (
+            _niche_overlap(record, keyword_tokens),
+            record.days_active_proxy,
+        ),
+        reverse=True,
+    )
+    return ranked[:limit]

@@ -26,5 +26,12 @@ proposed_changes*.json
 proposed_ads_queue.json
 creative_output/
 
+# Biblioteca TikTok acumulata din 'ingest-tiktok' — generata, nu sursa
+# (diferita de cheia tiktok_swipe_library din swipe_file.json, care e comisa)
+tiktok_swipe_library.json
+
 # Configurare locala a marketerului (poate contine domenii/branduri private)
 config.yaml
+
+# Stare locala Claude Code (unelte, nu proiect)
+.claude/

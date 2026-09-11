@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,10 +37,30 @@ class Framework(BaseModel):
     example_ad: ExampleAd
 
 
+class TikTokSwipeRecord(BaseModel):
+    """O intrare din biblioteca proprie de anunturi TikTok cu performanta dovedita.
+
+    ``days_active_proxy`` e un semnal indirect de performanta: platformele opresc
+    rapid anunturile care nu merg, deci o reclama activa mult timp e, de regula,
+    profitabila. Folosit ca tie-breaker la recuperarea RAG (vezi
+    :func:`~ppc_agent.copywriter.swipe.retrieve_tiktok_examples`).
+    """
+
+    ad_id: str
+    niche: str
+    format: str
+    days_active_proxy: int = 14
+    hook_visual: str
+    hook_audio: str
+    mechanism_proof: str
+    cta_text: str
+
+
 class SwipeFile(BaseModel):
     """Continutul ``swipe_file.json``."""
 
     frameworks: list[Framework] = Field(min_length=1)
+    tiktok_swipe_library: list[TikTokSwipeRecord] = Field(default_factory=list)
 
     def styles(self) -> list[str]:
         """Stilurile disponibile, in ordine."""
@@ -63,6 +83,22 @@ class AdCopy(BaseModel):
         }
 
 
+class TikTokAdCopy(BaseModel):
+    """Copy-ul final al unui anunt TikTok (script video vertical, 9:16)."""
+
+    visual_hook_concept: str
+    audio_hook: str
+    body_script: str
+    text_overlay: list[str]
+    call_to_action: str
+    creative_angle: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """Forma ceruta la iesire; spre deosebire de :class:`AdCopy`, nu e omogena
+        (``text_overlay`` e o lista), deci foloseste tipul mai larg ``Any``."""
+        return self.model_dump()
+
+
 class CopySpec(BaseModel):
     """Tot ce ii trebuie unui :class:`~ppc_agent.copywriter.llm.BaseLLMClient` sa genereze."""
 
@@ -74,6 +110,17 @@ class CopySpec(BaseModel):
     headline_limit: int = HEADLINE_LIMIT
     description_limit: int = DESCRIPTION_LIMIT
     tighten: int = 0
+
+
+class TikTokCopySpec(BaseModel):
+    """Tot ce ii trebuie unui :class:`~ppc_agent.copywriter.llm.BaseLLMClient` sa
+    genereze un :class:`TikTokAdCopy`."""
+
+    product_usp: str
+    target_keyword: str
+    emotion_trigger: str
+    examples: list[TikTokSwipeRecord] = Field(default_factory=list)
+    system_prompt: str
 
 
 class QueuedAd(BaseModel):

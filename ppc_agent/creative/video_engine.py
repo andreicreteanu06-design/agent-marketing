@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Literal
 
 from ppc_agent.errors import SetupRequiredError, VideoAssemblyError
+
+AspectRatio = Literal["16:9", "9:16"]
 
 # Box ``ftyp`` minim valid: size(4) + 'ftyp'(4) + major(4) + minor(4) + brands(8) = 24.
 _MP4_FTYP_STUB = bytes.fromhex(
@@ -37,6 +40,9 @@ class BaseVideoBuilder(ABC):
         voiceover_path: Path,
         subtitle_text: str,
         out_path: Path,
+        visual_hook_concept: str | None = None,
+        text_overlay: list[str] | None = None,
+        aspect_ratio: AspectRatio = "16:9",
     ) -> Path:
         """Asambleaza anuntul video.
 
@@ -45,6 +51,12 @@ class BaseVideoBuilder(ABC):
             voiceover_path: Fisierul ``.wav`` cu naratiunea.
             subtitle_text: Textul exact al anuntului, pentru subtitrari dinamice.
             out_path: Calea ``.mp4`` de scris.
+            visual_hook_concept: (TikTok) instructiune vizuala pentru primele
+                secunde (ex. "zoom rapid"). ``None`` = neaplicabil (Google).
+            text_overlay: (TikTok) fraze scurte de afisat ca sub-titrari dinamice,
+                separat de ``subtitle_text``. ``None`` = neaplicabil (Google).
+            aspect_ratio: ``"16:9"`` (implicit, Google) sau ``"9:16"`` (TikTok,
+                video vertical).
 
         Returns:
             Calea fisierului ``.mp4`` scris.
@@ -80,18 +92,26 @@ class MockFlickBuilder(BaseVideoBuilder):
         voiceover_path: Path,
         subtitle_text: str,
         out_path: Path,
+        visual_hook_concept: str | None = None,
+        text_overlay: list[str] | None = None,
+        aspect_ratio: AspectRatio = "16:9",
     ) -> Path:
         """Scrie un stub ``.mp4`` si un manifest JSON alaturat."""
         _require_inputs(broll_path, voiceover_path, subtitle_text)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         out_path.write_bytes(_MP4_FTYP_STUB)
-        manifest = {
+        manifest: dict[str, object] = {
             "engine": self.engine,
             "broll": str(broll_path),
             "voiceover": str(voiceover_path),
             "subtitles": subtitle_text,
+            "aspect_ratio": aspect_ratio,
         }
+        if visual_hook_concept is not None:
+            manifest["visual_hook_concept"] = visual_hook_concept
+        if text_overlay is not None:
+            manifest["text_overlay"] = text_overlay
         manifest_path(out_path).write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -114,6 +134,9 @@ class FlickVideoBuilder(BaseVideoBuilder):
         voiceover_path: Path,
         subtitle_text: str,
         out_path: Path,
+        visual_hook_concept: str | None = None,
+        text_overlay: list[str] | None = None,
+        aspect_ratio: AspectRatio = "16:9",
     ) -> Path:
         """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
         _require_inputs(broll_path, voiceover_path, subtitle_text)

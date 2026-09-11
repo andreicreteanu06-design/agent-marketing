@@ -19,7 +19,13 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from ppc_agent.copywriter.models import AdCopy, CopySpec, char_count
+from ppc_agent.copywriter.models import (
+    AdCopy,
+    CopySpec,
+    TikTokAdCopy,
+    TikTokCopySpec,
+    char_count,
+)
 from ppc_agent.errors import CopywriterError, SetupRequiredError
 
 
@@ -34,6 +40,18 @@ class BaseLLMClient(ABC):
         respecte limitele Google Ads (validarea + retry-ul se fac in
         :class:`~ppc_agent.copywriter.engine.AdCopyGenerator`).
         """
+
+    def generate_tiktok(self, spec: TikTokCopySpec) -> TikTokAdCopy:
+        """Genereaza un script TikTok conform ``spec``.
+
+        Metoda concreta (nu abstracta), cu implicit ``NotImplementedError`` —
+        clientii de test existenti (care implementeaza doar :meth:`generate`)
+        raman instantiabili fara modificari. Clientii reali (:class:`MockLLMClient`,
+        :class:`LiveLLMClient`) o suprascriu.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} nu suporta generarea de copy TikTok"
+        )
 
 
 def _stable_index(seed: str, modulo: int) -> int:
@@ -112,6 +130,33 @@ _DESC_TAIL: dict[str, str] = {
     "aida": "Vezi singur diferenta - incepe gratuit azi.",
 }
 
+# Banci pentru randarea determinista a scripturilor TikTok, pe unghi creativ.
+# Nu copiaza textul exemplelor recuperate din swipe library (acelea sunt doar
+# context) — compune propriu, ca si generatorul Google de mai sus.
+_TIKTOK_ANGLES: tuple[str, ...] = (
+    "contrarian_warning",
+    "problem_solution",
+    "ugc_unboxing",
+    "objection_first",
+    "mistake_opener",
+)
+
+_TIKTOK_HOOKS: dict[str, str] = {
+    "contrarian_warning": "Nu mai face asta cu {kw} pana nu vezi clipul asta",
+    "problem_solution": "Daca ai probleme cu {kw}, uite ce am gasit",
+    "ugc_unboxing": "Am comandat {kw} si va arat exact ce am primit",
+    "objection_first": "Stiu ce gandesti despre {kw} - hai sa lamurim",
+    "mistake_opener": "Greseala pe care o fac toti cu {kw}",
+}
+
+_TIKTOK_VISUAL: dict[str, str] = {
+    "contrarian_warning": "Zoom rapid pe defect, camera usor instabila",
+    "problem_solution": "Split-screen inainte / dupa",
+    "ugc_unboxing": "Prim-plan pe ambalaj, mana care despacheteaza",
+    "objection_first": "Vorbeste direct in camera, fara filtru",
+    "mistake_opener": "Gest de stop cu mana, apoi produsul in cadru",
+}
+
 
 class MockLLMClient(BaseLLMClient):
     """Generator determinist care randeaza copy pe stilul framework-ului.
@@ -159,6 +204,31 @@ class MockLLMClient(BaseLLMClient):
             description=description,
         )
 
+    def generate_tiktok(self, spec: TikTokCopySpec) -> TikTokAdCopy:
+        """Randeaza :class:`TikTokAdCopy` determinist: hook + body + cta.
+
+        Foloseste primul exemplu recuperat (daca exista) doar ca ancora usoara
+        pentru CTA si dovada — nu copiaza text 1:1, la fel ca partea Google.
+        """
+        keyword = " ".join(spec.target_keyword.split())
+        usp = " ".join(spec.product_usp.split()).rstrip(".")
+        angle = _TIKTOK_ANGLES[_stable_index(f"{keyword}|tiktok", len(_TIKTOK_ANGLES))]
+        example = spec.examples[0] if spec.examples else None
+
+        cta = example.cta_text if example else "Link in bio"
+        body = f"{usp}." if usp else f"Solutie pentru {keyword}."
+        if example is not None:
+            body = f"{body} {example.mechanism_proof}"
+
+        return TikTokAdCopy(
+            visual_hook_concept=_TIKTOK_VISUAL[angle],
+            audio_hook=_TIKTOK_HOOKS[angle].format(kw=keyword),
+            body_script=body,
+            text_overlay=[_titlecase_keyword(keyword), "Dovedit", cta],
+            call_to_action=cta,
+            creative_angle=angle,
+        )
+
 
 _DEFAULT_ENDPOINT = "http://localhost:11434"
 _DEFAULT_TIMEOUT = 60.0
@@ -187,6 +257,27 @@ def _build_user_prompt(spec: CopySpec) -> str:
     lines.append(
         'Raspunde DOAR cu JSON: {"headline_1": "...", "headline_2": "...", '
         '"description": "..."}'
+    )
+    return "\n".join(lines)
+
+
+def _build_tiktok_user_prompt(spec: TikTokCopySpec) -> str:
+    """User prompt-ul TikTok, cu exemplele dovedite recuperate ca ancora RAG."""
+    lines = [
+        f"Nisa / cuvant cheie tinta: {spec.target_keyword}",
+        f"USP produs/serviciu: {spec.product_usp}",
+        f"Declansator emotional: {spec.emotion_trigger}",
+    ]
+    for example in spec.examples:
+        lines.append(
+            f"Exemplu dovedit ({example.niche}, activ {example.days_active_proxy} zile): "
+            f'hook audio "{example.hook_audio}" | dovada "{example.mechanism_proof}" | '
+            f'cta "{example.cta_text}"'
+        )
+    lines.append(
+        'Raspunde DOAR cu JSON: {"visual_hook_concept": "...", "audio_hook": "...", '
+        '"body_script": "...", "text_overlay": ["...", "..."], "call_to_action": "...", '
+        '"creative_angle": "..."}'
     )
     return "\n".join(lines)
 
@@ -241,13 +332,16 @@ class LiveLLMClient(BaseLLMClient):
         """Suprascrierea ``num_gpu`` (``None`` = Ollama decide singur)."""
         return self._num_gpu
 
-    def generate(self, spec: CopySpec) -> AdCopy:
-        """Cere modelului Ollama copy conform ``spec``; parseaza JSON-ul returnat.
+    def _call_ollama_chat(self, system_prompt: str, user_prompt: str) -> Any:
+        """Trimite system+user prompt catre Ollama; returneaza continutul JSON parsat.
+
+        Centralizeaza conectare/timeout/model lipsa/raspuns intrerupt — reutilizat
+        de :meth:`generate` si :meth:`generate_tiktok`, ca ``PPC_LLM_NUM_GPU`` si
+        toate mesajele de eroare sa ramana valabile peste tot, fara duplicare.
 
         Raises:
             SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
-            CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid cu
-                campurile asteptate.
+            CopywriterError: Serverul a raspuns, dar cu eroare HTTP sau raspuns intrerupt.
         """
         options: dict[str, Any] = {"temperature": 0.6}
         if self._num_gpu is not None:
@@ -255,8 +349,8 @@ class LiveLLMClient(BaseLLMClient):
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": spec.system_prompt},
-                {"role": "user", "content": _build_user_prompt(spec)},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
             "format": "json",
             "stream": False,
@@ -292,20 +386,49 @@ class LiveLLMClient(BaseLLMClient):
                 f"Ollama a raspuns cu eroarea {response.status_code}: {response.text[:200]}"
             )
 
+        data = response.json()
+        if data.get("done") is False:
+            raise CopywriterError(
+                f"Ollama a intrerupt generarea pentru '{self._model}' inainte de a "
+                "termina raspunsul (posibil model corupt sau incarcare esuata). "
+                "Verifica 'ollama ps' si log-urile serverului, sau redescarca-l: "
+                f"ollama pull {self._model}"
+            )
+        content = data["message"]["content"]
+        return json.loads(content)
+
+    def generate(self, spec: CopySpec) -> AdCopy:
+        """Cere modelului Ollama copy conform ``spec``; parseaza JSON-ul returnat.
+
+        Raises:
+            SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
+            CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid cu
+                campurile asteptate.
+        """
         try:
-            data = response.json()
-            if data.get("done") is False:
-                raise CopywriterError(
-                    f"Ollama a intrerupt generarea pentru '{self._model}' inainte de a "
-                    "termina raspunsul (posibil model corupt sau incarcare esuata). "
-                    "Verifica 'ollama ps' si log-urile serverului, sau redescarca-l: "
-                    f"ollama pull {self._model}"
-                )
-            content = data["message"]["content"]
-            parsed = json.loads(content)
+            parsed = self._call_ollama_chat(spec.system_prompt, _build_user_prompt(spec))
             return AdCopy.model_validate(parsed)
         except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
             raise CopywriterError(
                 f"raspunsul modelului '{self._model}' nu e JSON valid cu campurile "
                 f"asteptate (headline_1/headline_2/description): {exc}"
+            ) from exc
+
+    def generate_tiktok(self, spec: TikTokCopySpec) -> TikTokAdCopy:
+        """Cere modelului Ollama un script TikTok conform ``spec``.
+
+        Raises:
+            SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
+            CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid cu
+                schema :class:`TikTokAdCopy`.
+        """
+        try:
+            parsed = self._call_ollama_chat(
+                spec.system_prompt, _build_tiktok_user_prompt(spec)
+            )
+            return TikTokAdCopy.model_validate(parsed)
+        except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise CopywriterError(
+                f"raspunsul modelului '{self._model}' nu e JSON valid pentru "
+                f"schema TikTokAdCopy: {exc}"
             ) from exc

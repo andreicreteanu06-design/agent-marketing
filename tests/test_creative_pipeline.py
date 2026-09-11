@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,10 @@ from typer.testing import CliRunner
 from ppc_agent.cli import app
 from ppc_agent.config import AppConfig, ProviderMode, Settings
 from ppc_agent.copywriter.llm import BaseLLMClient, LiveLLMClient, MockLLMClient
-from ppc_agent.copywriter.models import AdCopy, CopySpec
+from ppc_agent.copywriter.models import AdCopy, CopySpec, TikTokAdCopy
 from ppc_agent.creative.audio_engine import FishSpeechClient, MockFishSpeechClient
 from ppc_agent.creative.creative_pipeline import (
+    build_tiktok_vo_script,
     build_vo_script,
     generate_full_ad_creative,
 )
@@ -83,6 +85,46 @@ def test_llm_client_is_injected_not_hardcoded(tmp_path: Path) -> None:
     assert "frana uzata" in result.ad_copy.headline_1.lower()
 
 
+def test_tiktok_platform_produces_9_16_creative(tmp_path: Path) -> None:
+    result = generate_full_ad_creative(
+        MockLLMClient(),
+        MockFishSpeechClient(),
+        MockFlickBuilder(),
+        keyword="cutie de viteze",
+        raw_broll_path=_broll(tmp_path),
+        emotion_trigger="frica",
+        platform="tiktok",
+        output_dir=tmp_path / "out",
+    )
+
+    assert result.platform == "tiktok"
+    assert result.framework_style is None
+    assert result.creative_angle is not None
+    assert isinstance(result.ad_copy, TikTokAdCopy)
+    assert Path(result.mp4_path).is_file()
+
+    manifest = json.loads(
+        Path(f"{result.mp4_path}.manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["aspect_ratio"] == "9:16"
+    assert manifest["visual_hook_concept"] == result.ad_copy.visual_hook_concept
+    assert manifest["text_overlay"] == result.ad_copy.text_overlay
+
+
+def test_build_tiktok_vo_script_combines_hook_body_cta() -> None:
+    script = build_tiktok_vo_script(
+        TikTokAdCopy(
+            visual_hook_concept="zoom",
+            audio_hook="Nu mai face asta",
+            body_script="Uite dovada",
+            text_overlay=["Dovedit"],
+            call_to_action="Link in bio",
+            creative_angle="mistake_opener",
+        )
+    )
+    assert script == "Nu mai face asta. Uite dovada. Link in bio."
+
+
 def test_missing_broll_raises(tmp_path: Path) -> None:
     with pytest.raises(VideoAssemblyError):
         generate_full_ad_creative(
@@ -137,6 +179,34 @@ def test_cli_build_creative_outputs_mp4_path(
     produced = list((tmp_path / "creative_output").glob("*.mp4"))
     assert len(produced) == 1
     assert produced[0].read_bytes().startswith(b"\x00\x00\x00\x18ftyp")
+
+
+def test_cli_build_creative_tiktok_platform_produces_9_16_mp4(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    broll = _broll(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "build-creative",
+            "--keyword",
+            "cutie de viteze",
+            "--broll",
+            str(broll),
+            "--trigger",
+            "frica",
+            "--platform",
+            "tiktok",
+        ],
+    )
+    assert result.exit_code == 0
+    assert ".mp4" in result.output
+
+    produced = list((tmp_path / "creative_output").glob("*.mp4"))
+    assert len(produced) == 1
+    manifest = json.loads(Path(f"{produced[0]}.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["aspect_ratio"] == "9:16"
 
 
 def test_cli_build_creative_missing_broll_exits_nonzero(

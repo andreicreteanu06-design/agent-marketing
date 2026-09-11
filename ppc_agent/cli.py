@@ -15,7 +15,7 @@ Flux tipic::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from rich.console import Console
@@ -33,6 +33,7 @@ from ppc_agent.errors import (
     PpcAgentError,
     SetupRequiredError,
     SpendLimitExceeded,
+    TikTokIngestError,
     TtsError,
     VideoAssemblyError,
 )
@@ -44,6 +45,11 @@ from ppc_agent.guardrails.pipeline import (
 )
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
 from ppc_agent.ingestion.pipeline import render_ingestion, run_ingestion
+from ppc_agent.ingestion.tiktok_ingestion import (
+    LIBRARY_FILENAME,
+    render_tiktok_ingest,
+    run_tiktok_ingest,
+)
 from ppc_agent.providers.factory import ProviderFactory
 
 app = typer.Typer(
@@ -148,6 +154,10 @@ def build_creative(
     trigger: Annotated[
         str, typer.Option("--trigger", help="Declansator emotional: pas/status/fomo/aida.")
     ] = "aida",
+    platform: Annotated[
+        Literal["google", "tiktok"],
+        typer.Option("--platform", help="google (16:9) sau tiktok (script UGC, 9:16)."),
+    ] = "google",
     config: _ConfigOption = "config.yaml",
 ) -> None:
     """Modulul 5: copy emotional -> voce (Fish Speech) -> video (Flick) -> .mp4.
@@ -165,6 +175,7 @@ def build_creative(
             raw_broll_path=broll,
             emotion_trigger=trigger,
             product_usp=usp or None,
+            platform=platform,
             output_dir=Path.cwd() / "creative_output",
         )
     except TtsError as exc:
@@ -179,6 +190,27 @@ def build_creative(
 
     render_creative(result, console)
     console.print(f"\n{result.mp4_path}")
+
+
+@app.command()
+def ingest_tiktok(
+    input_path: Annotated[
+        str,
+        typer.Option("--input", help="Cale catre CSV sau JSON cu anunturi TikTok dovedite."),
+    ],
+) -> None:
+    """Valideaza anunturi TikTok si le adauga in tiktok_swipe_library.json.
+
+    Fara LLM: intrarile sunt deja structurate (nisa/format/hook/cta), doar se
+    valideaza si se deduplica dupa ad_id. Biblioteca alimenteaza RAG-ul folosit
+    de 'copy'/'build-creative' pentru scripturi TikTok.
+    """
+    try:
+        added = run_tiktok_ingest(input_path, Path.cwd())
+    except TikTokIngestError as exc:
+        console.print(f"[red]ingestia a esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    render_tiktok_ingest(added, Path.cwd() / LIBRARY_FILENAME, console)
 
 
 @app.command()

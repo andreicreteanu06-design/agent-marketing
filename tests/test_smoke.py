@@ -18,6 +18,7 @@ _COMMANDS = (
     "plan",
     "copy",
     "build-creative",
+    "ingest-tiktok",
     "propose",
     "execute",
     "status",

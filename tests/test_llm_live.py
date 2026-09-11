@@ -12,12 +12,18 @@ import httpx
 import pytest
 
 from ppc_agent.config import AppConfig, ProviderMode, Settings
-from ppc_agent.copywriter.engine import AdCopyGenerator, build_system_prompt
+from ppc_agent.copywriter.engine import (
+    AdCopyGenerator,
+    build_system_prompt,
+    build_tiktok_system_prompt,
+)
 from ppc_agent.copywriter.llm import LiveLLMClient
 from ppc_agent.copywriter.models import (
     DESCRIPTION_LIMIT,
     HEADLINE_LIMIT,
     CopySpec,
+    TikTokCopySpec,
+    TikTokSwipeRecord,
     char_count,
 )
 from ppc_agent.copywriter.swipe import default_swipe_path, load_swipe_file, retrieve_framework
@@ -37,6 +43,41 @@ def _spec(tighten: int = 0) -> CopySpec:
         framework=framework,
         system_prompt=system_prompt,
         tighten=tighten,
+    )
+
+
+_TIKTOK_EXAMPLE = TikTokSwipeRecord(
+    ad_id="t1",
+    niche="reparatii auto cutie de viteze",
+    format="talking_head_warning",
+    days_active_proxy=30,
+    hook_visual="zoom",
+    hook_audio="hook dovedit",
+    mechanism_proof="dovada dovedita",
+    cta_text="suna acum",
+)
+
+_VALID_TIKTOK_AD = {
+    "visual_hook_concept": "Zoom rapid pe produs",
+    "audio_hook": "Nu mai face asta",
+    "body_script": "Uite dovada clara",
+    "text_overlay": ["Dovedit", "Comanda acum"],
+    "call_to_action": "Link in bio",
+    "creative_angle": "mistake_opener",
+}
+
+
+def _tiktok_spec(examples: list[TikTokSwipeRecord] | None = None) -> TikTokCopySpec:
+    resolved = _TIKTOK_EXAMPLE if examples is None else examples
+    system_prompt = build_tiktok_system_prompt(
+        [resolved] if isinstance(resolved, TikTokSwipeRecord) else resolved
+    )
+    return TikTokCopySpec(
+        product_usp=_USP,
+        target_keyword="program facturare",
+        emotion_trigger="fomo",
+        examples=[resolved] if isinstance(resolved, TikTokSwipeRecord) else resolved,
+        system_prompt=system_prompt,
     )
 
 
@@ -241,6 +282,44 @@ def test_num_gpu_is_omitted_when_not_set() -> None:
     assert "num_gpu" not in body["options"]
 
 
+def test_generate_tiktok_parses_valid_json_content() -> None:
+    client = LiveLLMClient(model="llama3", transport=_ok_transport(_VALID_TIKTOK_AD))
+    ad = client.generate_tiktok(_tiktok_spec())
+    assert ad.audio_hook == _VALID_TIKTOK_AD["audio_hook"]
+    assert ad.text_overlay == _VALID_TIKTOK_AD["text_overlay"]
+    assert ad.creative_angle == _VALID_TIKTOK_AD["creative_angle"]
+
+
+def test_generate_tiktok_shares_error_handling_with_generate() -> None:
+    """Aceeasi cale (_call_ollama_chat) => aceleasi erori clare, fara duplicare."""
+    client = LiveLLMClient(
+        model="llama3", transport=_raising_transport(httpx.ConnectError("refuzat"))
+    )
+    with pytest.raises(SetupRequiredError, match="ollama serve"):
+        client.generate_tiktok(_tiktok_spec())
+
+
+def test_generate_tiktok_num_gpu_is_included_when_set() -> None:
+    captured: list[httpx.Request] = []
+    client = LiveLLMClient(
+        model="llama3",
+        num_gpu=0,
+        transport=_capturing_transport(_VALID_TIKTOK_AD, captured),
+    )
+    client.generate_tiktok(_tiktok_spec())
+    body = json.loads(captured[0].content)
+    assert body["options"]["num_gpu"] == 0
+
+
+def test_generate_tiktok_missing_fields_raises_copywriter_error() -> None:
+    client = LiveLLMClient(
+        model="llama3",
+        transport=_raw_content_transport(json.dumps({"audio_hook": "doar asta"})),
+    )
+    with pytest.raises(CopywriterError, match="TikTokAdCopy"):
+        client.generate_tiktok(_tiktok_spec())
+
+
 def test_creative_factory_wires_model_and_endpoint_from_settings() -> None:
     cfg = AppConfig(
         settings=Settings(
@@ -302,3 +381,21 @@ def test_ad_copy_generator_end_to_end_with_live_client() -> None:
     assert set(result) == {"headline_1", "headline_2", "description"}
     assert char_count(result["headline_1"]) <= HEADLINE_LIMIT
     assert char_count(result["description"]) <= DESCRIPTION_LIMIT
+
+
+def test_ad_copy_generator_tiktok_end_to_end_with_live_client() -> None:
+    """Integrare: AdCopyGenerator (RAG pe niche) peste un LiveLLMClient simulat, TikTok."""
+    client = LiveLLMClient(model="llama3", transport=_ok_transport(_VALID_TIKTOK_AD))
+    generator = AdCopyGenerator(client)
+    result = generator.generate_emotional_copy(
+        _USP, "cutie de viteze auto", "frica", platform="tiktok"
+    )
+    assert set(result) == {
+        "visual_hook_concept",
+        "audio_hook",
+        "body_script",
+        "text_overlay",
+        "call_to_action",
+        "creative_angle",
+    }
+    assert result["text_overlay"] == _VALID_TIKTOK_AD["text_overlay"]
