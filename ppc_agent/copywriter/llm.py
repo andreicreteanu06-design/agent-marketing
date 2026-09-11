@@ -217,11 +217,13 @@ class LiveLLMClient(BaseLLMClient):
         endpoint: str = "",
         *,
         timeout: float = _DEFAULT_TIMEOUT,
+        num_gpu: int | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._model = _normalize_model_tag(model)
         self._endpoint = (endpoint or _DEFAULT_ENDPOINT).rstrip("/")
         self._timeout = timeout
+        self._num_gpu = num_gpu
         self._transport = transport
 
     @property
@@ -234,6 +236,11 @@ class LiveLLMClient(BaseLLMClient):
         """Adresa serverului Ollama (implicit ``http://localhost:11434``)."""
         return self._endpoint
 
+    @property
+    def num_gpu(self) -> int | None:
+        """Suprascrierea ``num_gpu`` (``None`` = Ollama decide singur)."""
+        return self._num_gpu
+
     def generate(self, spec: CopySpec) -> AdCopy:
         """Cere modelului Ollama copy conform ``spec``; parseaza JSON-ul returnat.
 
@@ -242,6 +249,9 @@ class LiveLLMClient(BaseLLMClient):
             CopywriterError: Serverul a raspuns, dar continutul nu e JSON valid cu
                 campurile asteptate.
         """
+        options: dict[str, Any] = {"temperature": 0.6}
+        if self._num_gpu is not None:
+            options["num_gpu"] = self._num_gpu
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
@@ -250,7 +260,7 @@ class LiveLLMClient(BaseLLMClient):
             ],
             "format": "json",
             "stream": False,
-            "options": {"temperature": 0.6},
+            "options": options,
         }
         try:
             with httpx.Client(transport=self._transport, timeout=self._timeout) as client:

@@ -20,6 +20,17 @@ from ppc_agent.creative.video_engine import (
 )
 
 
+def _parse_num_gpu(raw: str) -> int | None:
+    """``settings.llm_num_gpu`` (sir, poate fi gol) -> intreg sau ``None``.
+
+    O valoare necompletata sau nenumerica inseamna "lasa Ollama sa decida".
+    """
+    try:
+        return int(raw) if raw.strip() else None
+    except ValueError:
+        return None
+
+
 class CreativeFactory:
     """Construieste clientii pentru lantul de creatie: LLM, sinteza vocala, video.
 
@@ -39,7 +50,11 @@ class CreativeFactory:
         """Clientul de generare de copy pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
             settings = self._config.settings
-            return LiveLLMClient(model=settings.llm_model, endpoint=settings.llm_endpoint)
+            return LiveLLMClient(
+                model=settings.llm_model,
+                endpoint=settings.llm_endpoint,
+                num_gpu=_parse_num_gpu(settings.llm_num_gpu),
+            )
         return MockLLMClient()
 
     def tts(self) -> BaseTtsClient:

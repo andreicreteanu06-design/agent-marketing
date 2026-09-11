@@ -223,6 +223,24 @@ def test_missing_fields_raises_copywriter_error() -> None:
         client.generate(_spec())
 
 
+def test_num_gpu_is_included_in_request_options_when_set() -> None:
+    captured: list[httpx.Request] = []
+    client = LiveLLMClient(
+        model="llama3", num_gpu=0, transport=_capturing_transport(_VALID_AD, captured)
+    )
+    client.generate(_spec())
+    body = json.loads(captured[0].content)
+    assert body["options"]["num_gpu"] == 0
+
+
+def test_num_gpu_is_omitted_when_not_set() -> None:
+    captured: list[httpx.Request] = []
+    client = LiveLLMClient(model="llama3", transport=_capturing_transport(_VALID_AD, captured))
+    client.generate(_spec())
+    body = json.loads(captured[0].content)
+    assert "num_gpu" not in body["options"]
+
+
 def test_creative_factory_wires_model_and_endpoint_from_settings() -> None:
     cfg = AppConfig(
         settings=Settings(
@@ -251,6 +269,29 @@ def test_creative_factory_respects_custom_endpoint() -> None:
     assert isinstance(client, LiveLLMClient)
     assert client.model == "qwen2.5"
     assert client.endpoint == "http://192.168.1.50:11434"
+
+
+def test_creative_factory_parses_num_gpu_zero_from_settings() -> None:
+    cfg = AppConfig(
+        settings=Settings(
+            _env_file=None,
+            provider_mode=ProviderMode.LIVE,
+            llm_model="llama3",
+            llm_num_gpu="0",
+        )
+    )
+    client = CreativeFactory(cfg).llm()
+    assert isinstance(client, LiveLLMClient)
+    assert client.num_gpu == 0
+
+
+def test_creative_factory_leaves_num_gpu_unset_by_default() -> None:
+    cfg = AppConfig(
+        settings=Settings(_env_file=None, provider_mode=ProviderMode.LIVE, llm_model="llama3")
+    )
+    client = CreativeFactory(cfg).llm()
+    assert isinstance(client, LiveLLMClient)
+    assert client.num_gpu is None
 
 
 def test_ad_copy_generator_end_to_end_with_live_client() -> None:

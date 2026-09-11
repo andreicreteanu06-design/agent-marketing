@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Client LLM pentru copywriter (doar pentru PPC_PROVIDER_MODE=live)
     llm_model: str = "ollama/llama3"
     llm_endpoint: str = ""
+    # Gol => Ollama decide (GPU daca detecteaza una). Seteaza "0" daca placa video
+    # produce raspunsuri corupte/incoerente (vazut cu GPU-uri AMD slabe/nesuportate) —
+    # forteaza inferenta pe CPU, care e mereu corecta, doar mai lenta.
+    llm_num_gpu: str = ""
 
     # Modulul 5 — creatii audio/video (doar pentru PPC_PROVIDER_MODE=live)
     fish_speech_url: str = ""
