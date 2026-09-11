@@ -13,6 +13,9 @@ uvicorn[standard]>=0.32,<1
 # --- Persistenta (Faza D) ---
 sqlmodel>=0.0.22,<1
 alembic>=1.13,<2
+# psycopg — necesar doar pentru DATABASE_URL=postgresql://... (calea optionala
+# de productie, vezi docker-compose.yml). SQLite (implicit) nu are nevoie de el.
+psycopg[binary]>=3.2,<4
 
 # --- Job-uri in fundal (Faza F) — optionale la rulare: fara REDIS_URL setat,
 # serverul foloseste InlineJobQueue (sincron, in proces) si nu are nevoie de ele.

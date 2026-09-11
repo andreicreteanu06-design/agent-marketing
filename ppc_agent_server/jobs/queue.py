@@ -15,6 +15,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
 
+from ppc_agent_server.settings import get_server_settings
+
 JobStatusLabel = Literal["queued", "running", "success", "failed"]
 
 
@@ -30,11 +32,16 @@ class JobResult(BaseModel):
 
 
 class JobQueue(Protocol):
-    """Contractul comun intre ``InlineJobQueue`` (Faza E) si ``ArqJobQueue`` (Faza F)."""
+    """Contractul comun intre ``InlineJobQueue`` (Faza E) si ``ArqJobQueue`` (Faza F).
 
-    def enqueue(
-        self, job_name: str, func: Callable[..., dict[str, Any]], /, **kwargs: Any
-    ) -> str:
+    ``enqueue`` ia direct functia (nu si un nume separat de dispecerizat): un
+    ``job_name`` hand-scris, separat de ``func``, ar putea diverge de numele
+    inregistrat efectiv in ``WorkerSettings.functions`` al worker-ului ARQ —
+    implementarile care au nevoie de un nume (``ArqJobQueue``) il deriva din
+    ``func.__name__``, garantand ca cele doua nu se pot dezalinia niciodata.
+    """
+
+    def enqueue(self, func: Callable[..., dict[str, Any]], /, **kwargs: Any) -> str:
         """Dispecerizeaza ``func(**kwargs)``; returneaza un ``task_id`` pollabil.
 
         ``kwargs`` trebuie sa fie serializabile (fara sesiuni DB, fara obiecte
@@ -55,9 +62,7 @@ class InlineJobQueue:
     def __init__(self) -> None:
         self._results: dict[str, JobResult] = {}
 
-    def enqueue(
-        self, job_name: str, func: Callable[..., dict[str, Any]], /, **kwargs: Any
-    ) -> str:
+    def enqueue(self, func: Callable[..., dict[str, Any]], /, **kwargs: Any) -> str:
         task_id = str(uuid.uuid4())
         created_at = datetime.now(tz=UTC)
         try:
@@ -88,12 +93,31 @@ class InlineJobQueue:
 _queue: JobQueue | None = None
 
 
+def _default_queue(redis_url: str | None = None) -> JobQueue:
+    """``InlineJobQueue`` daca ``redis_url`` e necompletat, altfel ``ArqJobQueue``.
+
+    ``redis_url`` explicit (nu doar citit din ``get_server_settings()`` direct)
+    ca sa fie testabila fara sa lupte cu cache-ul ``@lru_cache`` al setarilor —
+    acelasi motiv pentru care ``create_db_engine`` din ``db.py`` accepta un
+    ``settings`` optional. Importul ``arq_queue`` (si, prin el, ``arq``) e facut
+    aici, nu la nivel de modul — importul lui ``queue`` (si tot ce depinde de
+    el: router-e, tasks) nu trebuie sa ceara ``arq`` instalat cand nimeni nu
+    foloseste coada reala.
+    """
+    resolved = redis_url if redis_url is not None else get_server_settings().redis_url
+    if not resolved:
+        return InlineJobQueue()
+
+    from ppc_agent_server.jobs.arq_queue import ArqJobQueue
+
+    return ArqJobQueue(resolved)
+
+
 def get_job_queue() -> JobQueue:
-    """Coada activa a procesului (creata lenes, o singura data — ``InlineJobQueue``
-    implicit; Faza F comuta pe ``ArqJobQueue`` dupa ``REDIS_URL``)."""
+    """Coada activa a procesului (creata lenes, o singura data — vezi ``_default_queue``)."""
     global _queue
     if _queue is None:
-        _queue = InlineJobQueue()
+        _queue = _default_queue()
     return _queue
 
 

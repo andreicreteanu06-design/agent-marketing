@@ -1,0 +1,35 @@
+# Infrastructura optionala de productie pentru ppc_agent_server: PostgreSQL +
+# Redis reale, pentru testare "productie-like" locala.
+#
+# NU e necesar pentru dev/teste — implicit, serverul foloseste SQLite
+# (fara nimic de instalat) si InlineJobQueue (sincron, fara Redis). Porneste
+# astea DOAR daca vrei sa incerci calea Postgres/ARQ real:
+#
+#   docker compose up -d
+#   # apoi in .env:
+#   #   DATABASE_URL=postgresql://ppc_agent:ppc_agent@localhost:5432/ppc_agent
+#   #   REDIS_URL=redis://localhost:6379/0
+#   pip install -r requirements-server.txt  # psycopg2-binary daca lipseste
+#   alembic upgrade head
+#   uvicorn ppc_agent_server.app:app --reload
+#   arq ppc_agent_server.jobs.worker.WorkerSettings   # intr-un terminal separat
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ppc_agent
+      POSTGRES_PASSWORD: ppc_agent
+      POSTGRES_DB: ppc_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - ppc_agent_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  ppc_agent_postgres_data:

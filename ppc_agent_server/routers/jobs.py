@@ -47,7 +47,7 @@ def dispatch_plan(
 ) -> JobAccepted:
     """Dispecerizeaza Modulul 2 (Kelly + Thompson + Markov) pentru un client."""
     get_owned_client(payload.client_id, tenant, session)
-    task_id = queue.enqueue("plan", run_plan_job, client_account_id=payload.client_id)
+    task_id = queue.enqueue(run_plan_job, client_account_id=payload.client_id)
     return _accepted(queue, task_id)
 
 
@@ -61,7 +61,6 @@ def dispatch_copy(
     """Dispecerizeaza generarea de copy emotional (mock sau Ollama live)."""
     get_owned_client(payload.client_id, tenant, session)
     task_id = queue.enqueue(
-        "copy",
         run_copy_job,
         client_account_id=payload.client_id,
         keyword=payload.keyword,
@@ -82,7 +81,6 @@ def dispatch_creative(
     """Dispecerizeaza Modulul 5 (voce + video)."""
     get_owned_client(payload.client_id, tenant, session)
     task_id = queue.enqueue(
-        "creative",
         run_creative_job,
         client_account_id=payload.client_id,
         keyword=payload.keyword,
