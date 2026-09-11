@@ -35,3 +35,9 @@ config.yaml
 
 # Stare locala Claude Code (unelte, nu proiect)
 .claude/
+
+# Baza de date locala a serverului (SQLite dev) — Postgres real in productie,
+# niciodata comis indiferent de dialect
+ppc_agent_server.db
+*.db
+*.db-journal

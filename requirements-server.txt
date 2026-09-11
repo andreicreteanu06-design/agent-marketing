@@ -1,0 +1,20 @@
+# Dependinte pentru ppc_agent_server/ (backend FastAPI multi-tenant).
+# Separat de requirements.txt in mod deliberat: un utilizator care ruleaza
+# doar CLI-ul (ppc_agent) nu trebuie sa instaleze tot stack-ul de server.
+#
+# Instalare: pip install -r requirements-server.txt
+# (include automat requirements.txt - serverul reutilizeaza pipeline-urile CLI)
+-r requirements.txt
+
+# --- API (Faza D-E) ---
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+
+# --- Persistenta (Faza D) ---
+sqlmodel>=0.0.22,<1
+alembic>=1.13,<2
+
+# --- Job-uri in fundal (Faza F) — optionale la rulare: fara REDIS_URL setat,
+# serverul foloseste InlineJobQueue (sincron, in proces) si nu are nevoie de ele.
+redis>=5,<6
+arq>=0.26,<1

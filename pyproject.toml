@@ -21,6 +21,10 @@ ppc_agent = ["py.typed"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Fisierele de migratie Alembic sunt generate automat (alembic revision
+# --autogenerate) si rareori editate de mana — practica standard sa fie
+# excluse din lint, ca fixture-urile de test.
+extend-exclude = ["ppc_agent_server/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -28,6 +32,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 # Fisierul include un fixture HTML cu linii lungi inevitabile.
 "ppc_agent/providers/mock/crawler.py" = ["E501"]
+# Depends(...) ca valoare implicita e patternul FastAPI cerut, nu o eroare —
+# B008 (flake8-bugbear) nu cunoaste conventia (desi Annotated[X, Depends(...)]
+# ramane preferat, se poate strecura si direct in semnaturi).
+"ppc_agent_server/**/*.py" = ["B008"]
 
 # ------------------------------------------------------------------------------
 # Mypy — verificare stricta de tip pe pachet
@@ -37,6 +45,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 python_version = "3.13"
 strict = true
 files = ["ppc_agent"]
+# Fisierele de migratie Alembic sunt auto-generate (vezi nota din [tool.ruff]);
+# exclude() se aplica si cand mypy e chemat explicit pe ppc_agent_server.
+exclude = ["ppc_agent_server/migrations/versions/"]
 
 # scikit-learn si torch nu au stub-uri complete; le ignoram punctual.
 [[tool.mypy.overrides]]
