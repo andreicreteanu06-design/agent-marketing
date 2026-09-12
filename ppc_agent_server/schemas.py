@@ -32,6 +32,7 @@ class ClientAccountCreate(BaseModel):
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
     max_daily_spend: Decimal = Decimal("50.00")
+    default_lead_value: Decimal = Decimal("300.00")
 
 
 class ClientAccountRead(BaseModel):
@@ -48,6 +49,7 @@ class ClientAccountRead(BaseModel):
     meta_ad_account_id: str
     tiktok_advertiser_id: str
     max_daily_spend: Decimal
+    default_lead_value: Decimal
     created_at: datetime
 
 
@@ -122,6 +124,18 @@ class ExecuteProposalRequest(BaseModel):
 
 
 # --- Auth (schimb OAuth) ---
+
+
+# --- Urmarire conversii ---
+
+
+class ConversionOutcome(BaseModel):
+    """Raspunsul ``POST /api/v1/tracking/conversion/{client_id}``."""
+
+    event_id: str
+    qualified: bool
+    reason: str | None = None
+    deduplicated: bool = False
 
 
 class McConnectRequest(BaseModel):

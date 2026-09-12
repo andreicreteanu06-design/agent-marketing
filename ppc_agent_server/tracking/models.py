@@ -1,0 +1,84 @@
+"""Schema unificata a unei conversii, indiferent de sursa (Gomag/web/call tracking).
+
+``StandardizedConversion`` e forma de TRANSPORT (in memorie) - contine PII in
+clar (``customer_email``/``customer_phone``), asa cum a fost ceruta explicit
+in schema. PII-ul NU se persista niciodata in clar: ``routers/tracking.py``
+hash-uieste (SHA-256) imediat, iar randul salvat in baza de date
+(``ConversionEvent`` din ``ppc_agent_server/models.py``) pastreaza doar
+hash-urile - vezi :func:`hash_pii`.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Literal
+
+from pydantic import BaseModel
+
+EventType = Literal["purchase", "lead", "phone_call", "contact"]
+
+
+class StandardizedConversion(BaseModel):
+    """O conversie normalizata, indiferent de platforma sursa.
+
+    ``ad_id``/``ad_platform`` NU erau in lista de campuri ceruta explicit, dar
+    fara ele Sectiunea 5 (leaga de motorul de decizie) e imposibil de
+    implementat: nimic altceva din schema nu spune CARUI anunt ii apartine
+    conversia. Optionale (``None`` = conversie neatribuita, ex. lead organic) -
+    cand lipsesc, conversia tot se inregistreaza (audit/deduplicare), doar nu
+    actualizeaza starea niciunui anunt. Cand ``ad_id`` e nou (nu exista inca
+    un ``AdPerformanceRecord``) si ``ad_platform`` e prezent, se creeaza un rand
+    nou cu status "new" - fara sincronizare reala cu platformele de reclame
+    (impressions/clicks/ctr raman 0 pana la un proces separat, in afara
+    scopului acestui task, semnalat explicit in pipeline.py).
+    """
+
+    event_id: str
+    event_type: EventType = "purchase"
+    value: float | None = None
+    currency: str = "RON"
+    customer_email: str | None = None
+    customer_phone: str | None = None
+    client_id: str
+    source_platform: str
+    lead_status: str | None = None
+    call_duration_seconds: int | None = None
+
+    # Adaugate fata de lista explicita din cerere - vezi docstring-ul de mai sus.
+    ad_id: str | None = None
+    ad_platform: Literal["meta", "tiktok", "google"] | None = None
+
+
+def _normalize_email(email: str) -> str:
+    """Normalizare Meta CAPI / Google Enhanced Conversions: lowercase + trim.
+
+    Fara normalizare, hash-ul nostru nu s-ar potrivi cu ce calculeaza Meta/
+    Google pe acelasi email din alta sursa (ex. formularul lor de checkout) -
+    ambele platforme cer explicit lowercase inainte de SHA-256.
+    """
+    return email.strip().lower()
+
+
+def _normalize_phone(phone: str) -> str:
+    """Normalizare telefon: doar cifre (E.164 fara '+'), cum cer Meta/Google."""
+    return re.sub(r"\D", "", phone)
+
+
+def hash_pii(value: str | None, *, is_phone: bool = False) -> str | None:
+    """SHA-256 (hex) al unei valori PII normalizate, sau ``None`` daca lipseste.
+
+    Args:
+        value: Email-ul sau telefonul in clar, sau ``None``.
+        is_phone: ``True`` pentru normalizare de telefon (doar cifre), altfel
+            normalizare de email (lowercase + trim).
+
+    Returns:
+        Hash-ul hex, sau ``None`` daca ``value`` e ``None``/gol.
+    """
+    if not value:
+        return None
+    normalized = _normalize_phone(value) if is_phone else _normalize_email(value)
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

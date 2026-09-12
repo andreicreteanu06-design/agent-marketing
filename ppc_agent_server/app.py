@@ -19,7 +19,7 @@ from ppc_agent.errors import (
     SpendLimitExceeded,
 )
 from ppc_agent_server.db import init_db
-from ppc_agent_server.routers import auth, clients, jobs, proposals
+from ppc_agent_server.routers import auth, clients, jobs, proposals, tracking
 
 __version__ = "0.1.0"
 
@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(clients.router)
     app.include_router(jobs.router)
     app.include_router(proposals.router)
+    app.include_router(tracking.router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

@@ -71,6 +71,31 @@ class Platform(enum.StrEnum):
     TIKTOK = "tiktok"
 
 
+class ConversionEventType(enum.StrEnum):
+    PURCHASE = "purchase"
+    LEAD = "lead"
+    PHONE_CALL = "phone_call"
+    CONTACT = "contact"
+
+
+class AdFatiguePlatform(enum.StrEnum):
+    """Platforma pe care ruleaza anuntul urmarit de monitorul de oboseala.
+
+    Distinct de :class:`Platform` (folosit de ``AdQueueItem``/``CreativeArtifact``
+    pentru creatie, doar Google/TikTok azi) — aici sunt cele 3 platforme pe care
+    ``ppc_agent.decision.fatigue_monitor`` le intelege, Meta inclus."""
+
+    META = "meta"
+    TIKTOK = "tiktok"
+    GOOGLE = "google"
+
+
+class AdLifecycleStatus(enum.StrEnum):
+    NEW = "new"
+    PROFITABLE = "profitable"
+    FATIGUED = "fatigued"
+
+
 def _now() -> datetime:
     return datetime.now(tz=UTC)
 
@@ -102,12 +127,19 @@ class ClientAccount(SQLModel, table=True):
     tiktok_advertiser_id: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
+    # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
+    # (vezi ppc_agent_server.tracking.qualification.ConversionQualifier).
+    default_lead_value: Decimal = Field(default=Decimal("300.00"), sa_column=_money_column())
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")
     proposed_changes: list["ProposedChange"] = Relationship(back_populates="client_account")
     ad_queue_items: list["AdQueueItem"] = Relationship(back_populates="client_account")
     creative_artifacts: list["CreativeArtifact"] = Relationship(back_populates="client_account")
+    conversion_events: list["ConversionEvent"] = Relationship(back_populates="client_account")
+    ad_performance_records: list["AdPerformanceRecord"] = Relationship(
+        back_populates="client_account"
+    )
 
 
 class ProposedChange(SQLModel, table=True):
@@ -177,3 +209,82 @@ class CreativeArtifact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
 
     client_account: ClientAccount = Relationship(back_populates="creative_artifacts")
+
+
+class ConversionEvent(SQLModel, table=True):
+    """O conversie normalizata, cu PII deja hash-uit (SHA-256) - niciodata in clar.
+
+    Pastrata pentru audit + deduplicare (``event_id`` unic per client) - NU e
+    sursa de adevar pentru starea unui anunt (asta e ``AdPerformanceRecord``,
+    actualizat doar cand conversia e calificata si are un ``ad_id`` cunoscut).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+
+    event_id: str = Field(unique=True, index=True)
+    event_type: ConversionEventType
+    value: Decimal | None = Field(default=None, sa_column=Column(Numeric(10, 2)))
+    currency: str = "RON"
+    email_sha256: str | None = None
+    phone_sha256: str | None = None
+    source_platform: str
+    lead_status: str | None = None
+    call_duration_seconds: int | None = None
+    ad_id: str | None = Field(default=None, index=True)
+
+    qualified: bool
+    disqualification_reason: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+    client_account: ClientAccount = Relationship(back_populates="conversion_events")
+
+
+class AdPerformanceRecord(SQLModel, table=True):
+    """Rollup persistat per (client, anunt) - alimenteaza direct AdPerformanceState.
+
+    Doar campurile pe care o conversie le poate schimba legitim
+    (``conversions``, ``revenue``) se actualizeaza la fiecare conversie
+    CALIFICATA cu ``ad_id`` cunoscut — restul (impressions/clicks/ctr/spend si
+    variantele lor de baza) raman la valoarea cu care randul a fost creat pana
+    cand un proces separat de sincronizare cu platformele de reclame le
+    actualizeaza; acel proces e in afara scopului acestui task (semnalat
+    explicit, ca OAuth-ul real sau upload-ul de b-roll in alte module).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    ad_id: str = Field(index=True)
+
+    platform: AdFatiguePlatform
+    status: AdLifecycleStatus = AdLifecycleStatus.NEW
+    launch_time: datetime
+
+    spend: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    target_cpa: Decimal = Field(sa_column=_money_column())
+    conversions: int = Field(default=0, ge=0)
+    revenue: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    impressions: int = Field(default=0, ge=0)
+    clicks: int = Field(default=0, ge=0)
+    ctr: float = 0.0
+    account_median_ctr: float = 0.0
+    frequency_7d: float = 0.0
+    six_second_view_rate: float = 0.0
+    cpa_3d: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    cpa_baseline_14d: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    bad_days_last_5: int = Field(default=0, ge=0)
+    ctr_3d: float = 0.0
+    ctr_baseline_14d: float = 0.0
+    ctr_baseline_7d: float = 0.0
+    cpa_baseline_7d: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    six_second_view_rate_baseline: float = 0.0
+    bad_days_last_3: int = Field(default=0, ge=0)
+
+    updated_at: datetime = Field(default_factory=_now)
+
+    @property
+    def roas(self) -> float:
+        """Return on ad spend (venit / cost); 0 daca nu exista cost (ca ArmStats.roas)."""
+        return float(self.revenue / self.spend) if self.spend > 0 else 0.0
+
+    client_account: ClientAccount = Relationship(back_populates="ad_performance_records")

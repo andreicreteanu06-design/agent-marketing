@@ -6,14 +6,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ppc_agent_server.models import (
+    AdFatiguePlatform,
+    AdLifecycleStatus,
+    AdPerformanceRecord,
     AdQueueItem,
     AdQueueStatus,
     ChangeOp,
     ChangeStatus,
     ClientAccount,
+    ConversionEvent,
+    ConversionEventType,
     CreativeArtifact,
     Platform,
     ProposedChange,
@@ -59,6 +66,7 @@ def test_client_account_belongs_to_tenant(session: Session) -> None:
     assert fetched is not None
     assert fetched.tenant_id == tenant.id
     assert fetched.max_daily_spend == Decimal("50.00")  # implicit
+    assert fetched.default_lead_value == Decimal("300.00")  # implicit
 
 
 def test_tenant_relationship_lists_client_accounts(session: Session) -> None:
@@ -183,6 +191,97 @@ def test_creative_artifact_round_trip(session: Session) -> None:
     fetched = session.get(CreativeArtifact, artifact.id)
     assert fetched is not None
     assert fetched.manifest["aspect_ratio"] == "9:16"
+
+
+def test_conversion_event_round_trip_with_hashed_pii(session: Session) -> None:
+    tenant = _tenant(session)
+    account = _client_account(session, tenant)
+
+    event = ConversionEvent(
+        client_account_id=account.id,
+        event_id="gomag_order_42",
+        event_type=ConversionEventType.PURCHASE,
+        value=Decimal("150.00"),
+        email_sha256="a" * 64,
+        phone_sha256="b" * 64,
+        source_platform="gomag",
+        qualified=True,
+    )
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+
+    fetched = session.get(ConversionEvent, event.id)
+    assert fetched is not None
+    assert fetched.event_type == ConversionEventType.PURCHASE
+    assert fetched.value == Decimal("150.00")
+    assert fetched.qualified is True
+
+
+def test_conversion_event_id_is_unique(session: Session) -> None:
+    tenant = _tenant(session)
+    account = _client_account(session, tenant)
+    session.add(
+        ConversionEvent(
+            client_account_id=account.id,
+            event_id="dup",
+            event_type=ConversionEventType.LEAD,
+            source_platform="custom_web",
+            qualified=True,
+        )
+    )
+    session.commit()
+
+    session.add(
+        ConversionEvent(
+            client_account_id=account.id,
+            event_id="dup",
+            event_type=ConversionEventType.LEAD,
+            source_platform="custom_web",
+            qualified=True,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_ad_performance_record_round_trip_and_roas(session: Session) -> None:
+    tenant = _tenant(session)
+    account = _client_account(session, tenant)
+
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="c_brand",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC),
+        spend=Decimal("100.00"),
+        target_cpa=Decimal("10.00"),
+        conversions=5,
+        revenue=Decimal("250.00"),
+    )
+    session.add(record)
+    session.commit()
+    session.refresh(record)
+
+    assert record.status == AdLifecycleStatus.NEW  # implicit
+    assert record.roas == 2.5
+
+    fetched = session.get(AdPerformanceRecord, record.id)
+    assert fetched is not None
+    assert fetched.conversions == 5
+
+
+def test_ad_performance_record_roas_zero_without_spend(session: Session) -> None:
+    tenant = _tenant(session)
+    account = _client_account(session, tenant)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="c_brand",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC),
+        target_cpa=Decimal("10.00"),
+    )
+    assert record.roas == 0.0
 
 
 def test_query_pending_changes_for_client(session: Session) -> None:
