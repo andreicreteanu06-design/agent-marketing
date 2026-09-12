@@ -22,6 +22,7 @@ _COMMANDS = (
     "ingest-tiktok",
     "ingest-swipes",
     "copy-omnichannel",
+    "check-fatigue",
     "propose",
     "execute",
     "status",

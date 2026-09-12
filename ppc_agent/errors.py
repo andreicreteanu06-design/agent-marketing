@@ -52,6 +52,14 @@ class AttributionError(DecisionError):
     """Intrare invalida pentru atribuirea Markov (fara parcursuri sau fara conversii)."""
 
 
+class FatigueInputError(DecisionError):
+    """Fisierul de intrare pentru monitorul de oboseala lipseste sau e invalid.
+
+    Fisierul JSON lipseste, are extensie necunoscuta, sau o intrare nu respecta
+    schema :class:`~ppc_agent.decision.fatigue_models.AdPerformanceState`.
+    """
+
+
 class CopywriterError(PpcAgentError):
     """Eroare in modulul de copywriting (generare de anunturi)."""
 

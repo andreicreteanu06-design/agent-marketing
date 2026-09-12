@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,11 +10,16 @@ from rich.console import Console
 from rich.table import Table
 
 from ppc_agent.alignment.models import LiquidityPlan
+from ppc_agent.decision.fatigue_models import AdPerformanceState, FatigueVerdict
+from ppc_agent.decision.fatigue_monitor import evaluate_ad, explain_verdict
 from ppc_agent.decision.models import BudgetPlan, KellySizing
 from ppc_agent.guardrails.models import ChangeSet, ProposedChange
 from ppc_agent.ingestion.models import NegativeKeywordSet
 
 _MAX_NEGATIVES_IN_CHANGESET = 40
+_PAUSE_VERDICTS: frozenset[FatigueVerdict] = frozenset(
+    {"PAUSE_HARD", "PAUSE_PROVISIONAL", "PAUSE_REPLACE"}
+)
 
 
 def build_proposed_changes(
@@ -110,6 +116,47 @@ def build_proposed_changes(
     return changes
 
 
+def build_fatigue_changes(
+    ads: list[AdPerformanceState], current_time: datetime
+) -> list[ProposedChange]:
+    """Traduce verdictele monitorului de oboseala in modificari propuse ``PAUSE``.
+
+    Doar verdictele care inseamna efectiv "opreste anuntul" produc o intrare
+    (``PAUSE_HARD``/``PAUSE_PROVISIONAL``/``PAUSE_REPLACE``) - ``CONTINUE`` si
+    ``HOLD_FOR_LAG`` inseamna "asteapta", nu "opreste", deci nu genereaza nimic.
+    Toate cele trei se mapeaza pe ``op="PAUSE"`` (singura operatie relevanta la
+    nivel de API de reclame); distinctia dintre ele (kill sigur vs. provizoriu
+    vs. oboseala creativa) ramane in ``rationale``, pentru revizuirea umana.
+
+    Args:
+        ads: Stariile de performanta de evaluat.
+        current_time: Momentul evaluarii, acelasi pentru toate anunturile.
+
+    Returns:
+        Lista de :class:`ProposedChange` (``op="PAUSE"``), gata de adaugat
+        intr-un :class:`~ppc_agent.guardrails.approval_gate.ApprovalGate`
+        existent - fluxul ``propose -> flush -> execute --confirm`` nu se
+        modifica deloc.
+    """
+    changes: list[ProposedChange] = []
+    for ad in ads:
+        verdict = evaluate_ad(ad, current_time)
+        if verdict not in _PAUSE_VERDICTS:
+            continue
+        changes.append(
+            ProposedChange(
+                op="PAUSE",
+                resource=f"ad/{ad.ad_id}",
+                resource_type="ad",
+                before={"status": ad.status},
+                after={"status": "paused", "verdict": verdict, "platform": ad.platform},
+                rationale=f"[{verdict}] {explain_verdict(ad, verdict, current_time)}",
+                source_module="fatigue_monitor",
+            )
+        )
+    return changes
+
+
 def render_changeset(changeset: ChangeSet, path: Path, console: Console) -> None:
     """Afiseaza un rezumat al unui changeset in consola."""
     console.print(
@@ -132,6 +179,27 @@ def render_changeset(changeset: ChangeSet, path: Path, console: Console) -> None
     console.print(table)
     if len(changeset.changes) > 20:
         console.print(f"  ... si inca {len(changeset.changes) - 20} modificari")
+
+
+def render_fatigue_evaluations(
+    ads: list[AdPerformanceState], current_time: datetime, console: Console
+) -> None:
+    """Afiseaza verdictul monitorului de oboseala pentru fiecare anunt evaluat."""
+    table = Table(title="Monitor de oboseala")
+    for name in ("anunt", "platforma", "status", "verdict", "motiv"):
+        table.add_column(name)
+    for ad in ads:
+        verdict = evaluate_ad(ad, current_time)
+        style = "red" if verdict in _PAUSE_VERDICTS else None
+        table.add_row(
+            ad.ad_id,
+            ad.platform,
+            ad.status,
+            verdict,
+            explain_verdict(ad, verdict, current_time),
+            style=style,
+        )
+    console.print(table)
 
 
 def latest_changeset_path(directory: Path) -> Path | None:

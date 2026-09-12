@@ -6,11 +6,13 @@ CLI, in test_propose_cli.py) - acestea sunt testele unitare dedicate.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from ppc_agent.alignment.models import LiquidityPlan
+from ppc_agent.decision.fatigue_models import AdPerformanceState
 from ppc_agent.decision.models import BudgetAllocation, BudgetPlan
-from ppc_agent.guardrails.pipeline import build_proposed_changes
+from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
 from ppc_agent.ingestion.models import NegativeKeywordSet
 
 _EMPTY_NEGATIVES = NegativeKeywordSet()
@@ -127,3 +129,64 @@ def test_zeroed_tiktok_allocation_pauses_correctly() -> None:
     )
     assert changes[0].op == "PAUSE"
     assert changes[0].resource == "tiktok_ad_group/tt_topview"
+
+
+_NOW = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+
+
+def _ad(**overrides: object) -> AdPerformanceState:
+    defaults: dict[str, object] = dict(
+        ad_id="ad_1",
+        platform="google",
+        status="new",
+        launch_time=_NOW - timedelta(hours=200),
+        spend=0.0,
+        target_cpa=10.0,
+        conversions=0,
+        impressions=0,
+        clicks=0,
+        ctr=0.0,
+        account_median_ctr=0.05,
+        cpa_3d=0.0,
+        cpa_baseline_14d=0.0,
+        bad_days_last_5=0,
+    )
+    defaults.update(overrides)
+    return AdPerformanceState.model_validate(defaults)
+
+
+def test_build_fatigue_changes_produces_pause_for_hard_kill() -> None:
+    ad = _ad(
+        launch_time=_NOW - timedelta(hours=72),
+        spend=20.0,
+        conversions=0,
+        impressions=1500,
+    )
+    changes = build_fatigue_changes([ad], _NOW)
+    assert len(changes) == 1
+    assert changes[0].op == "PAUSE"
+    assert changes[0].resource == "ad/ad_1"
+    assert changes[0].resource_type == "ad"
+    assert changes[0].source_module == "fatigue_monitor"
+    assert changes[0].projected_daily_spend == Decimal("0")
+    assert "PAUSE_HARD" in changes[0].rationale
+
+
+def test_build_fatigue_changes_skips_continue_and_hold_for_lag() -> None:
+    healthy = _ad()  # baseline "sigur" - CONTINUE
+    holding = _ad(launch_time=_NOW - timedelta(hours=50), spend=15.0, conversions=0)
+    changes = build_fatigue_changes([healthy, holding], _NOW)
+    assert changes == []
+
+
+def test_build_fatigue_changes_handles_mixed_ad_list() -> None:
+    dying = _ad(
+        ad_id="ad_dying",
+        launch_time=_NOW - timedelta(hours=72),
+        spend=20.0,
+        conversions=0,
+        impressions=1500,
+    )
+    healthy = _ad(ad_id="ad_healthy")
+    changes = build_fatigue_changes([dying, healthy], _NOW)
+    assert [c.resource for c in changes] == ["ad/ad_dying"]

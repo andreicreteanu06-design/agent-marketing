@@ -14,6 +14,7 @@ Flux tipic::
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -33,10 +34,12 @@ from ppc_agent.creative.creative_pipeline import (
     render_storyboard,
 )
 from ppc_agent.creative.factory import CreativeFactory
+from ppc_agent.decision.fatigue_monitor import load_ad_performance_states
 from ppc_agent.decision.pipeline import render_plan, run_plan
 from ppc_agent.errors import (
     ApprovalRequiredError,
     CopywriterError,
+    FatigueInputError,
     PpcAgentError,
     SetupRequiredError,
     SpendLimitExceeded,
@@ -48,9 +51,11 @@ from ppc_agent.errors import (
 )
 from ppc_agent.guardrails.approval_gate import ApprovalGate
 from ppc_agent.guardrails.pipeline import (
+    build_fatigue_changes,
     build_proposed_changes,
     latest_changeset_path,
     render_changeset,
+    render_fatigue_evaluations,
 )
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
 from ppc_agent.ingestion.pipeline import render_ingestion, run_ingestion
@@ -323,6 +328,52 @@ def copy_omnichannel(
     console.print(f"\n[bold]Copy omnicanal[/bold] ({target_platform})")
     for key, value in result.items():
         console.print(f"  {key}: {value}", markup=False)
+
+
+@app.command("check-fatigue")
+def check_fatigue(
+    input_path: Annotated[
+        str,
+        typer.Option("--input", help="JSON cu o lista de AdPerformanceState."),
+    ],
+    config: _ConfigOption = "config.yaml",
+) -> None:
+    """Monitorul de oboseala: Kill Rules (anunturi noi) + Pruning Switch (fatigued).
+
+    Fara sursa live: niciun provider mock din proiect nu produce inca acest
+    nivel de detaliu per-anunt (frecventa, CTR/CPA de baza, zile proaste) - ca
+    la 'ingest-tiktok', fisierul e furnizat de operator. Anunturile cu verdict
+    de oprire (PAUSE_HARD/PAUSE_PROVISIONAL/PAUSE_REPLACE) intra intr-un
+    proposed_changes_*.json obisnuit - 'execute --confirm' functioneaza
+    neschimbat, fara nicio adaptare pentru acest flux.
+    """
+    app_config = load_config(config)
+    try:
+        ads = load_ad_performance_states(input_path)
+    except FatigueInputError as exc:
+        console.print(f"[red]citirea a esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    now = datetime.now(tz=UTC)
+    render_fatigue_evaluations(ads, now, console)
+
+    changes = build_fatigue_changes(ads, now)
+    if not changes:
+        console.print("\n[dim]niciun anunt de oprit[/dim]")
+        return
+
+    gate = ApprovalGate(
+        account=_account_label(app_config),
+        spend_limiter=AbsoluteSpendLimiter(app_config.budget.max_daily_spend),
+        output_dir=Path.cwd(),
+    )
+    gate.propose_many(changes)
+    path = gate.flush()
+    render_changeset(gate.build_changeset(), path, console)
+    console.print(
+        f"\n[green]scris[/green] {path.name} - revizuieste-l, apoi ruleaza:\n"
+        f"  python -m ppc_agent.cli execute --changeset {path.name} --confirm"
+    )
 
 
 @app.command()
