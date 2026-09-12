@@ -95,3 +95,42 @@ def test_plan_combines_google_and_tiktok_arms() -> None:
         Decimal("0"),
     )
     assert total == plan.budget_plan.daily_budget == plan.kelly.sized_daily_cap
+
+
+def test_arm_capacity_absent_when_target_cpa_not_set() -> None:
+    """Comportament neschimbat fata de sesiunile anterioare: target_cpa implicit None."""
+    config = AppConfig(settings=Settings(_env_file=None))
+    factory = ProviderFactory(config)
+    plan = run_plan(factory, config, n_samples=4000)
+    assert plan.arm_capacity is None
+
+
+def test_arm_capacity_present_and_raises_floor_for_small_budget() -> None:
+    """Buget mic + target_cpa mare -> pragul/brat calculat depaseste floor-ul static (5 lei)."""
+    config = AppConfig(settings=Settings(_env_file=None))
+    config.budget.max_daily_spend = Decimal("20.00")
+    config.budget.target_cpa = Decimal("150.00")
+    factory = ProviderFactory(config)
+    plan = run_plan(factory, config, n_samples=4000, kelly_fraction=0.0)
+
+    assert plan.arm_capacity is not None
+    assert plan.arm_capacity.tier == "micro"
+    assert plan.arm_capacity.recommended_max_concurrent_arms == 1
+    assert plan.arm_capacity.recommended_min_arm_daily_spend > config.budget.min_arm_daily_spend
+
+    funded = [a for a in plan.budget_plan.allocations if a.daily_budget > 0]
+    assert len(funded) == 1  # floor-ul ridicat forteaza concentrarea pe un singur brat
+
+
+def test_manual_min_arm_daily_spend_floor_is_never_lowered() -> None:
+    """Un floor manual deja mai mare decat cel calculat nu trebuie coborat."""
+    config = AppConfig(settings=Settings(_env_file=None))
+    config.budget.min_arm_daily_spend = Decimal("999.00")
+    config.budget.target_cpa = Decimal("10.00")  # ar recomanda un prag mult mai mic
+    factory = ProviderFactory(config)
+    plan = run_plan(factory, config, n_samples=4000)
+
+    assert plan.arm_capacity is not None
+    assert plan.arm_capacity.recommended_min_arm_daily_spend < config.budget.min_arm_daily_spend
+    funded = [a for a in plan.budget_plan.allocations if a.daily_budget > 0]
+    assert len(funded) == 1  # floor-ul manual (999) domina, ramane un singur brat finantat

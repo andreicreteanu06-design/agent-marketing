@@ -14,6 +14,10 @@ budget:
   max_daily_spend: "50.00"
   # Prag minim zilnic per campanie/grup in alocarea Thompson (Modulul 2).
   min_arm_daily_spend: "5.00"
+  # Optional. Cand e setat, pragul de mai sus se ridica automat daca e prea mic
+  # pentru buget (vezi decision/budget_strategy.py) - relevant la conturi cu
+  # buget mic (10-25 lei/zi), ca sa nu se dilueze intre prea multe variante.
+  # target_cpa: "150.00"
 
 # Branduri concurente -> devin automat cuvinte cheie negative (Modulul 1).
 competitor_brands:

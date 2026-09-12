@@ -20,10 +20,16 @@ from ppc_agent.decision.fatigue_monitor import (
     evaluate_ad,
     explain_verdict,
     load_ad_performance_states,
+    new_ad_hard_kill_spend_multiplier,
 )
 from ppc_agent.errors import FatigueInputError
 
 _NOW = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+
+
+def test_new_ad_hard_kill_spend_multiplier_is_2x() -> None:
+    """Accesorul public trebuie sa ramana sincron cu pragul folosit de Gate B mai jos."""
+    assert new_ad_hard_kill_spend_multiplier() == 2.0
 
 # Baseline "sigur": niciun camp nu atinge vreun prag - orice test porneste de
 # aici si suprascrie DOAR campurile relevante pentru regula testata.

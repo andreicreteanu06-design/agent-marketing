@@ -51,6 +51,16 @@ _TIKTOK_VIEW_RATE_RATIO = 0.80
 _TIKTOK_MIN_BAD_DAYS = 2
 
 
+def new_ad_hard_kill_spend_multiplier() -> float:
+    """Multiplicatorul de cheltuiala (fata de ``target_cpa``) folosit de Gate B
+    pentru ``PAUSE_HARD`` - expus public pentru ca
+    :mod:`ppc_agent.decision.budget_strategy` are nevoie de acelasi prag ca sa
+    planifice bugetul minim per brat la conturi cu buget mic. Un singur loc de
+    adevar, ca cele doua praguri sa nu diverga in timp.
+    """
+    return _HARD_KILL_SPEND_MULTIPLIER
+
+
 def _age_hours(ad: AdPerformanceState, current_time: datetime) -> float:
     return (current_time - ad.launch_time).total_seconds() / 3600
 

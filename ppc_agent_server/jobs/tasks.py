@@ -33,12 +33,22 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
 
     ``settings=Settings()`` citeste ``PPC_PROVIDER_MODE`` (si restul) din mediu,
     exact ca la CLI — serverul nu reinventeaza o a doua sursa de configurare.
+
+    ``default_lead_value`` alimenteaza ``budget.target_cpa``: acelasi camp
+    serveste deja drept proxy de valoare pentru urmarirea conversiilor (vezi
+    ``tracking/qualification.py``) si drept ``target_cpa`` la crearea unui
+    ``AdPerformanceRecord`` nou (vezi ``tracking/pipeline.py``) — reutilizat
+    aici ca sa activeze automat sfatul de capacitate per buget
+    (``decision.budget_strategy``) pentru fiecare client, fara camp nou.
     """
     return AppConfig(
         target_domain=account.target_domain,
         geo=account.geo,
         language=account.language,
-        budget=BudgetConfig(max_daily_spend=account.max_daily_spend),
+        budget=BudgetConfig(
+            max_daily_spend=account.max_daily_spend,
+            target_cpa=account.default_lead_value,
+        ),
         settings=Settings(),
     )
 

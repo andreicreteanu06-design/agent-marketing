@@ -16,6 +16,7 @@ runner = CliRunner()
 _COMMANDS = (
     "ingest",
     "plan",
+    "budget-advice",
     "copy",
     "build-creative",
     "build-storyboard",

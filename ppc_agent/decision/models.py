@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 EdgeLabel = Literal["pozitiv", "neutru", "negativ", "date_insuficiente"]
+ArmCapacityTier = Literal["micro", "standard", "scale"]
 
 
 class ArmStats(BaseModel):
@@ -93,9 +94,35 @@ class KellySizing(BaseModel):
     rationale: str
 
 
+class ArmCapacityAdvice(BaseModel):
+    """Recomandare: cate brate/variante de creatie poate sustine activ un buget zilnic.
+
+    Motivatie: :class:`~ppc_agent.decision.budget.ThompsonBudgetAllocator` are deja
+    un prag minim per brat (``min_arm_daily_spend``, vezi ``budget._apply_floor``)
+    sub care dezactiveaza bratele - dar pana acum era un numar static din
+    config, fara nicio legatura cu ``target_cpa``. La un buget de 10-25 lei/zi si
+    ``target_cpa`` de 100+ lei, un prag static mic nu inseamna nimic: bratele raman
+    "finantate" cu sume care nu vor ajunge niciodata la pragul de cheltuiala al
+    Gate B (``PAUSE_HARD`` = 2x ``target_cpa``, vezi ``fatigue_monitor.py``) -
+    Fatigue Monitor-ul ramane etern in ``CONTINUE`` iar bugetul se scurge fara
+    diagnostic. Aceasta structura calculeaza pragul corect, derivat din acelasi
+    multiplicator pe care Gate B il foloseste deja (vezi
+    :func:`~ppc_agent.decision.budget_strategy.recommend_arm_capacity`).
+    """
+
+    daily_budget: Decimal
+    target_cpa: Decimal
+    target_evaluation_days: float
+    recommended_min_arm_daily_spend: Decimal
+    recommended_max_concurrent_arms: int
+    tier: ArmCapacityTier
+    rationale: str
+
+
 class PlanResult(BaseModel):
     """Iesirea completa a Modulului 2: dimensionare Kelly + alocare buget + atribuire."""
 
     kelly: KellySizing
     budget_plan: BudgetPlan
     attribution: AttributionResult
+    arm_capacity: ArmCapacityAdvice | None = None

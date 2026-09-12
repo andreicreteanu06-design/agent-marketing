@@ -11,8 +11,9 @@ from rich.table import Table
 from ppc_agent.config import AppConfig
 from ppc_agent.decision.attribution import Journey, attribute
 from ppc_agent.decision.budget import ThompsonBudgetAllocator
+from ppc_agent.decision.budget_strategy import recommend_arm_capacity
 from ppc_agent.decision.kelly_sizing import size_daily_budget
-from ppc_agent.decision.models import ArmStats, PlanResult
+from ppc_agent.decision.models import ArmCapacityAdvice, ArmStats, PlanResult
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers.factory import ProviderFactory
 
@@ -57,7 +58,11 @@ def run_plan(
     spre bratul cel mai bun, nu spre platforma cea mai bun. La fel, parcursurile
     de conversie de pe ambele platforme se combina inainte de atribuirea Markov.
     Plafonul Kelly poate depasi ``budget.max_daily_spend``, dar niciodata
-    ``HARD_CEILING``.
+    ``HARD_CEILING``. Daca ``config.budget.target_cpa`` e setat, pragul minim
+    per brat (``min_arm_daily_spend``) e ridicat automat cat sa incapa un
+    verdict Gate B in orizontul implicit de evaluare - vezi
+    ``decision.budget_strategy.recommend_arm_capacity`` (relevant la conturi cu
+    buget mic, unde altfel bugetul s-ar dilua intre prea multe brate).
 
     Args:
         factory: Fabrica de furnizori (mock sau live).
@@ -87,9 +92,13 @@ def run_plan(
         kelly_fraction=kelly_fraction,
     )
 
-    allocator = ThompsonBudgetAllocator(
-        min_arm_daily_spend=config.budget.min_arm_daily_spend
-    )
+    min_arm_daily_spend = config.budget.min_arm_daily_spend
+    arm_capacity: ArmCapacityAdvice | None = None
+    if config.budget.target_cpa is not None:
+        arm_capacity = recommend_arm_capacity(kelly.sized_daily_cap, config.budget.target_cpa)
+        min_arm_daily_spend = max(min_arm_daily_spend, arm_capacity.recommended_min_arm_daily_spend)
+
+    allocator = ThompsonBudgetAllocator(min_arm_daily_spend=min_arm_daily_spend)
     budget_plan = allocator.allocate(
         arms,
         float(kelly.sized_daily_cap),
@@ -106,12 +115,16 @@ def run_plan(
     ]
     attribution = attribute(journeys)
 
-    return PlanResult(kelly=kelly, budget_plan=budget_plan, attribution=attribution)
+    return PlanResult(
+        kelly=kelly, budget_plan=budget_plan, attribution=attribution, arm_capacity=arm_capacity
+    )
 
 
 def render_plan(result: PlanResult, console: Console) -> None:
     """Afiseaza dimensionarea Kelly, planul de buget si atribuirea in consola."""
     _render_kelly(result, console)
+    if result.arm_capacity is not None:
+        render_arm_capacity(result.arm_capacity, console)
     _render_budget(result, console)
     _render_attribution(result, console)
 
@@ -131,6 +144,18 @@ def _render_kelly(result: PlanResult, console: Console) -> None:
         f"/ zi  (plafon absolut {kelly.hard_ceiling})"
     )
     console.print(f"  [dim]{kelly.rationale}[/dim]")
+
+
+def render_arm_capacity(advice: ArmCapacityAdvice, console: Console) -> None:
+    console.print(
+        f"\n[bold]Capacitate per buget[/bold]  tier={advice.tier}  "
+        f"(target_cpa {advice.target_cpa}, orizont {advice.target_evaluation_days:.0f}z)"
+    )
+    console.print(
+        f"  maxim [bold]{advice.recommended_max_concurrent_arms}[/bold] variante active  |  "
+        f"minim {advice.recommended_min_arm_daily_spend}/zi per brat"
+    )
+    console.print(f"  [dim]{advice.rationale}[/dim]")
 
 
 def _render_budget(result: PlanResult, console: Console) -> None:

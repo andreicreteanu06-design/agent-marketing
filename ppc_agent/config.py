@@ -81,6 +81,10 @@ class BudgetConfig(BaseModel):
 
     max_daily_spend: Decimal = Decimal("50.00")
     min_arm_daily_spend: Decimal = Decimal("5.00")
+    # Cand e setat, run_plan ridica min_arm_daily_spend peste valoarea de mai sus
+    # daca e prea mica pentru buget (vezi decision/budget_strategy.py) - relevant
+    # mai ales la conturi cu buget mic. None (implicit) = comportament neschimbat.
+    target_cpa: Decimal | None = None
 
 
 class MetaConfig(BaseModel):

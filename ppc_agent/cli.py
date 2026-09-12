@@ -1,6 +1,7 @@
 """Interfata linie de comanda a agentului PPC.
 
-Comenzi: ``ingest``, ``plan``, ``copy``, ``propose``, ``execute``, ``status``.
+Comenzi: ``ingest``, ``plan``, ``budget-advice``, ``copy``, ``propose``,
+``execute``, ``status``.
 
 Flux tipic::
 
@@ -34,10 +35,12 @@ from ppc_agent.creative.creative_pipeline import (
     render_storyboard,
 )
 from ppc_agent.creative.factory import CreativeFactory
+from ppc_agent.decision.budget_strategy import DEFAULT_EVALUATION_DAYS, recommend_arm_capacity
 from ppc_agent.decision.fatigue_monitor import load_ad_performance_states
-from ppc_agent.decision.pipeline import render_plan, run_plan
+from ppc_agent.decision.pipeline import render_arm_capacity, render_plan, run_plan
 from ppc_agent.errors import (
     ApprovalRequiredError,
+    BudgetAllocationError,
     CopywriterError,
     FatigueInputError,
     PpcAgentError,
@@ -105,6 +108,36 @@ def plan(config: _ConfigOption = "config.yaml") -> None:
     factory = ProviderFactory(app_config)
     render_plan(run_plan(factory, app_config), console)
     render_alignment(run_alignment(factory, app_config), console)
+
+
+@app.command("budget-advice")
+def budget_advice(
+    daily_budget: Annotated[
+        float, typer.Option("--daily-budget", help="Bugetul zilnic disponibil.")
+    ],
+    target_cpa: Annotated[
+        float, typer.Option("--target-cpa", help="Costul tinta per achizitie/lead.")
+    ],
+    evaluation_days: Annotated[
+        float,
+        typer.Option("--evaluation-days", help="In cate zile se vrea un verdict Gate B."),
+    ] = DEFAULT_EVALUATION_DAYS,
+) -> None:
+    """Cate variante de creatie poate sustine activ un buget zilnic, fara sa se dilueze.
+
+    Calcul independent (nu cere date de la provideri) - util mai ales pentru
+    conturi cu buget mic (10-25 lei/zi), unde impartirea intre prea multe
+    variante ar insemna ca niciuna nu ajunge vreodata la un verdict al
+    monitorului de oboseala (vezi 'check-fatigue').
+    """
+    try:
+        advice = recommend_arm_capacity(
+            daily_budget, target_cpa, target_evaluation_days=evaluation_days
+        )
+    except BudgetAllocationError as exc:
+        console.print(f"[red]calcul esuat:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    render_arm_capacity(advice, console)
 
 
 @app.command()
