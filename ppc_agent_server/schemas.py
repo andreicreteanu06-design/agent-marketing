@@ -152,6 +152,66 @@ class ExecuteProposalRequest(BaseModel):
 # --- Auth (schimb OAuth) ---
 
 
+# --- Autentificare client (self-service, distinct de cheia API de agentie) ---
+
+
+class ClientSignupRequest(BaseModel):
+    """Corpul cererii ``POST /api/v1/signup`` - creeaza ClientAccount + ClientUser."""
+
+    name: str
+    email: str
+    password: str = Field(min_length=8)
+
+
+class ClientLoginRequest(BaseModel):
+    """Corpul cererii ``POST /api/v1/login``."""
+
+    email: str
+    password: str
+
+
+class ClientTokenResponse(BaseModel):
+    """Raspunsul la signup/login - token JWT de folosit ca ``Authorization: Bearer``."""
+
+    access_token: str
+    token_type: str = "bearer"
+
+
+class ClientUserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    client_account_id: int
+    created_at: datetime
+
+
+class ClientMeResponse(BaseModel):
+    """Raspunsul ``GET /api/v1/me`` - identitatea + contul clientului autentificat."""
+
+    user: ClientUserRead
+    account: ClientAccountRead
+
+
+class ClientCredentialsUpdate(BaseModel):
+    """Corpul cererii ``PATCH /api/v1/me/credentials``.
+
+    Doar campurile trimise se cripteaza si se salveaza (acelasi pattern ca
+    ``ClientAccountUpdate``) - niciun camp nu e obligatoriu, clientul isi
+    conecteaza conturile pe rand, pe masura ce le are.
+    """
+
+    google_ads_refresh_token: str | None = None
+    meta_access_token: str | None = None
+    tiktok_access_token: str | None = None
+
+
+class ClientCredentialsUpdateResponse(BaseModel):
+    """Raspunsul la actualizarea de credentiale - NICIODATA valorile, nici criptate."""
+
+    updated_fields: list[str]
+
+
 # --- Urmarire conversii ---
 
 

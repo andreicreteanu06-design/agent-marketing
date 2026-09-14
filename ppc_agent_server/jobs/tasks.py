@@ -35,6 +35,7 @@ from ppc_agent_server.models import (
     Platform,
     ProposedChange,
 )
+from ppc_agent_server.security import decrypt_secret
 from ppc_agent_server.tracking.pipeline import to_ad_performance_state
 
 AdPlatform = Literal["google", "tiktok"]
@@ -59,7 +60,26 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
     ``AdPerformanceRecord`` nou (vezi ``tracking/pipeline.py``) — reutilizat
     aici ca sa activeze automat sfatul de capacitate per buget
     (``decision.budget_strategy``) pentru fiecare client, fara camp nou.
+
+    Cand clientul si-a conectat propriile conturi de reclame (``*_enc`` pe
+    ``ClientAccount``, criptate — vezi ``routers/client_auth.py``), acele
+    secrete decriptate suprascriu ``Settings()`` global doar pentru campurile
+    prezente; un client care n-a conectat inca nimic foloseste in continuare
+    ``.env``-ul global neschimbat (comportament CLI/single-business identic
+    cu azi — niciun test existent nu se schimba).
     """
+    base_settings = Settings()
+    overrides: dict[str, str] = {}
+    if account.google_ads_refresh_token_enc:
+        overrides["google_ads_refresh_token"] = decrypt_secret(
+            account.google_ads_refresh_token_enc
+        )
+    if account.meta_access_token_enc:
+        overrides["meta_access_token"] = decrypt_secret(account.meta_access_token_enc)
+    if account.tiktok_access_token_enc:
+        overrides["tiktok_access_token"] = decrypt_secret(account.tiktok_access_token_enc)
+    settings = base_settings.model_copy(update=overrides) if overrides else base_settings
+
     return AppConfig(
         target_domain=account.target_domain,
         geo=account.geo,
@@ -68,7 +88,7 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
             max_daily_spend=account.max_daily_spend,
             target_cpa=account.default_lead_value,
         ),
-        settings=Settings(),
+        settings=settings,
     )
 
 

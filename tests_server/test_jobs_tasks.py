@@ -29,6 +29,7 @@ from ppc_agent_server.models import (
     ProposedChange,
     Tenant,
 )
+from ppc_agent_server.security import encrypt_secret
 
 
 def test_default_lead_value_feeds_budget_target_cpa() -> None:
@@ -43,6 +44,31 @@ def test_default_lead_value_feeds_budget_target_cpa() -> None:
     config = _app_config_for(account)
     assert config.budget.max_daily_spend == Decimal("20.00")
     assert config.budget.target_cpa == Decimal("150.00")
+
+
+def test_app_config_for_falls_back_to_global_settings_when_no_secrets_connected() -> None:
+    """Comportament neschimbat: client fara conturi conectate (*_enc goale,
+    implicit) foloseste tot Settings() global - nu are nevoie de SECRETS_KEY
+    configurat (decrypt_secret() nu se apeleaza deloc)."""
+    account = ClientAccount(tenant_id=1, name="Client Fara Conturi")
+    config = _app_config_for(account)
+    assert config.settings.google_ads_refresh_token == ""
+    assert config.settings.meta_access_token == ""
+    assert config.settings.tiktok_access_token == ""
+
+
+def test_app_config_for_uses_decrypted_per_client_secrets(agency_settings: Tenant) -> None:
+    """Cand clientul si-a conectat contul (camp *_enc populat), _app_config_for
+    foloseste secretul lui decriptat, nu Settings() global."""
+    account = ClientAccount(
+        tenant_id=1,
+        name="Client Cu Cont Conectat",
+        google_ads_refresh_token_enc=encrypt_secret("1//refresh-real-al-clientului"),
+    )
+    config = _app_config_for(account)
+    assert config.settings.google_ads_refresh_token == "1//refresh-real-al-clientului"
+    # Campurile neconectate raman goale, nu crapa.
+    assert config.settings.meta_access_token == ""
 
 
 def _client_account(session: Session, *, max_daily_spend: str = "50.00") -> ClientAccount:

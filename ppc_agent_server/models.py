@@ -17,7 +17,7 @@ raman ghilimele native (forward refs Python obisnuite), nu PEP 563.
 import enum
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import JSON, Column, Numeric
 from sqlmodel import Field, Relationship, SQLModel
@@ -128,6 +128,14 @@ class ClientAccount(SQLModel, table=True):
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
 
+    # Secrete per-client, criptate (Fernet - vezi security.py), NICIODATA in
+    # clar in DB. Gol = clientul nu si-a conectat inca acel cont; in acel caz
+    # ProviderFactory cade pe Settings global din .env (comportament CLI
+    # neschimbat) - vezi jobs/tasks.py::_app_config_for.
+    google_ads_refresh_token_enc: str = ""
+    meta_access_token_enc: str = ""
+    tiktok_access_token_enc: str = ""
+
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
     # (vezi ppc_agent_server.tracking.qualification.ConversionQualifier).
@@ -147,6 +155,33 @@ class ClientAccount(SQLModel, table=True):
     ad_performance_records: list["AdPerformanceRecord"] = Relationship(
         back_populates="client_account"
     )
+    # Optional["X"] (bracket syntax), nu "X | None" (pipe) - vezi nota din
+    # capul fisierului: rezolverul de nume al SQLAlchemy pentru forward refs
+    # string cauta explicit sintaxa Optional[...]/List[...] cu paranteze
+    # patrate (regex intern), nu recunoaste "X | None" si crapa la mapper
+    # configure cu InvalidRequestError.
+    client_user: Optional["ClientUser"] = Relationship(
+        back_populates="client_account", sa_relationship_kwargs={"uselist": False}
+    )
+
+
+class ClientUser(SQLModel, table=True):
+    """Login-ul unui client (autentificare self-service prin parola).
+
+    Distinct de :class:`Tenant` (agentia, autentificata prin cheie API - vezi
+    ``auth.py``) - aici e clientul FINAL al agentiei, care isi creeaza singur
+    cont pe site public (``POST /api/v1/signup``) ca sa-si conecteze conturile
+    de reclame. 1:1 cu :class:`ClientAccount` (``unique=True`` pe FK) - un
+    client are azi un singur utilizator, nu o echipa cu roluri multiple.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", unique=True, index=True)
+    email: str = Field(unique=True, index=True)
+    password_hash: str
+    created_at: datetime = Field(default_factory=_now)
+
+    client_account: ClientAccount = Relationship(back_populates="client_user")
 
 
 class ProposedChange(SQLModel, table=True):

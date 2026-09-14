@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.pool import StaticPool
@@ -19,6 +20,7 @@ from ppc_agent_server.auth import create_tenant
 from ppc_agent_server.db import init_db, set_engine
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
+from ppc_agent_server.settings import get_server_settings
 
 
 @pytest.fixture
@@ -64,3 +66,21 @@ def auth_headers(tenant_and_key: tuple[Tenant, str]) -> dict[str, str]:
     """Antetul ``Authorization`` gata de folosit in ``client.post(..., headers=...)``."""
     _, raw_key = tenant_and_key
     return {"Authorization": f"Bearer {raw_key}"}
+
+
+@pytest.fixture
+def agency_settings(
+    tenant_and_key: tuple[Tenant, str], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Tenant]:
+    """Configureaza JWT_SECRET_KEY/SECRETS_KEY/AGENCY_TENANT_ID pentru un test -
+    necesar pentru orice test care loveste /signup, /login, /me, /me/credentials
+    sau _app_config_for cu secrete criptate. get_server_settings() e cache-uit
+    (lru_cache) - trebuie golit inainte SI dupa, altfel setarile "scurg" in
+    alte teste care ruleaza in acelasi proces."""
+    tenant, _ = tenant_and_key
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-not-for-production")
+    monkeypatch.setenv("SECRETS_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("AGENCY_TENANT_ID", str(tenant.id))
+    get_server_settings.cache_clear()
+    yield tenant
+    get_server_settings.cache_clear()

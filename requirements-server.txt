@@ -17,6 +17,11 @@ alembic>=1.13,<2
 # de productie, vezi docker-compose.yml). SQLite (implicit) nu are nevoie de el.
 psycopg[binary]>=3.2,<4
 
+# --- Autentificare client + secrete criptate (Faza W2, security.py) ---
+argon2-cffi>=23,<24
+pyjwt>=2.9,<3
+cryptography>=43,<44
+
 # --- Job-uri in fundal (Faza F) — optionale la rulare: fara REDIS_URL setat,
 # serverul foloseste InlineJobQueue (sincron, in proces) si nu are nevoie de ele.
 redis>=5,<6

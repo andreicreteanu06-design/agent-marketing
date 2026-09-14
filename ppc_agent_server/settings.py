@@ -31,6 +31,25 @@ class ServerSettings(BaseSettings):
     # Seteaza pentru coada reala ARQ+Redis (Faza F).
     redis_url: str = ""
 
+    # Cheie de semnare pentru token-urile JWT ale clientilor (POST /signup,
+    # /login) - fara ea, create_client_token()/decode_client_token() ridica
+    # RuntimeError (nu exista un implicit nesigur). Genereaz-o o singura data:
+    # python -c "import secrets; print(secrets.token_urlsafe(32))"
+    jwt_secret_key: str = ""
+
+    # Cheie Fernet pentru criptarea secretelor per-client (refresh/access
+    # tokens de pe conturile de reclame) stocate pe ClientAccount - vezi
+    # security.py. Genereaz-o o singura data si NU o schimba dupa ce exista
+    # secrete criptate cu ea (devin ilizibile):
+    # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    secrets_key: str = ""
+
+    # Tenant-ul (agentia) caruia ii apartin conturile create prin semnarea
+    # publica (POST /signup) - produsul e single-agentie azi (vezi planul),
+    # deci exact un tenant. Fara el configurat, /signup ridica 503 in loc sa
+    # ghiceasca primul rand din tabel.
+    agency_tenant_id: int | None = None
+
 
 @lru_cache
 def get_server_settings() -> ServerSettings:
