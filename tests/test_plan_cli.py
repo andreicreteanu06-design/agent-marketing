@@ -76,19 +76,21 @@ def test_plan_is_reproducible() -> None:
     assert first.model_dump() == second.model_dump()
 
 
-def test_plan_combines_google_and_tiktok_arms() -> None:
-    """Modulul 2 trateaza TikTok ca brate suplimentare, nu un canal separat."""
+def test_plan_combines_google_tiktok_and_meta_arms() -> None:
+    """Modulul 2 trateaza TikTok si Meta ca brate suplimentare, nu canale separate."""
     config = AppConfig(settings=Settings(_env_file=None))
     factory = ProviderFactory(config)
     plan = run_plan(factory, config, n_samples=4000)
 
     platforms = {allocation.platform for allocation in plan.budget_plan.allocations}
-    assert platforms == {"google_ads", "tiktok_ads"}
+    assert platforms == {"google_ads", "tiktok_ads", "meta_ads"}
 
     google_arms = [a for a in plan.budget_plan.allocations if a.platform == "google_ads"]
     tiktok_arms = [a for a in plan.budget_plan.allocations if a.platform == "tiktok_ads"]
+    meta_arms = [a for a in plan.budget_plan.allocations if a.platform == "meta_ads"]
     assert len(google_arms) == 5  # cele 5 campanii mock din providers/mock/ads.py
     assert len(tiktok_arms) == 4  # cele 4 grupuri mock din providers/mock/tiktok.py
+    assert len(meta_arms) == 5  # cele 5 seturi de reclame mock din providers/mock/meta.py
 
     total = sum(
         (allocation.daily_budget for allocation in plan.budget_plan.allocations),

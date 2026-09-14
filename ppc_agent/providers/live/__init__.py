@@ -88,6 +88,14 @@ class LiveMetaMarketingProvider(base.MetaMarketingProvider):
         """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
         _not_ready()
 
+    def campaign_performance(self, ad_account_id: str) -> pd.DataFrame:
+        """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
+        _not_ready()
+
+    def conversion_paths(self, ad_account_id: str) -> list[list[str]]:
+        """Nu este disponibil in v1 — vezi :class:`SetupRequiredError`."""
+        _not_ready()
+
 
 class LiveTikTokAdsProvider(base.TikTokAdsProvider):
     """Stub live pentru TikTok Ads API (performanta + parcursuri de conversie)."""

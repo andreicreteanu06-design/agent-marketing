@@ -36,8 +36,10 @@ def test_propose_writes_valid_changeset(
     resource_types = {change["resource_type"] for change in payload["changes"]}
     assert any(r.startswith("campaign/") for r in resources)
     assert any(r.startswith("tiktok_ad_group/") for r in resources)
+    assert any(r.startswith("meta_ad_set/") for r in resources)
     assert "campaign" in resource_types
     assert "ad_group" in resource_types
+    assert "ad_set" in resource_types
 
 
 def test_status_shows_pending_changeset(

@@ -152,7 +152,9 @@ class GoogleAdsProvider(ABC):
 
 
 class MetaMarketingProvider(ABC):
-    """Acces la seturile de reclame Meta pentru analiza de lichiditate."""
+    """Acces la seturile de reclame Meta — lichiditate (Modulul 3, ``ad_sets``)
+    si acum si performanta pentru Modulul 2 (bandit, ``campaign_performance``),
+    pe aceleasi seturi de reclame."""
 
     @abstractmethod
     def ad_sets(self, ad_account_id: str) -> pd.DataFrame:
@@ -164,6 +166,33 @@ class MetaMarketingProvider(ABC):
         Returns:
             ``DataFrame`` cu coloanele ``id``, ``audience_def``,
             ``weekly_conversions``, ``weekly_spend``, ``learning_phase``.
+        """
+
+    @abstractmethod
+    def campaign_performance(self, ad_account_id: str) -> pd.DataFrame:
+        """Performanta pe seturi de reclame Meta, in aceeasi forma ca
+        :class:`GoogleAdsProvider`/:class:`TikTokAdsProvider` — Meta participa
+        acum ca al treilea set de brate in Modulul 2 (Thompson Sampling), nu
+        doar la analiza de lichiditate (:meth:`ad_sets`).
+
+        Args:
+            ad_account_id: Identificatorul contului de reclame Meta.
+
+        Returns:
+            ``DataFrame`` cu coloanele ``arm_id``, ``name``, ``clicks``,
+            ``conversions``, ``cost``, ``revenue`` (venitul din conversii).
+        """
+
+    @abstractmethod
+    def conversion_paths(self, ad_account_id: str) -> list[list[str]]:
+        """Parcursurile de client, ca liste de puncte de contact.
+
+        Args:
+            ad_account_id: Identificatorul contului de reclame Meta.
+
+        Returns:
+            Lista de parcursuri; fiecare este ``[canal1, canal2, ...,
+            "conversion" | "null"]``.
         """
 
 

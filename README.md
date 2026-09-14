@@ -35,6 +35,7 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 | E | Rute REST (clienti, joburi, propuneri) + poarta HITL DB-backed | ✅ |
 | F | Coada de joburi ARQ+Redis (opt-in) — `InlineJobQueue` ramane implicita | ✅ |
 | + | RAG omnicanal (Google/Meta/TikTok) — swipe unificat, proxy de performanta, ingestie CSV universala | ✅ |
+| + | Meta ca brate Thompson + touchpoint-uri Markov (combinat cu Google Ads + TikTok Ads) | ✅ |
 | — | Integrare `live` (Google Ads / GSC / GBP / Meta / TikTok Ads / Fish Speech / Flick / OAuth) | ⏳ |
 
 ## Cerinte
@@ -75,7 +76,7 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Comanda | Rol |
 |---------|-----|
 | `ingest --url <domeniu>` | Modulul 1: crawling + date organice + expansiune cuvinte cheie |
-| `plan` | Kelly (plafon zilnic) + Thompson (Google Ads + TikTok Ads combinate) + Markov + Quality Score + lichiditate Meta |
+| `plan` | Kelly (plafon zilnic) + Thompson (Google + TikTok + Meta Ads combinate) + Markov + Quality Score + lichiditate Meta |
 | `copy --keyword <kw> --usp <text> --trigger <pas\|status\|fomo\|aida>` | Genereaza copy emotional (Google); il adauga in `proposed_ads_queue.json` (HITL). `--dry-run` disponibil |
 | `build-creative --keyword <kw> --broll <video> [--platform google\|tiktok]` | Modulul 5: copy -> voce (Fish Speech) -> video (Flick) -> `.mp4` in `creative_output/`. `tiktok` = script UGC, video 9:16 |
 | `ingest-tiktok --input <csv\|json>` | Valideaza anunturi TikTok dovedite si le adauga in `tiktok_swipe_library.json` (fara LLM — alimenteaza RAG-ul de mai sus) |
@@ -90,7 +91,10 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 - **Date de cont** (`providers/mock/tiktok.py`, Faza B): performanta grupurilor de
   anunturi + parcursuri de conversie, aceeasi forma ca Google Ads — brate Thompson
   (`platform="tiktok_ads"`, prefix `tt_`) si touchpoint-uri Markov, combinate cu
-  Google Ads intr-un singur plafon/alocare in `plan` (vezi Faza C mai jos).
+  Google Ads intr-un singur plafon/alocare in `plan` (vezi Faza C mai jos). Meta
+  Ads participa acum la fel (`platform="meta_ads"`, `providers/mock/meta.py`,
+  `campaign_performance()`/`conversion_paths()` pe aceleasi seturi de reclame
+  folosite si de lichiditatea Meta) — trei platforme intr-un singur bandit.
 - **Creatie** (`copywriter/` + `creative/`, Faza A): script video UGC (hook +
   body + CTA + `text_overlay`), RAG pe **nisa/cuvant cheie** (nu emotion_trigger
   ca la Google) peste `tiktok_swipe_library` din `swipe_file.json`, cu
@@ -314,7 +318,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 |------|-----|
 | `POST /api/v1/auth/mcc-connect` | Stub (ca toate integrarile live) — ridica `SetupRequiredError` -> 503 |
 | `POST /api/v1/clients` | Inregistreaza un cont gestionat pentru agentia autentificata |
-| `POST /api/v1/jobs/plan` | Dispecerizeaza Kelly + Thompson (Google+TikTok) + Markov pentru un client |
+| `POST /api/v1/jobs/plan` | Dispecerizeaza Kelly + Thompson (Google+TikTok+Meta) + Markov pentru un client |
 | `POST /api/v1/jobs/copy` | Dispecerizeaza copy emotional (`platform: google\|tiktok`) -> `AdQueueItem` |
 | `POST /api/v1/jobs/creative` | Dispecerizeaza Modulul 5 (voce+video) -> `CreativeArtifact` |
 | `GET /api/v1/jobs/{task_id}` | Starea unui job (`queued`/`running`/`success`/`failed` + rezultat) |
@@ -382,7 +386,7 @@ ppc_agent/                # CLI, un singur marketer/agentie
   texttools.py    normalizare / tokenizare / sentiment (modul frunza)
   providers/      adaptoare externe: base (ABC), factory, mock/ (incl. tiktok.py), live/
   ingestion/      Modulul 1 — context, ingestie, tiktok_ingestion.py + swipe_ingestion.py (bibliotecile RAG)
-  decision/       Modulul 2 — Thompson Sampling (Google+TikTok) + Markov + Kelly (kelly_sizing.py)
+  decision/       Modulul 2 — Thompson Sampling (Google+TikTok+Meta) + Markov + Kelly (kelly_sizing.py)
   alignment/      Modulul 3 — Quality Score + lichiditate Meta
   guardrails/     Modulul 4 — ApprovalGate + AbsoluteSpendLimiter
   copywriter/     copy emotional Google + script UGC TikTok + RAG omnicanal (engine, llm, swipe, pipeline)

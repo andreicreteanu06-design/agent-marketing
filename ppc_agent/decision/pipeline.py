@@ -19,6 +19,7 @@ from ppc_agent.providers.factory import ProviderFactory
 
 _CUSTOMER_PLACEHOLDER = "mock-customer"
 _ADVERTISER_PLACEHOLDER = "mock-advertiser"
+_META_ACCOUNT_PLACEHOLDER = "mock-account"
 _DEFAULT_SEED = 20260101
 _DEFAULT_SAMPLES = 20_000
 
@@ -52,11 +53,15 @@ def run_plan(
 
     Kelly foloseste avantajul contului (ROAS) ca sa stabileasca *plafonul zilnic
     absolut*; Thompson distribuie apoi acel plafon intre campanii/grupuri de
-    anunturi — pe tot contul, indiferent de platforma. Bratele Google Ads si
-    TikTok Ads se combina intr-o singura lista inainte de Kelly/Thompson (un
-    singur plafon, o singura alocare): asta e sensul unui bandit — bugetul curge
-    spre bratul cel mai bun, nu spre platforma cea mai bun. La fel, parcursurile
-    de conversie de pe ambele platforme se combina inainte de atribuirea Markov.
+    anunturi/seturi de reclame — pe tot contul, indiferent de platforma.
+    Bratele Google Ads, TikTok Ads si Meta Ads se combina intr-o singura lista
+    inainte de Kelly/Thompson (un singur plafon, o singura alocare): asta e
+    sensul unui bandit — bugetul curge spre bratul cel mai bun, nu spre
+    platforma cea mai buna. Meta participa acum si aici, nu doar la lichiditate
+    (``alignment/``) — foloseste aceleasi cinci seturi de reclame din
+    ``providers.mock.meta``, vazute acum si prin ``clicks``/``revenue``. La
+    fel, parcursurile de conversie de pe toate platformele se combina inainte
+    de atribuirea Markov.
     Plafonul Kelly poate depasi ``budget.max_daily_spend``, dar niciodata
     ``HARD_CEILING``. Daca ``config.budget.target_cpa`` e setat, pragul minim
     per brat (``min_arm_daily_spend``) e ridicat automat cat sa incapa un
@@ -76,6 +81,7 @@ def run_plan(
     """
     ads = factory.google_ads()
     tiktok_ads = factory.tiktok_ads()
+    meta_ads = factory.meta()
 
     google_arms = _arms_from_performance(
         ads.campaign_performance(_CUSTOMER_PLACEHOLDER), platform="google_ads"
@@ -83,7 +89,10 @@ def run_plan(
     tiktok_arms = _arms_from_performance(
         tiktok_ads.campaign_performance(_ADVERTISER_PLACEHOLDER), platform="tiktok_ads"
     )
-    arms = google_arms + tiktok_arms
+    meta_arms = _arms_from_performance(
+        meta_ads.campaign_performance(_META_ACCOUNT_PLACEHOLDER), platform="meta_ads"
+    )
+    arms = google_arms + tiktok_arms + meta_arms
 
     kelly = size_daily_budget(
         arms,
@@ -111,6 +120,7 @@ def run_plan(
         for path in (
             *ads.conversion_paths(_CUSTOMER_PLACEHOLDER),
             *tiktok_ads.conversion_paths(_ADVERTISER_PLACEHOLDER),
+            *meta_ads.conversion_paths(_META_ACCOUNT_PLACEHOLDER),
         )
     ]
     attribution = attribute(journeys)

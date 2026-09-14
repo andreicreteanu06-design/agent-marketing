@@ -40,6 +40,7 @@ from ppc_agent_server.tracking.pipeline import to_ad_performance_state
 AdPlatform = Literal["google", "tiktok"]
 _MOCK_CUSTOMER_ID = "mock-customer"
 _MOCK_ADVERTISER_ID = "mock-advertiser"
+_MOCK_AD_ACCOUNT_ID = "mock-account"
 
 
 class ClientNotFoundError(ValueError):
@@ -79,7 +80,7 @@ def _require_client(session: Session, client_account_id: int) -> ClientAccount:
 
 
 def run_plan_job(*, client_account_id: int) -> dict[str, Any]:
-    """Job Modulul 2: Kelly + Thompson + Markov (Google + TikTok combinate)."""
+    """Job Modulul 2: Kelly + Thompson + Markov (Google + Meta + TikTok combinate)."""
     with Session(get_engine()) as session:
         account = _require_client(session, client_account_id)
         config = _app_config_for(account)
@@ -248,13 +249,14 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
     Scop deliberat limitat: NU atinge ``conversions``/``revenue`` (proprietatea
     pipeline-ului de urmarire a conversiilor, vezi ``tracking/pipeline.py``) si
     NU poate popula ``impressions``/``ctr``/frecventa/liniile de baza CTR-CPA pe
-    care Gate B/C din Fatigue Monitor le folosesc - ``GoogleAdsProvider`` si
-    ``TikTokAdsProvider`` nu expun inca acele coloane (``campaign_performance()``
-    intoarce doar ``arm_id/name/clicks/conversions/cost/revenue``). Verdictele
-    care depind de ele raman la fel de "oarbe" ca inainte de acest job - gap
-    documentat, nu ascuns. NU creeaza randuri noi (doar actualizeaza randuri deja
-    existente) - crearea ramane in sarcina pipeline-ului de conversii, care are
-    contextul (target_cpa, platforma) necesar unui rand nou.
+    care Gate B/C din Fatigue Monitor le folosesc - ``GoogleAdsProvider``,
+    ``TikTokAdsProvider`` si ``MetaMarketingProvider`` nu expun inca acele
+    coloane (``campaign_performance()`` intoarce doar
+    ``arm_id/name/clicks/conversions/cost/revenue``). Verdictele care depind de
+    ele raman la fel de "oarbe" ca inainte de acest job - gap documentat, nu
+    ascuns. NU creeaza randuri noi (doar actualizeaza randuri deja existente) -
+    crearea ramane in sarcina pipeline-ului de conversii, care are contextul
+    (target_cpa, platforma) necesar unui rand nou.
     """
     with Session(get_engine()) as session:
         account = _require_client(session, client_account_id)
@@ -264,9 +266,11 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
         performance_by_arm: dict[str, tuple[float, int]] = {}
         google_id = account.google_ads_customer_id or _MOCK_CUSTOMER_ID
         tiktok_id = account.tiktok_advertiser_id or _MOCK_ADVERTISER_ID
+        meta_id = account.meta_ad_account_id or _MOCK_AD_ACCOUNT_ID
         for frame in (
             factory.google_ads().campaign_performance(google_id),
             factory.tiktok_ads().campaign_performance(tiktok_id),
+            factory.meta().campaign_performance(meta_id),
         ):
             for row in frame.to_dict(orient="records"):
                 performance_by_arm[str(row["arm_id"])] = (

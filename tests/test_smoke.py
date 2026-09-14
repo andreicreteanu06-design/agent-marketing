@@ -60,6 +60,8 @@ def test_live_factory_raises_setup_required() -> None:
     with pytest.raises(SetupRequiredError):
         factory.meta().ad_sets("act_123")
     with pytest.raises(SetupRequiredError):
+        factory.meta().campaign_performance("act_123")
+    with pytest.raises(SetupRequiredError):
         factory.tiktok_ads().campaign_performance("adv_123")
 
 

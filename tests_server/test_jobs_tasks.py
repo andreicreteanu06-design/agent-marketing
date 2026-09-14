@@ -151,6 +151,31 @@ def test_run_metrics_sync_job_updates_spend_and_clicks_for_known_arm(session: Se
     assert record.revenue == Decimal("777.00")
 
 
+def test_run_metrics_sync_job_updates_meta_arm(session: Session) -> None:
+    account = _client_account(session)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="as_brand",  # arm_id real din providers/mock/meta.py
+        platform=AdFatiguePlatform.META,
+        launch_time=datetime.now(tz=UTC),
+        target_cpa=Decimal("10.00"),
+        spend=Decimal("0"),
+        clicks=0,
+        conversions=3,
+        revenue=Decimal("333.00"),
+    )
+    session.add(record)
+    session.commit()
+
+    result = run_metrics_sync_job(client_account_id=account.id)
+    assert result["updated"] == 1
+
+    session.refresh(record)
+    assert record.spend > 0
+    assert record.clicks > 0
+    assert record.conversions == 3  # neatins, ca la Google/TikTok
+
+
 def test_run_metrics_sync_job_ignores_unknown_ad_id(session: Session) -> None:
     account = _client_account(session)
     record = AdPerformanceRecord(

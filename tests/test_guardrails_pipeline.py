@@ -68,6 +68,25 @@ def test_tiktok_ads_allocation_uses_ad_group_resource_naming() -> None:
     assert changes[0].resource_type == "ad_group"
 
 
+def test_meta_ads_allocation_uses_ad_set_resource_naming() -> None:
+    plan = _plan(
+        BudgetAllocation(
+            arm_id="as_brand",
+            name="Retargeting brand",
+            platform="meta_ads",
+            win_probability=0.5,
+            final_share=1.0,
+            daily_budget=Decimal("25.00"),
+        )
+    )
+    changes = build_proposed_changes(
+        budget_plan=plan, negatives=_EMPTY_NEGATIVES, liquidity=_EMPTY_LIQUIDITY
+    )
+    assert len(changes) == 1
+    assert changes[0].resource == "meta_ad_set/as_brand"
+    assert changes[0].resource_type == "ad_set"
+
+
 def test_default_platform_omitted_still_resolves_to_google_ads() -> None:
     """BudgetAllocation fara platform explicit (implicit) se comporta ca inainte."""
     plan = _plan(
@@ -91,17 +110,25 @@ def test_mixed_platform_allocations_each_get_correct_resource_type() -> None:
             arm_id="c_brand",
             name="Search - Brand",
             platform="google_ads",
-            win_probability=0.7,
-            final_share=0.6,
-            daily_budget=Decimal("30.00"),
+            win_probability=0.5,
+            final_share=0.4,
+            daily_budget=Decimal("25.00"),
         ),
         BudgetAllocation(
             arm_id="tt_infeed",
             name="In-Feed - Conversii",
             platform="tiktok_ads",
             win_probability=0.3,
-            final_share=0.4,
-            daily_budget=Decimal("20.00"),
+            final_share=0.3,
+            daily_budget=Decimal("15.00"),
+        ),
+        BudgetAllocation(
+            arm_id="as_brand",
+            name="Retargeting brand",
+            platform="meta_ads",
+            win_probability=0.2,
+            final_share=0.3,
+            daily_budget=Decimal("15.00"),
         ),
     )
     changes = build_proposed_changes(
@@ -110,6 +137,7 @@ def test_mixed_platform_allocations_each_get_correct_resource_type() -> None:
     by_resource = {c.resource: c.resource_type for c in changes}
     assert by_resource["campaign/c_brand"] == "campaign"
     assert by_resource["tiktok_ad_group/tt_infeed"] == "ad_group"
+    assert by_resource["meta_ad_set/as_brand"] == "ad_set"
 
 
 def test_zeroed_tiktok_allocation_pauses_correctly() -> None:

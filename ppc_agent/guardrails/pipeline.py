@@ -31,12 +31,15 @@ def build_proposed_changes(
 ) -> list[ProposedChange]:
     """Traduce planurile Modulelor 1-3 in modificari propuse, inca neaplicate.
 
-    - Buget (Modulul 2): un ``UPDATE`` per campanie/grup de anunturi cu buget,
-      ``PAUSE`` pentru cele duse la 0. ``projected_daily_spend`` poarta bugetul
-      zilnic rezultat. Resursa se numeste dupa platforma bratului: Google Ads
-      ramane ``campaign/{arm_id}``, TikTok Ads devine ``tiktok_ad_group/{arm_id}``
-      (``resource_type`` ``"campaign"`` vs. ``"ad_group"``). Cand ``kelly`` este
-      dat, rationamentul Half-Kelly se adauga la fiecare modificare de buget.
+    - Buget (Modulul 2): un ``UPDATE`` per campanie/grup de anunturi/set de
+      reclame cu buget, ``PAUSE`` pentru cele duse la 0. ``projected_daily_spend``
+      poarta bugetul zilnic rezultat. Resursa se numeste dupa platforma
+      bratului: Google Ads ramane ``campaign/{arm_id}``, TikTok Ads devine
+      ``tiktok_ad_group/{arm_id}`` (``resource_type`` ``"ad_group"``), Meta Ads
+      devine ``meta_ad_set/{arm_id}`` (``resource_type`` ``"ad_set"`` — distinct
+      de ``ad_set_group/...`` folosit mai jos de consolidarile de lichiditate,
+      diferentiat prin ``source_module``). Cand ``kelly`` este dat, rationamentul
+      Half-Kelly se adauga la fiecare modificare de buget.
     - Cuvinte cheie negative (Modulul 1): ``CREATE``, fara impact pe cheltuiala.
     - Consolidari Meta (Modulul 3): ``UPDATE``, fara impact pe cheltuiala zilnica
       Google (bugetul Meta este guvernat separat).
@@ -62,6 +65,9 @@ def build_proposed_changes(
         if allocation.platform == "tiktok_ads":
             resource = f"tiktok_ad_group/{allocation.arm_id}"
             resource_type = "ad_group"
+        elif allocation.platform == "meta_ads":
+            resource = f"meta_ad_set/{allocation.arm_id}"
+            resource_type = "ad_set"
         else:
             resource = f"campaign/{allocation.arm_id}"
             resource_type = "campaign"
