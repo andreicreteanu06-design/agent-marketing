@@ -8,20 +8,38 @@ inline (``InlineJobQueue``, Faza E), fie intr-un proces worker ARQ separat
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
+from ppc_agent.alignment.pipeline import run_alignment
 from ppc_agent.config import AppConfig, BudgetConfig, Settings
 from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.creative.creative_pipeline import generate_full_ad_creative
 from ppc_agent.creative.factory import CreativeFactory
 from ppc_agent.decision.pipeline import run_plan
+from ppc_agent.guardrails.models import ProposedChange as CliProposedChange
+from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
+from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
+from ppc_agent.ingestion.pipeline import run_ingestion
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent_server.db import get_engine
-from ppc_agent_server.models import AdQueueItem, ClientAccount, CreativeArtifact, Platform
+from ppc_agent_server.models import (
+    AdPerformanceRecord,
+    AdQueueItem,
+    ChangeOp,
+    ClientAccount,
+    CreativeArtifact,
+    Platform,
+    ProposedChange,
+)
+from ppc_agent_server.tracking.pipeline import to_ad_performance_state
 
 AdPlatform = Literal["google", "tiktok"]
+_MOCK_CUSTOMER_ID = "mock-customer"
+_MOCK_ADVERTISER_ID = "mock-advertiser"
 
 
 class ClientNotFoundError(ValueError):
@@ -140,3 +158,169 @@ def run_creative_job(
         session.commit()
         session.refresh(artifact)
         return {"creative_artifact_id": artifact.id, "mp4_path": result.mp4_path}
+
+
+def _to_db_row(client_account_id: int, change: CliProposedChange) -> ProposedChange:
+    """Converteste un :class:`~ppc_agent.guardrails.models.ProposedChange` (CLI,
+    Pydantic simplu) intr-un rand DB ``pending`` — aceleasi campuri, aceeasi
+    forma, doar persistat in loc de scris in ``proposed_changes_*.json``."""
+    return ProposedChange(
+        client_account_id=client_account_id,
+        op=ChangeOp(change.op),
+        resource=change.resource,
+        resource_type=change.resource_type,
+        before=change.before,
+        after=change.after,
+        projected_daily_spend=change.projected_daily_spend,
+        rationale=change.rationale,
+        source_module=change.source_module,
+    )
+
+
+def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
+    """Job Modulul 4: genereaza propuneri (buget + negative + lichiditate Meta) si
+    le persista ca randuri ``ProposedChange`` ``pending`` — echivalentul
+    server-side, DB-backed, al comenzii CLI ``propose`` (acolo: fisier JSON +
+    ``ApprovalGate``; aici: randuri DB, acelasi camp cu camp).
+
+    Nimic nu se executa - propunerile raman ``pending`` pana la o cerere
+    explicita ``POST /api/v1/proposals/{id}/execute`` cu ``confirm=true``
+    (poarta HITL neschimbata, vezi ``routers/proposals.py``).
+
+    Raises:
+        ClientNotFoundError: Clientul nu exista.
+        SpendLimitExceeded: Cheltuiala zilnica totala propusa ar depasi
+            limita clientului - NIMIC nu se scrie (ca la ``ApprovalGate.flush()``).
+    """
+    with Session(get_engine()) as session:
+        account = _require_client(session, client_account_id)
+        config = _app_config_for(account)
+        factory = ProviderFactory(config)
+
+        ingestion = run_ingestion(factory, account.target_domain, config)
+        decision = run_plan(factory, config)
+        alignment = run_alignment(factory, config, ingestion.page_context)
+
+        changes = build_proposed_changes(
+            budget_plan=decision.budget_plan,
+            negatives=ingestion.negative_keywords,
+            liquidity=alignment.liquidity_plan,
+            kelly=decision.kelly,
+        )
+
+        total = sum((change.projected_daily_spend for change in changes), Decimal("0"))
+        AbsoluteSpendLimiter(decision.kelly.sized_daily_cap).check(total)
+
+        rows = [_to_db_row(client_account_id, change) for change in changes]
+        session.add_all(rows)
+        session.commit()
+        return {"created": len(rows), "total_projected_daily_spend": str(total)}
+
+
+def run_fatigue_check_job(*, client_account_id: int) -> dict[str, Any]:
+    """Job: evalueaza monitorul de oboseala pentru toate ``AdPerformanceRecord``
+    ale clientului si persista verdictele de oprire ca ``ProposedChange``
+    ``pending`` — echivalentul server-side al ``check-fatigue`` (acolo: JSON de
+    operator; aici: randurile deja persistate de pipeline-ul de conversii,
+    convertite prin ``tracking.pipeline.to_ad_performance_state``).
+    """
+    with Session(get_engine()) as session:
+        _require_client(session, client_account_id)
+        records = session.exec(
+            select(AdPerformanceRecord).where(
+                AdPerformanceRecord.client_account_id == client_account_id
+            )
+        ).all()
+        states = [to_ad_performance_state(record) for record in records]
+
+        changes = build_fatigue_changes(states, datetime.now(tz=UTC))
+        rows = [_to_db_row(client_account_id, change) for change in changes]
+        session.add_all(rows)
+        session.commit()
+        return {"evaluated": len(states), "created": len(rows)}
+
+
+def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
+    """Sincronizeaza ``spend``/``clicks`` din providerul activ (mock sau live) in
+    ``AdPerformanceRecord``, pentru randurile al caror ``ad_id`` se regaseste in
+    ``campaign_performance()``.
+
+    Scop deliberat limitat: NU atinge ``conversions``/``revenue`` (proprietatea
+    pipeline-ului de urmarire a conversiilor, vezi ``tracking/pipeline.py``) si
+    NU poate popula ``impressions``/``ctr``/frecventa/liniile de baza CTR-CPA pe
+    care Gate B/C din Fatigue Monitor le folosesc - ``GoogleAdsProvider`` si
+    ``TikTokAdsProvider`` nu expun inca acele coloane (``campaign_performance()``
+    intoarce doar ``arm_id/name/clicks/conversions/cost/revenue``). Verdictele
+    care depind de ele raman la fel de "oarbe" ca inainte de acest job - gap
+    documentat, nu ascuns. NU creeaza randuri noi (doar actualizeaza randuri deja
+    existente) - crearea ramane in sarcina pipeline-ului de conversii, care are
+    contextul (target_cpa, platforma) necesar unui rand nou.
+    """
+    with Session(get_engine()) as session:
+        account = _require_client(session, client_account_id)
+        config = _app_config_for(account)
+        factory = ProviderFactory(config)
+
+        performance_by_arm: dict[str, tuple[float, int]] = {}
+        google_id = account.google_ads_customer_id or _MOCK_CUSTOMER_ID
+        tiktok_id = account.tiktok_advertiser_id or _MOCK_ADVERTISER_ID
+        for frame in (
+            factory.google_ads().campaign_performance(google_id),
+            factory.tiktok_ads().campaign_performance(tiktok_id),
+        ):
+            for row in frame.to_dict(orient="records"):
+                performance_by_arm[str(row["arm_id"])] = (
+                    float(row["cost"]),
+                    int(row["clicks"]),
+                )
+
+        records = session.exec(
+            select(AdPerformanceRecord).where(
+                AdPerformanceRecord.client_account_id == client_account_id
+            )
+        ).all()
+
+        updated = 0
+        for record in records:
+            source = performance_by_arm.get(record.ad_id)
+            if source is None:
+                continue
+            cost, clicks = source
+            record.spend = Decimal(str(cost))
+            record.clicks = clicks
+            record.updated_at = datetime.now(tz=UTC)
+            session.add(record)
+            updated += 1
+        session.commit()
+        return {"checked": len(records), "updated": updated}
+
+
+def run_daily_maintenance_job() -> dict[str, Any]:
+    """Ruleaza sincronizare + propuneri + verificare oboseala pentru TOTI clientii.
+
+    Punctul de intrare pentru cron-ul ARQ (``jobs/worker.py``) - dar e o functie
+    obisnuita din acest modul, apelabila si testabila direct, fara Redis/ARQ, ca
+    toate celelalte job-uri de mai sus. Un client care esueaza (ex.
+    ``SpendLimitExceeded`` la propose) nu opreste rularea pentru ceilalti -
+    eroarea lui se raporteaza in rezultat, nu se propaga.
+    """
+    with Session(get_engine()) as session:
+        client_ids = list(session.exec(select(ClientAccount.id)).all())
+
+    per_client: dict[str, Any] = {}
+    for client_id in client_ids:
+        if client_id is None:  # pragma: no cover - id e mereu setat dupa INSERT
+            continue
+        client_result: dict[str, Any] = {}
+        for step_name, job in (
+            ("sync", run_metrics_sync_job),
+            ("propose", run_propose_job),
+            ("fatigue_check", run_fatigue_check_job),
+        ):
+            try:
+                client_result[step_name] = job(client_account_id=client_id)
+            except Exception as exc:
+                client_result[step_name] = {"error": f"{type(exc).__name__}: {exc}"}
+        per_client[str(client_id)] = client_result
+
+    return {"clients_processed": len(client_ids), "results": per_client}

@@ -1,11 +1,34 @@
-"""Teste pentru ``_app_config_for`` (constructia AppConfig dintr-un ClientAccount)."""
+"""Teste pentru job-urile server-side: _app_config_for, propose, fatigue-check,
+sincronizare metrici, mentenanta zilnica (toate DB-backed, fara HTTP)."""
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
-from ppc_agent_server.jobs.tasks import _app_config_for
-from ppc_agent_server.models import ClientAccount
+import pytest
+from sqlmodel import Session, select
+
+import ppc_agent_server.jobs.tasks as tasks_module
+from ppc_agent_server.jobs.tasks import (
+    ClientNotFoundError,
+    _app_config_for,
+    run_daily_maintenance_job,
+    run_fatigue_check_job,
+    run_metrics_sync_job,
+    run_propose_job,
+)
+from ppc_agent_server.models import (
+    AdFatiguePlatform,
+    AdPerformanceRecord,
+    ChangeOp,
+    ChangeStatus,
+    ClientAccount,
+    ProposedChange,
+    Tenant,
+)
 
 
 def test_default_lead_value_feeds_budget_target_cpa() -> None:
@@ -20,3 +43,158 @@ def test_default_lead_value_feeds_budget_target_cpa() -> None:
     config = _app_config_for(account)
     assert config.budget.max_daily_spend == Decimal("20.00")
     assert config.budget.target_cpa == Decimal("150.00")
+
+
+def _client_account(session: Session, *, max_daily_spend: str = "50.00") -> ClientAccount:
+    tenant = Tenant(name="Agentie Test", api_key_hash=f"hash-{uuid.uuid4()}")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    account = ClientAccount(
+        tenant_id=tenant.id,  # type: ignore[arg-type]
+        name="Client Test",
+        max_daily_spend=Decimal(max_daily_spend),
+    )
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account
+
+
+def test_run_propose_job_persists_pending_proposals(session: Session) -> None:
+    account = _client_account(session)
+    result = run_propose_job(client_account_id=account.id)
+    assert result["created"] > 0
+
+    rows = session.exec(
+        select(ProposedChange).where(ProposedChange.client_account_id == account.id)
+    ).all()
+    assert len(rows) == result["created"]
+    assert all(row.status == ChangeStatus.PENDING for row in rows)
+
+
+def test_run_propose_job_unknown_client_raises(session: Session) -> None:
+    """``session`` nu e folosit direct - cerut doar ca sa activeze fixture-ul ``engine``
+    (DB in-memory izolat, tabele create) pe care ``get_engine()`` il rezolva mai jos."""
+    with pytest.raises(ClientNotFoundError):
+        run_propose_job(client_account_id=999_999)
+
+
+def test_run_fatigue_check_job_proposes_pause_for_dying_ad(session: Session) -> None:
+    account = _client_account(session)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="c_dying",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC) - timedelta(hours=100),
+        spend=Decimal("25.00"),
+        target_cpa=Decimal("10.00"),
+        conversions=0,
+        impressions=1600,
+    )
+    session.add(record)
+    session.commit()
+
+    result = run_fatigue_check_job(client_account_id=account.id)
+    assert result["evaluated"] == 1
+    assert result["created"] == 1
+
+    row = session.exec(
+        select(ProposedChange).where(ProposedChange.client_account_id == account.id)
+    ).one()
+    assert row.op == ChangeOp.PAUSE
+    assert "PAUSE_HARD" in row.rationale
+
+
+def test_run_fatigue_check_job_no_proposals_for_young_ad(session: Session) -> None:
+    account = _client_account(session)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="c_new",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC) - timedelta(hours=1),  # sub tamponul Gate A
+        target_cpa=Decimal("10.00"),
+    )
+    session.add(record)
+    session.commit()
+
+    result = run_fatigue_check_job(client_account_id=account.id)
+    assert result["evaluated"] == 1
+    assert result["created"] == 0
+
+
+def test_run_metrics_sync_job_updates_spend_and_clicks_for_known_arm(session: Session) -> None:
+    account = _client_account(session)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="c_brand",  # arm_id real din providers/mock/ads.py
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC),
+        target_cpa=Decimal("10.00"),
+        spend=Decimal("0"),
+        clicks=0,
+        conversions=7,
+        revenue=Decimal("777.00"),
+    )
+    session.add(record)
+    session.commit()
+
+    result = run_metrics_sync_job(client_account_id=account.id)
+    assert result["checked"] == 1
+    assert result["updated"] == 1
+
+    session.refresh(record)
+    assert record.spend > 0
+    assert record.clicks > 0
+    # conversions/revenue raman neatinse - proprietatea pipeline-ului de urmarire a conversiilor.
+    assert record.conversions == 7
+    assert record.revenue == Decimal("777.00")
+
+
+def test_run_metrics_sync_job_ignores_unknown_ad_id(session: Session) -> None:
+    account = _client_account(session)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="nu_exista_in_provider",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC),
+        target_cpa=Decimal("10.00"),
+    )
+    session.add(record)
+    session.commit()
+
+    result = run_metrics_sync_job(client_account_id=account.id)
+    assert result["checked"] == 1
+    assert result["updated"] == 0
+    session.refresh(record)
+    assert record.spend == Decimal("0")
+
+
+def test_run_daily_maintenance_job_processes_all_clients(session: Session) -> None:
+    first = _client_account(session)
+    second = _client_account(session)
+
+    result = run_daily_maintenance_job()
+    assert result["clients_processed"] >= 2
+    assert str(first.id) in result["results"]
+    assert str(second.id) in result["results"]
+    for client_result in result["results"].values():
+        assert set(client_result) == {"sync", "propose", "fatigue_check"}
+
+
+def test_run_daily_maintenance_job_isolates_per_client_errors(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eroarea unui pas, pentru un client, nu opreste rularea celorlalti pasi/clienti."""
+    account = _client_account(session)
+
+    def _boom(*, client_account_id: int) -> dict[str, Any]:
+        raise RuntimeError("simulat pentru test")
+
+    monkeypatch.setattr(tasks_module, "run_propose_job", _boom)
+
+    result = run_daily_maintenance_job()
+    client_result = result["results"][str(account.id)]
+    assert "error" in client_result["propose"]
+    assert "RuntimeError" in client_result["propose"]["error"]
+    assert "error" not in client_result["sync"]  # pasul urmator tot a rulat normal

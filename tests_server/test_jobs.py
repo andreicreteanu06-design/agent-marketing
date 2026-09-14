@@ -49,6 +49,49 @@ def test_dispatch_plan_job_full_round_trip(
     assert body["result"]["kelly"]["edge"] in ("pozitiv", "neutru", "negativ", "date_insuficiente")
 
 
+def test_dispatch_propose_job_creates_pending_proposals(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    client_id = _create_client(client, auth_headers)
+
+    dispatch = client.post(
+        "/api/v1/jobs/propose", headers=auth_headers, json={"client_id": client_id}
+    )
+    assert dispatch.status_code == 202
+    assert dispatch.json()["status"] == "success"
+
+    proposals = client.get(f"/api/v1/proposals/{client_id}", headers=auth_headers)
+    assert proposals.status_code == 200
+    assert len(proposals.json()) > 0
+    assert all(item["status"] == "pending" for item in proposals.json())
+
+
+def test_dispatch_fatigue_check_job_for_client_with_no_ads(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    client_id = _create_client(client, auth_headers)
+
+    dispatch = client.post(
+        "/api/v1/jobs/fatigue-check", headers=auth_headers, json={"client_id": client_id}
+    )
+    assert dispatch.status_code == 202
+    status = client.get(f"/api/v1/jobs/{dispatch.json()['task_id']}", headers=auth_headers)
+    assert status.json()["result"] == {"evaluated": 0, "created": 0}
+
+
+def test_dispatch_sync_metrics_job_for_client_with_no_records(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    client_id = _create_client(client, auth_headers)
+
+    dispatch = client.post(
+        "/api/v1/jobs/sync-metrics", headers=auth_headers, json={"client_id": client_id}
+    )
+    assert dispatch.status_code == 202
+    status = client.get(f"/api/v1/jobs/{dispatch.json()['task_id']}", headers=auth_headers)
+    assert status.json()["result"] == {"checked": 0, "updated": 0}
+
+
 def test_dispatch_copy_job_writes_ad_queue_item(
     client: TestClient, auth_headers: dict[str, str], session: Session
 ) -> None:

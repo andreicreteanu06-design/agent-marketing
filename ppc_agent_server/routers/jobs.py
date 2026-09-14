@@ -18,7 +18,14 @@ from ppc_agent_server.auth import get_current_tenant
 from ppc_agent_server.db import get_session
 from ppc_agent_server.deps import get_owned_client
 from ppc_agent_server.jobs.queue import JobQueue, get_job_queue
-from ppc_agent_server.jobs.tasks import run_copy_job, run_creative_job, run_plan_job
+from ppc_agent_server.jobs.tasks import (
+    run_copy_job,
+    run_creative_job,
+    run_fatigue_check_job,
+    run_metrics_sync_job,
+    run_plan_job,
+    run_propose_job,
+)
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.schemas import (
     CopyJobRequest,
@@ -48,6 +55,47 @@ def dispatch_plan(
     """Dispecerizeaza Modulul 2 (Kelly + Thompson + Markov) pentru un client."""
     get_owned_client(payload.client_id, tenant, session)
     task_id = queue.enqueue(run_plan_job, client_account_id=payload.client_id)
+    return _accepted(queue, task_id)
+
+
+@router.post("/propose", response_model=JobAccepted, status_code=202)
+def dispatch_propose(
+    payload: PlanJobRequest,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    session: Annotated[Session, Depends(get_session)],
+    queue: Annotated[JobQueue, Depends(get_job_queue)],
+) -> JobAccepted:
+    """Dispecerizeaza Modulul 4: genereaza propuneri si le persista ``pending``
+    (``GET /api/v1/proposals/{client_id}`` pentru revizuire umana)."""
+    get_owned_client(payload.client_id, tenant, session)
+    task_id = queue.enqueue(run_propose_job, client_account_id=payload.client_id)
+    return _accepted(queue, task_id)
+
+
+@router.post("/fatigue-check", response_model=JobAccepted, status_code=202)
+def dispatch_fatigue_check(
+    payload: PlanJobRequest,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    session: Annotated[Session, Depends(get_session)],
+    queue: Annotated[JobQueue, Depends(get_job_queue)],
+) -> JobAccepted:
+    """Dispecerizeaza monitorul de oboseala pentru ``AdPerformanceRecord``-urile
+    deja persistate ale clientului si persista PAUSE-urile ca propuneri ``pending``."""
+    get_owned_client(payload.client_id, tenant, session)
+    task_id = queue.enqueue(run_fatigue_check_job, client_account_id=payload.client_id)
+    return _accepted(queue, task_id)
+
+
+@router.post("/sync-metrics", response_model=JobAccepted, status_code=202)
+def dispatch_sync_metrics(
+    payload: PlanJobRequest,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    session: Annotated[Session, Depends(get_session)],
+    queue: Annotated[JobQueue, Depends(get_job_queue)],
+) -> JobAccepted:
+    """Dispecerizeaza sincronizarea spend/clicks din providerul activ (mock sau live)."""
+    get_owned_client(payload.client_id, tenant, session)
+    task_id = queue.enqueue(run_metrics_sync_job, client_account_id=payload.client_id)
     return _accepted(queue, task_id)
 
 

@@ -1,9 +1,10 @@
 """Teste pentru poarta HITL: GET /proposals/{client_id}, POST /proposals/{id}/execute.
 
-Nu exista (inca) un endpoint care sa creeze ProposedChange automat din plan
-(echivalentul 'propose' din CLI e in afara listei de endpoint-uri cerute) -
-testele insereaza randurile direct prin sesiune, ca sa izoleze comportamentul
-endpoint-urilor de citit/executat.
+Crearea propriu-zisa de propuneri (echivalentul 'propose' din CLI) se
+dispecerizeaza acum prin ``POST /api/v1/jobs/propose`` (vezi
+``jobs/tasks.run_propose_job``, testat in ``test_jobs.py``/``test_jobs_tasks.py``)
+- testele de aici insereaza in continuare randurile direct prin sesiune, ca sa
+izoleze comportamentul endpoint-urilor de citit/executat de cel de creare.
 """
 
 from __future__ import annotations

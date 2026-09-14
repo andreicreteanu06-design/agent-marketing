@@ -21,7 +21,10 @@ from ppc_agent_server.jobs.worker import (
     WorkerSettings,
     run_copy_job,
     run_creative_job,
+    run_fatigue_check_job,
+    run_metrics_sync_job,
     run_plan_job,
+    run_propose_job,
 )
 
 _REDIS_URL = "redis://localhost:6379/0"
@@ -104,13 +107,21 @@ def test_map_result_none_is_transient_running() -> None:
     assert mapped.status == "running"
 
 
-def test_worker_settings_registers_three_functions_with_original_names() -> None:
+def test_worker_settings_registers_all_functions_with_original_names() -> None:
     names = {registered.name for registered in WorkerSettings.functions}
     assert names == {
         run_plan_job.__name__,
         run_copy_job.__name__,
         run_creative_job.__name__,
+        run_propose_job.__name__,
+        run_fatigue_check_job.__name__,
+        run_metrics_sync_job.__name__,
     }
+
+
+def test_worker_settings_registers_daily_maintenance_cron() -> None:
+    names = {job.name for job in WorkerSettings.cron_jobs}
+    assert names == {"daily_maintenance"}
 
 
 def test_worker_settings_redis_settings_parses_dsn_without_connecting() -> None:
