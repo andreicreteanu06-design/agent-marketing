@@ -22,6 +22,8 @@ from typing import Any
 from sqlalchemy import JSON, Column, Numeric
 from sqlmodel import Field, Relationship, SQLModel
 
+from ppc_agent.campaign_objective import CampaignObjective
+
 
 def _money_column() -> Column[Decimal]:
     """``Numeric(10, 2)`` explicit pe fiecare camp banesc: fara scala explicita,
@@ -130,6 +132,11 @@ class ClientAccount(SQLModel, table=True):
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
     # (vezi ppc_agent_server.tracking.qualification.ConversionQualifier).
     default_lead_value: Decimal = Field(default=Decimal("300.00"), sa_column=_money_column())
+    # Niciodata ghicit - citit de RAG-ul de copy, payload-ul Meta si calificarea
+    # conversiilor (vezi ppc_agent.campaign_objective). Implicit LEAD_GEN: pastreaza
+    # comportamentul deja existent al randurilor vechi de ConversionEvent (fallback
+    # pe default_lead_value pentru orice conversie fara valoare explicita).
+    objective: CampaignObjective = CampaignObjective.LEAD_GEN
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")

@@ -140,7 +140,10 @@ def record_conversion(
             deduplicated=True,
         )
 
-    qualifier = ConversionQualifier(default_lead_value=float(client_account.default_lead_value))
+    qualifier = ConversionQualifier(
+        default_lead_value=float(client_account.default_lead_value),
+        objective=client_account.objective,
+    )
     result = qualifier.qualify(conversion)
     qualified_conversion = result.conversion
 

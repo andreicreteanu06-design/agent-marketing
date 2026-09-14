@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from sqlmodel import Session, select
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.decision.fatigue_monitor import evaluate_ad
 from ppc_agent_server.models import (
     AdFatiguePlatform,
@@ -20,7 +21,12 @@ from ppc_agent_server.tracking.models import StandardizedConversion
 from ppc_agent_server.tracking.pipeline import record_conversion, to_ad_performance_state
 
 
-def _client_account(session: Session, *, default_lead_value: str = "300.00") -> ClientAccount:
+def _client_account(
+    session: Session,
+    *,
+    default_lead_value: str = "300.00",
+    objective: CampaignObjective = CampaignObjective.LEAD_GEN,
+) -> ClientAccount:
     tenant = Tenant(name="Agentie Test", api_key_hash="hash")
     session.add(tenant)
     session.commit()
@@ -29,6 +35,7 @@ def _client_account(session: Session, *, default_lead_value: str = "300.00") -> 
         tenant_id=tenant.id,  # type: ignore[arg-type]
         name="Client Test",
         default_lead_value=Decimal(default_lead_value),
+        objective=objective,
     )
     session.add(account)
     session.commit()
@@ -229,3 +236,67 @@ def test_to_ad_performance_state_normalizes_naive_datetime_from_sqlite(
     state = to_ad_performance_state(record)
     assert state.launch_time.tzinfo is not None
     assert evaluate_ad(state, datetime.now(tz=UTC)) == "CONTINUE"  # nu ridica TypeError
+
+
+def test_sales_account_purchase_without_value_leaves_revenue_at_zero(
+    session: Session,
+) -> None:
+    """SALES: ROAS trebuie sa vina din valoarea dinamica a webhook-ului - o
+    conversie fara valoare NU primeste proxy, deci nu umfla artificial venitul."""
+    account = _client_account(session, objective=CampaignObjective.SALES)
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="ecom_ad",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC) - timedelta(hours=100),
+        target_cpa=Decimal("50.00"),
+    )
+    session.add(record)
+    session.commit()
+
+    conversion = StandardizedConversion(
+        event_id="sale-no-value",
+        event_type="purchase",
+        value=None,
+        client_id=str(account.id),
+        source_platform="gomag",
+        ad_id="ecom_ad",
+    )
+    outcome = record_conversion(session, account, conversion)
+    assert outcome.qualified
+
+    session.refresh(record)
+    assert record.conversions == 1
+    assert record.revenue == Decimal("0")  # fara proxy - nu s-a "inventat" venit
+
+
+def test_lead_gen_account_purchase_typed_event_still_gets_proxy_value(
+    session: Session,
+) -> None:
+    """Obiectivul contului guverneaza, nu tipul evenimentului - chiar si un
+    eveniment "purchase" fara valoare primeste proxy pe un cont LEAD_GEN."""
+    account = _client_account(
+        session, default_lead_value="220.00", objective=CampaignObjective.LEAD_GEN
+    )
+    record = AdPerformanceRecord(
+        client_account_id=account.id,
+        ad_id="lead_ad",
+        platform=AdFatiguePlatform.GOOGLE,
+        launch_time=datetime.now(tz=UTC) - timedelta(hours=100),
+        target_cpa=Decimal("50.00"),
+    )
+    session.add(record)
+    session.commit()
+
+    conversion = StandardizedConversion(
+        event_id="lead-gen-purchase-event",
+        event_type="purchase",
+        value=None,
+        client_id=str(account.id),
+        source_platform="custom_web",
+        ad_id="lead_ad",
+    )
+    record_conversion(session, account, conversion)
+
+    session.refresh(record)
+    assert record.revenue == Decimal("220.00")

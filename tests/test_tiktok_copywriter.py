@@ -6,9 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from ppc_agent.copywriter.engine import AdCopyGenerator, build_tiktok_system_prompt
-from ppc_agent.copywriter.llm import MockLLMClient
-from ppc_agent.copywriter.models import SwipeFile, TikTokSwipeRecord
+from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent.copywriter.engine import (
+    AdCopyGenerator,
+    build_objective_guidance,
+    build_tiktok_system_prompt,
+)
+from ppc_agent.copywriter.llm import BaseLLMClient, MockLLMClient
+from ppc_agent.copywriter.models import (
+    AdCopy,
+    CopySpec,
+    SwipeFile,
+    TikTokAdCopy,
+    TikTokCopySpec,
+    TikTokSwipeRecord,
+)
 from ppc_agent.copywriter.swipe import default_swipe_path, load_swipe_file
 from ppc_agent.errors import SwipeFileError
 
@@ -89,3 +101,37 @@ def test_build_tiktok_system_prompt_includes_examples_and_pacing() -> None:
 def test_build_tiktok_system_prompt_handles_no_examples() -> None:
     prompt = build_tiktok_system_prompt([])
     assert "improvizeaza" in prompt
+
+
+class _SpyTikTokClient(BaseLLMClient):
+    """Client de test: captureaza spec-ul TikTok primit, fara sa-l foloseasca."""
+
+    def __init__(self) -> None:
+        self.last_spec: TikTokCopySpec | None = None
+
+    def generate(self, spec: CopySpec) -> AdCopy:  # pragma: no cover - neexercitat aici
+        raise NotImplementedError
+
+    def generate_tiktok(self, spec: TikTokCopySpec) -> TikTokAdCopy:
+        self.last_spec = spec
+        return TikTokAdCopy(
+            visual_hook_concept="x",
+            audio_hook="x",
+            body_script="x",
+            text_overlay=["x"],
+            call_to_action="x",
+            creative_angle="x",
+        )
+
+
+def test_tiktok_generation_injects_objective_guidance_into_prompt() -> None:
+    spy = _SpyTikTokClient()
+    AdCopyGenerator(spy).generate_emotional_copy(
+        _USP,
+        "cutie de viteze",
+        "frica",
+        platform="tiktok",
+        objective=CampaignObjective.LEAD_GEN,
+    )
+    assert spy.last_spec is not None
+    assert build_objective_guidance(CampaignObjective.LEAD_GEN) in spy.last_spec.system_prompt

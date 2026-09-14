@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent_server.models import (
     AdFatiguePlatform,
     AdLifecycleStatus,
@@ -67,6 +68,7 @@ def test_client_account_belongs_to_tenant(session: Session) -> None:
     assert fetched.tenant_id == tenant.id
     assert fetched.max_daily_spend == Decimal("50.00")  # implicit
     assert fetched.default_lead_value == Decimal("300.00")  # implicit
+    assert fetched.objective == CampaignObjective.LEAD_GEN  # implicit
 
 
 def test_tenant_relationship_lists_client_accounts(session: Session) -> None:

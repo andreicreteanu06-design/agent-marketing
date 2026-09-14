@@ -21,6 +21,7 @@ def test_create_client_persists_and_returns_it(
             "target_domain": "https://facturarepro.ro",
             "max_daily_spend": "75.00",
             "default_lead_value": "150.00",
+            "objective": "sales",
         },
     )
     assert response.status_code == 201
@@ -29,6 +30,7 @@ def test_create_client_persists_and_returns_it(
     assert body["target_domain"] == "https://facturarepro.ro"
     assert body["max_daily_spend"] == "75.00"
     assert body["default_lead_value"] == "150.00"
+    assert body["objective"] == "sales"
     assert body["geo"] == "RO"  # implicit
     assert "id" in body and "created_at" in body
 
@@ -43,6 +45,7 @@ def test_create_client_uses_defaults_when_omitted(
     body = response.json()
     assert body["max_daily_spend"] == "50.00"
     assert body["default_lead_value"] == "300.00"
+    assert body["objective"] == "lead_generation"
     assert body["language"] == "ro"
 
 

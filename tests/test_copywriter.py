@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.copywriter.engine import (
     HEADLINE_LIMIT,
     AdCopyGenerator,
+    build_objective_guidance,
     check_google_limits,
 )
 from ppc_agent.copywriter.llm import BaseLLMClient, MockLLMClient
@@ -131,3 +133,43 @@ def test_system_prompt_injects_framework() -> None:
     assert framework.name in prompt
     assert "maxim 30 caractere" in prompt
     assert framework.example_ad.headline_1 in prompt
+
+
+def test_build_objective_guidance_sales_is_transactional() -> None:
+    guidance = build_objective_guidance(CampaignObjective.SALES)
+    assert "SALES" in guidance
+    assert "Cumpara acum" in guidance
+
+
+def test_build_objective_guidance_lead_gen_is_consultative() -> None:
+    guidance = build_objective_guidance(CampaignObjective.LEAD_GEN)
+    assert "LEAD_GEN" in guidance
+    assert "Suna acum" in guidance
+
+
+class _SpyClient(BaseLLMClient):
+    """Client de test: captureaza spec-ul primit, fara sa-l foloseasca la generare."""
+
+    def __init__(self) -> None:
+        self.last_spec: CopySpec | None = None
+
+    def generate(self, spec: CopySpec) -> AdCopy:
+        self.last_spec = spec
+        return AdCopy(headline_1=spec.target_keyword, headline_2="ok", description="ok")
+
+
+def test_generate_emotional_copy_without_objective_leaves_prompt_unchanged() -> None:
+    """objective implicit None - niciun ghidaj injectat (compatibilitate inapoi)."""
+    spy = _SpyClient()
+    AdCopyGenerator(spy).generate_emotional_copy(_USP, "curs excel", "fomo")
+    assert spy.last_spec is not None
+    assert "OBIECTIV" not in spy.last_spec.system_prompt
+
+
+def test_generate_emotional_copy_injects_objective_guidance_into_prompt() -> None:
+    spy = _SpyClient()
+    AdCopyGenerator(spy).generate_emotional_copy(
+        _USP, "curs excel", "fomo", objective=CampaignObjective.SALES
+    )
+    assert spy.last_spec is not None
+    assert build_objective_guidance(CampaignObjective.SALES) in spy.last_spec.system_prompt

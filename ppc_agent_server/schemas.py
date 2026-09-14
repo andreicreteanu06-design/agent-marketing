@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from ppc_agent.campaign_objective import CampaignObjective
+
 AdPlatform = Literal["google", "tiktok"]
 McConnectPlatform = Literal["google_ads", "meta", "tiktok_ads"]
 JobStatusLabel = Literal["queued", "running", "success", "failed"]
@@ -33,6 +35,7 @@ class ClientAccountCreate(BaseModel):
     tiktok_advertiser_id: str = ""
     max_daily_spend: Decimal = Decimal("50.00")
     default_lead_value: Decimal = Decimal("300.00")
+    objective: CampaignObjective = CampaignObjective.LEAD_GEN
 
 
 class ClientAccountRead(BaseModel):
@@ -50,6 +53,7 @@ class ClientAccountRead(BaseModel):
     tiktok_advertiser_id: str
     max_daily_spend: Decimal
     default_lead_value: Decimal
+    objective: CampaignObjective
     created_at: datetime
 
 

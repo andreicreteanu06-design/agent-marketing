@@ -84,7 +84,9 @@ def run_copy_job(
         config = _app_config_for(account)
         llm_client = CreativeFactory(config).llm()
         generator = AdCopyGenerator(llm_client)
-        ad_copy = generator.generate_emotional_copy(usp, keyword, trigger, platform)
+        ad_copy = generator.generate_emotional_copy(
+            usp, keyword, trigger, platform, objective=account.objective
+        )
 
         item = AdQueueItem(
             client_account_id=client_account_id,

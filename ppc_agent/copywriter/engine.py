@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.copywriter.llm import BaseLLMClient
 from ppc_agent.copywriter.models import (
     DESCRIPTION_LIMIT,
@@ -75,6 +76,28 @@ def check_google_limits(
         length = char_count(getattr(ad, field))
         if length > limit:
             raise AdsLimitError(field, length, limit)
+
+
+_OBJECTIVE_GUIDANCE: dict[CampaignObjective, str] = {
+    CampaignObjective.SALES: (
+        "OBIECTIV: SALES (conversie tranzactionala directa, e-commerce).\n"
+        '- CTA tranzactional: "Adauga in cos", "Cumpara acum", "Stoc limitat"\n'
+        "- focus pe actiunea imediata de cumparare, nu pe o discutie prealabila"
+    ),
+    CampaignObjective.LEAD_GEN: (
+        "OBIECTIV: LEAD_GEN (captarea unui contact, nu o vanzare instantanee).\n"
+        '- CTA consultativ: "Programeaza o consultatie", "Cere o oferta", "Suna acum"\n'
+        "- focus pe obtinerea datelor de contact sau a unui apel telefonic"
+    ),
+}
+
+
+def build_objective_guidance(objective: CampaignObjective) -> str:
+    """Instructiunea de CTA/focus dupa obiectivul clientului - niciodata ghicit,
+    vine din ``ClientAccount.objective`` si se injecteaza in orice system
+    prompt de mai jos (nu duplica logica de framework/RAG, doar o completeaza).
+    """
+    return _OBJECTIVE_GUIDANCE[objective]
 
 
 def build_system_prompt(
@@ -285,6 +308,7 @@ class AdCopyGenerator:
         target_keyword: str,
         emotion_trigger: str,
         platform: Platform = "google",
+        objective: CampaignObjective | None = None,
     ) -> dict[str, Any]:
         """Genereaza copy pentru un anunt si il returneaza strict ca dict.
 
@@ -297,6 +321,11 @@ class AdCopyGenerator:
                 cu retry pe limite) sau ``"tiktok"`` (script video, RAG pe nisa/cuvant
                 cheie peste ``tiktok_swipe_library``, fara retry — limitele Google nu
                 se aplica).
+            objective: Obiectivul clientului (citit din ``ClientAccount.objective``,
+                niciodata ghicit) - cand e dat, injecteaza in system prompt
+                ghidajul de CTA/focus corespunzator (vezi
+                :func:`build_objective_guidance`). ``None`` (implicit) = system
+                prompt neschimbat, ca inainte de acest parametru.
 
         Returns:
             Pentru ``google``: ``{"headline_1", "headline_2", "description"}``.
@@ -315,6 +344,8 @@ class AdCopyGenerator:
         if platform == "tiktok":
             examples = retrieve_tiktok_examples(self._swipe, keyword)
             system_prompt = build_tiktok_system_prompt(examples)
+            if objective is not None:
+                system_prompt = f"{system_prompt}\n\n{build_objective_guidance(objective)}"
             tiktok_spec = TikTokCopySpec(
                 product_usp=product_usp,
                 target_keyword=keyword,
@@ -335,6 +366,8 @@ class AdCopyGenerator:
         system_prompt = build_system_prompt(
             framework, HEADLINE_LIMIT, DESCRIPTION_LIMIT
         )
+        if objective is not None:
+            system_prompt = f"{system_prompt}\n\n{build_objective_guidance(objective)}"
 
         last_error: AdsLimitError | None = None
         for attempt in range(_MAX_ATTEMPTS):

@@ -2,8 +2,11 @@
 
 ``ConversionQualifier`` aplica doua reguli, in aceasta ordine:
 
-1. Valoare proxy - un "lead"/"phone_call" fara valoare primeste valoarea
-   implicita a contului (``ClientAccount.default_lead_value``).
+1. Valoare proxy - determinata de OBIECTIVUL CONTULUI, niciodata ghicit din
+   tipul evenimentului: la ``LEAD_GEN``, orice conversie fara valoare explicita
+   primeste valoarea implicita a contului (``ClientAccount.default_lead_value``);
+   la ``SALES``, valoarea ramane cea trimisa de webhook-ul de e-commerce (ROAS
+   se calculeaza din ea, fara proxy).
 2. Poarta de durata a apelului - un "phone_call" sub pragul minim (sau fara
    durata cunoscuta) e descalificat: NU se numara ca o conversie reusita.
 """
@@ -12,10 +15,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent_server.tracking.models import StandardizedConversion
 
 _MIN_CALL_DURATION_SECONDS = 60
-_PROXY_VALUE_EVENT_TYPES = frozenset({"lead", "phone_call"})
 
 
 class QualificationResult(BaseModel):
@@ -30,17 +33,22 @@ class QualificationResult(BaseModel):
 class ConversionQualifier:
     """Aplica valorile proxy si poarta de durata a apelului unei conversii brute."""
 
-    def __init__(self, default_lead_value: float) -> None:
+    def __init__(self, default_lead_value: float, objective: CampaignObjective) -> None:
         """Configureaza calificatorul pentru un singur cont client.
 
         Args:
-            default_lead_value: Valoarea proxy pentru "lead"/"phone_call" fara
-                valoare explicita (``ClientAccount.default_lead_value``).
+            default_lead_value: Valoarea proxy pentru o conversie fara valoare
+                explicita, la conturi ``LEAD_GEN`` (``ClientAccount.default_lead_value``).
+            objective: Obiectivul contului (``ClientAccount.objective``) - obligatoriu,
+                niciodata ghicit: determina daca se aplica valoarea proxy (vezi
+                :meth:`qualify`).
         """
         self._default_lead_value = default_lead_value
+        self._objective = objective
 
     def qualify(self, conversion: StandardizedConversion) -> QualificationResult:
-        """Aplica valoarea proxy, apoi poarta de durata a apelului.
+        """Aplica valoarea proxy (daca obiectivul contului e LEAD_GEN), apoi
+        poarta de durata a apelului.
 
         Args:
             conversion: Conversia normalizata (deja trecuta prin adaptorul de
@@ -50,7 +58,7 @@ class ConversionQualifier:
             Conversia (posibil cu valoarea completata) plus verdictul.
         """
         resolved = conversion
-        if resolved.value is None and resolved.event_type in _PROXY_VALUE_EVENT_TYPES:
+        if resolved.value is None and self._objective == CampaignObjective.LEAD_GEN:
             resolved = resolved.model_copy(update={"value": self._default_lead_value})
 
         if resolved.event_type == "phone_call":
