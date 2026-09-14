@@ -8,9 +8,11 @@ from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.copywriter.engine import (
     HEADLINE_LIMIT,
     AdCopyGenerator,
+    build_marketing_psychology_guidance,
     build_objective_guidance,
     check_google_limits,
 )
+from ppc_agent.copywriter.knowledge_loader import load_knowledge_base
 from ppc_agent.copywriter.llm import BaseLLMClient, MockLLMClient
 from ppc_agent.copywriter.models import AdCopy, CopySpec, char_count
 from ppc_agent.errors import AdsLimitError, CopywriterError
@@ -133,6 +135,7 @@ def test_system_prompt_injects_framework() -> None:
     assert framework.name in prompt
     assert "maxim 30 caractere" in prompt
     assert framework.example_ad.headline_1 in prompt
+    assert "Responsive Search Ads" in prompt  # regula RSA: headline-uri combinabile automat
 
 
 def test_build_objective_guidance_sales_is_transactional() -> None:
@@ -173,3 +176,34 @@ def test_generate_emotional_copy_injects_objective_guidance_into_prompt() -> Non
     )
     assert spy.last_spec is not None
     assert build_objective_guidance(CampaignObjective.SALES) in spy.last_spec.system_prompt
+
+
+def test_build_marketing_psychology_guidance_sales_names_urgency_and_scarcity() -> None:
+    guidance = build_marketing_psychology_guidance(load_knowledge_base(), CampaignObjective.SALES)
+    assert "Urgenta" in guidance
+    assert "Raritate" in guidance
+
+
+def test_build_marketing_psychology_guidance_lead_gen_names_pas_and_social_proof() -> None:
+    guidance = build_marketing_psychology_guidance(
+        load_knowledge_base(), CampaignObjective.LEAD_GEN
+    )
+    assert "PAS" in guidance
+    assert "Dovada Sociala" in guidance
+
+
+def test_generate_emotional_copy_injects_marketing_psychology_into_prompt() -> None:
+    spy = _SpyClient()
+    AdCopyGenerator(spy).generate_emotional_copy(
+        _USP, "curs excel", "fomo", objective=CampaignObjective.LEAD_GEN
+    )
+    assert spy.last_spec is not None
+    assert "PRINCIPII DE PERSUASIUNE" in spy.last_spec.system_prompt
+    assert "PAS" in spy.last_spec.system_prompt
+
+
+def test_generate_emotional_copy_without_objective_has_no_psychology_section() -> None:
+    spy = _SpyClient()
+    AdCopyGenerator(spy).generate_emotional_copy(_USP, "curs excel", "fomo")
+    assert spy.last_spec is not None
+    assert "PRINCIPII DE PERSUASIUNE" not in spy.last_spec.system_prompt

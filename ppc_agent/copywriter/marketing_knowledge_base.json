@@ -1,0 +1,30 @@
+{
+  "sales_frameworks": [
+    {
+      "name": "Urgenta (Urgency)",
+      "guidance": "O fereastra de timp clar limitata (azi, ora X, pana la epuizarea stocului) muta decizia din \"poate mai tarziu\" in \"acum\" - functioneaza doar cand termenul e real, altfel erodeaza increderea."
+    },
+    {
+      "name": "Raritate (Scarcity)",
+      "guidance": "Cantitate sau disponibilitate limitata (stoc, editie, locuri) creste valoarea perceputa a ofertei - la fel, doar daca raritatea e reala."
+    },
+    {
+      "name": "Inversarea Riscului (Risk Reversal)",
+      "guidance": "Elimina teama de a gresi decizia (garantie banii inapoi, retur usor, fara angajament) - reduce aversiunea la regret care tine cumparatorul pe loc, chiar cand vrea produsul."
+    }
+  ],
+  "lead_gen_frameworks": [
+    {
+      "name": "Problema-Agitare-Solutie (PAS)",
+      "guidance": "Numeste problema reala a clientului, adancste-o cu o consecinta concreta (nu abstracta), apoi prezinta consultatia/oferta ca eliberarea fireasca - o durere recunoscuta, urmata de usurare, nu o mentiune in treacat."
+    },
+    {
+      "name": "Dovada Sociala (Social Proof)",
+      "guidance": "Alti clienti similari (aceeasi nisa, aceeasi problema) au avut deja incredere - un numar concret, un caz real sau un testimoniu reduc riscul perceput al primului pas, care e doar o discutie, nu o cumparare."
+    },
+    {
+      "name": "Autoritate (Authority)",
+      "guidance": "Expertiza si credibilitate vizibile (experienta, rezultate anterioare, specializare clara) construiesc increderea necesara INAINTE de a cere un contact - esential cand oferta e o consultatie, nu un produs tangibil de verificat singur."
+    }
+  ]
+}

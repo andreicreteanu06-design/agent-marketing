@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent.copywriter.knowledge_loader import (
+    MarketingKnowledgeBase,
+    default_knowledge_base_path,
+    frameworks_for_objective,
+    load_knowledge_base,
+    render_frameworks,
+)
 from ppc_agent.copywriter.llm import BaseLLMClient
 from ppc_agent.copywriter.models import (
     DESCRIPTION_LIMIT,
@@ -100,6 +107,17 @@ def build_objective_guidance(objective: CampaignObjective) -> str:
     return _OBJECTIVE_GUIDANCE[objective]
 
 
+def build_marketing_psychology_guidance(
+    knowledge_base: MarketingKnowledgeBase, objective: CampaignObjective
+) -> str:
+    """Principii de persuasiune consacrate (vezi ``copywriter/knowledge_loader.py``),
+    relevante obiectivului - completeaza :func:`build_objective_guidance` (stil de
+    CTA) cu tehnici concrete de folosit in corpul textului, nu doar in CTA.
+    """
+    principles = frameworks_for_objective(knowledge_base, objective)
+    return "PRINCIPII DE PERSUASIUNE DE FOLOSIT:\n" + render_frameworks(principles)
+
+
 def build_system_prompt(
     framework: Framework, headline_limit: int, description_limit: int
 ) -> str:
@@ -123,6 +141,8 @@ def build_system_prompt(
         "REGULI STRICTE:\n"
         f"- headline_1 si headline_2: maxim {headline_limit} caractere fiecare\n"
         f"- description: maxim {description_limit} caractere\n"
+        "- cele doua headline-uri trebuie sa aiba sens separat SI impreuna - "
+        "Google Ads le poate combina automat in orice ordine (Responsive Search Ads)\n"
         "- cuvantul cheie exact trebuie sa apara intr-un headline\n"
         '- raspunde DOAR cu JSON: {"headline_1": ..., "headline_2": ..., "description": ...}'
     )
@@ -286,16 +306,24 @@ class AdCopyGenerator:
     """Genereaza copy emotional pentru un cuvant cheie, cu un client injectat."""
 
     def __init__(
-        self, llm_client: BaseLLMClient, swipe_path: Path | str | None = None
+        self,
+        llm_client: BaseLLMClient,
+        swipe_path: Path | str | None = None,
+        knowledge_base_path: Path | str | None = None,
     ) -> None:
         """Creeaza generatorul.
 
         Args:
             llm_client: Clientul de generare (``MockLLMClient`` sau, ulterior, unul real).
             swipe_path: Cale catre ``swipe_file.json``; implicit radacina proiectului.
+            knowledge_base_path: Cale catre ``marketing_knowledge_base.json``;
+                implicit langa modulul ``knowledge_loader``.
         """
         self._client = llm_client
         self._swipe = load_swipe_file(swipe_path or default_swipe_path())
+        self._knowledge_base = load_knowledge_base(
+            knowledge_base_path or default_knowledge_base_path()
+        )
 
     @property
     def swipe_styles(self) -> list[str]:
@@ -346,6 +374,10 @@ class AdCopyGenerator:
             system_prompt = build_tiktok_system_prompt(examples)
             if objective is not None:
                 system_prompt = f"{system_prompt}\n\n{build_objective_guidance(objective)}"
+                system_prompt = (
+                    f"{system_prompt}\n\n"
+                    f"{build_marketing_psychology_guidance(self._knowledge_base, objective)}"
+                )
             tiktok_spec = TikTokCopySpec(
                 product_usp=product_usp,
                 target_keyword=keyword,
@@ -368,6 +400,10 @@ class AdCopyGenerator:
         )
         if objective is not None:
             system_prompt = f"{system_prompt}\n\n{build_objective_guidance(objective)}"
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                f"{build_marketing_psychology_guidance(self._knowledge_base, objective)}"
+            )
 
         last_error: AdsLimitError | None = None
         for attempt in range(_MAX_ATTEMPTS):

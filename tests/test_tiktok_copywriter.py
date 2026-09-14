@@ -135,3 +135,5 @@ def test_tiktok_generation_injects_objective_guidance_into_prompt() -> None:
     )
     assert spy.last_spec is not None
     assert build_objective_guidance(CampaignObjective.LEAD_GEN) in spy.last_spec.system_prompt
+    assert "PRINCIPII DE PERSUASIUNE" in spy.last_spec.system_prompt
+    assert "PAS" in spy.last_spec.system_prompt

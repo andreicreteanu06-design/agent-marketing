@@ -68,6 +68,10 @@ class SwipeFileError(CopywriterError):
     """``swipe_file.json`` lipseste, e invalid, sau nu contine framework-ul cerut."""
 
 
+class KnowledgeBaseError(CopywriterError):
+    """``marketing_knowledge_base.json`` lipseste, nu e JSON valid, sau nu respecta schema."""
+
+
 class TikTokIngestError(CopywriterError):
     """Ingestia bibliotecii TikTok a esuat.
 
