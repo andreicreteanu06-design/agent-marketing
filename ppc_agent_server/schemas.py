@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ppc_agent.campaign_objective import CampaignObjective
 
@@ -36,6 +36,28 @@ class ClientAccountCreate(BaseModel):
     max_daily_spend: Decimal = Decimal("50.00")
     default_lead_value: Decimal = Decimal("300.00")
     objective: CampaignObjective = CampaignObjective.LEAD_GEN
+
+
+class ClientAccountUpdate(BaseModel):
+    """Corpul cererii ``PATCH /api/v1/clients/{id}`` - doar campurile trimise se schimba.
+
+    Motivatie: ``default_lead_value`` (proxy-ul de valoare pentru lead-uri) e o
+    estimare initiala a agentiei - fara o cale de corectare dupa ce se afla rata
+    reala de inchidere a vanzarilor, orice eroare initiala ramane permanenta in
+    calculele de ROAS/CPA. La fel pentru ``max_daily_spend``/``objective``, care
+    se pot schimba pe parcursul relatiei cu clientul.
+    """
+
+    name: str | None = None
+    target_domain: str | None = None
+    geo: str | None = None
+    language: str | None = None
+    google_ads_customer_id: str | None = None
+    meta_ad_account_id: str | None = None
+    tiktok_advertiser_id: str | None = None
+    max_daily_spend: Decimal | None = Field(default=None, gt=0)
+    default_lead_value: Decimal | None = Field(default=None, gt=0)
+    objective: CampaignObjective | None = None
 
 
 class ClientAccountRead(BaseModel):
