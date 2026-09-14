@@ -50,6 +50,16 @@ class ServerSettings(BaseSettings):
     # ghiceasca primul rand din tabel.
     agency_tenant_id: int | None = None
 
+    # Originile carora CORSMiddleware le permite cereri din browser (site-ul
+    # de marketing, servit separat - vezi site/). Lista separata prin virgula.
+    # Implicit doar serverul Next.js local (npm run dev, port 3000) - in
+    # productie, seteaza domeniul real al site-ului.
+    cors_allowed_origins: str = "http://localhost:3000"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
 
 @lru_cache
 def get_server_settings() -> ServerSettings:

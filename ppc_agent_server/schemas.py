@@ -187,10 +187,17 @@ class ClientUserRead(BaseModel):
 
 
 class ClientMeResponse(BaseModel):
-    """Raspunsul ``GET /api/v1/me`` - identitatea + contul clientului autentificat."""
+    """Raspunsul ``GET /api/v1/me`` - identitatea + contul clientului autentificat.
+
+    ``*_connected`` - DOAR daca secretul e prezent (criptat), niciodata
+    valoarea - interfata poate arata "deja conectat" fara sa expuna nimic.
+    """
 
     user: ClientUserRead
     account: ClientAccountRead
+    google_ads_connected: bool
+    meta_connected: bool
+    tiktok_connected: bool
 
 
 class ClientCredentialsUpdate(BaseModel):

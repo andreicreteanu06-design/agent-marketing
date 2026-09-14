@@ -165,6 +165,30 @@ def test_me_returns_own_identity_and_account(
     body = response.json()
     assert body["user"]["email"] == "client@exemplu.ro"
     assert body["account"]["name"] == "Client Nou SRL"
+    # Niciun cont de reclame conectat inca - toate trei false, nu doar absente.
+    assert body["google_ads_connected"] is False
+    assert body["meta_connected"] is False
+    assert body["tiktok_connected"] is False
+
+
+def test_me_connection_flags_follow_credentials_update(
+    client: TestClient, agency_settings: Tenant
+) -> None:
+    """Dupa ce clientul conecteaza DOAR Google, ``/me`` reflecta exact asta -
+    Google trece pe true, Meta/TikTok raman false (interfata foloseste aceste
+    flag-uri pentru insigna "Conectat", nu valoarea in clar)."""
+    token = _signup(client)["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    client.patch(
+        "/api/v1/me/credentials",
+        headers=headers,
+        json={"google_ads_refresh_token": "1//refresh-token"},
+    )
+
+    body = client.get("/api/v1/me", headers=headers).json()
+    assert body["google_ads_connected"] is True
+    assert body["meta_connected"] is False
+    assert body["tiktok_connected"] is False
 
 
 def test_credentials_update_encrypts_and_never_echoes_raw_value(

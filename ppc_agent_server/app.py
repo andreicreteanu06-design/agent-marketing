@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from ppc_agent.errors import (
@@ -21,6 +22,7 @@ from ppc_agent.errors import (
 )
 from ppc_agent_server.db import init_db
 from ppc_agent_server.routers import auth, client_auth, clients, jobs, proposals, tracking
+from ppc_agent_server.settings import get_server_settings
 
 __version__ = "0.1.0"
 
@@ -69,6 +71,18 @@ def create_app() -> FastAPI:
 
     for error_type, status_code in _ERROR_STATUS_CODES.items():
         app.add_exception_handler(error_type, _error_handler(status_code))
+
+    # Site-ul de marketing (site/) e servit separat (Next.js, alt port/domeniu)
+    # si cheama acest API direct din browser (fetch) - fara CORS, orice cerere
+    # de la /signup, /login etc. ar fi blocata de browser inainte sa ajunga
+    # aici. Vezi ServerSettings.cors_allowed_origins pentru configurare.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_server_settings().cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(auth.router)
     app.include_router(client_auth.router)

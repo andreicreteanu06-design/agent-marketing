@@ -147,7 +147,13 @@ def read_me(
     """Identitatea + contul clientului autentificat curent."""
     account = session.get(ClientAccount, user.client_account_id)
     assert account is not None  # garantat de FK unic, creat impreuna la signup
-    return ClientMeResponse(user=user, account=account)  # type: ignore[arg-type]
+    return ClientMeResponse(
+        user=user,  # type: ignore[arg-type]
+        account=account,  # type: ignore[arg-type]
+        google_ads_connected=bool(account.google_ads_refresh_token_enc),
+        meta_connected=bool(account.meta_access_token_enc),
+        tiktok_connected=bool(account.tiktok_access_token_enc),
+    )
 
 
 @router.patch("/me/credentials", response_model=ClientCredentialsUpdateResponse)
