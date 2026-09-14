@@ -75,3 +75,27 @@ def test_mock_factory_wires_all_providers() -> None:
     assert factory.google_ads() is not None
     assert factory.meta() is not None
     assert factory.tiktok_ads() is not None
+
+
+def test_live_factory_builds_ad_providers_with_settings_credentials() -> None:
+    """Google/Meta/TikTok Ads au clienti live reali - factory-ul trebuie sa le
+    transmita credentialele din Settings (fara sa faca niciun apel de retea)."""
+    settings = Settings(
+        _env_file=None,
+        provider_mode=ProviderMode.LIVE,
+        google_ads_developer_token="dev-token",
+        google_ads_login_customer_id="mcc-1",
+        meta_access_token="meta-token",
+        tiktok_access_token="tiktok-token",
+    )
+    factory = ProviderFactory(AppConfig(settings=settings))
+
+    google = factory.google_ads()
+    assert google.developer_token == "dev-token"  # type: ignore[attr-defined]
+    assert google.login_customer_id == "mcc-1"  # type: ignore[attr-defined]
+
+    meta = factory.meta()
+    assert meta.access_token_configured is True  # type: ignore[attr-defined]
+
+    tiktok = factory.tiktok_ads()
+    assert tiktok.access_token_configured is True  # type: ignore[attr-defined]

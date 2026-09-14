@@ -15,6 +15,7 @@ from ppc_agent.errors import (
     ApprovalRequiredError,
     CopywriterError,
     PpcAgentError,
+    ProviderError,
     SetupRequiredError,
     SpendLimitExceeded,
 )
@@ -33,6 +34,7 @@ _ERROR_STATUS_CODES: dict[type[PpcAgentError], int] = {
     SpendLimitExceeded: 409,
     ApprovalRequiredError: 403,
     CopywriterError: 422,
+    ProviderError: 502,  # API-ul live a raspuns, dar cu o eroare - dependinta externa
     PpcAgentError: 500,  # fallback generic — ramane ultimul inregistrat
 }
 

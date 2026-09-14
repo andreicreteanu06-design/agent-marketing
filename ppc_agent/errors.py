@@ -16,6 +16,17 @@ class SetupRequiredError(PpcAgentError):
     """
 
 
+class ProviderError(PpcAgentError):
+    """Ridicata cand un furnizor ``live`` primeste un raspuns, dar unul invalid.
+
+    Distinct de :class:`SetupRequiredError` (credentiale lipsa / conexiune
+    esuata / autentificare invalida — problema e configurarea): aici API-ul a
+    fost contactat cu succes, dar a raspuns cu o eroare proprie (cont invalid,
+    cota depasita, cerere malformata) sau cu o forma neasteptata (camp lipsa,
+    JSON invalid).
+    """
+
+
 class ApprovalRequiredError(PpcAgentError):
     """Ridicata cand se incearca executarea unui set de modificari neconfirmat.
 

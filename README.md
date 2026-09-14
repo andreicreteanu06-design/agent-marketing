@@ -8,12 +8,15 @@ unor **guardrails stricte cu om in bucla (HITL)**. Doua moduri de rulare:
 multi-tenant** (`ppc_agent_server/`, mai multe agentii — [detalii mai jos](#server-backend-multi-tenant)),
 al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 
-> **Versiunea 1 nu face niciun apel real** catre platformele de reclame. Fiecare
-> integrare externa sta in spatele unui adaptor cu implementare `mock`, deci
-> intreaga logica este testabila acum. Clientii `live` se adauga intr-o faza
-> ulterioara — singura exceptie e clientul LLM de copywriting, care poate
-> rula deja `live` impotriva unui [Ollama](https://ollama.com) local (loopback,
-> gratuit — [detalii mai jos](#client-llm-live-ollama-local)).
+> Implicit (`mock`), niciun apel real nu paraseste procesul — fiecare integrare
+> externa sta in spatele unui adaptor cu implementare `mock`, deci intreaga
+> logica e testabila offline. **Google Ads / Meta Ads / TikTok Ads au acum si
+> clienti `live` reali** (doar citire — vezi [Integrare live](#integrare-live-googlemetatiktok-ads)
+> mai jos), la fel ca [clientul LLM (Ollama local)](#client-llm-live-ollama-local).
+> `execute` ramane **intotdeauna simulat** (`applied=False`), indiferent de
+> `--confirm` — scrierea reala pe conturi ramane un pas viitor, deliberat
+> separat. Crawler/GSC/GBP/Keyword Planner (Modulul 1) si Fish Speech/Flick
+> (Modulul 5) raman stub-uri `live`.
 
 ## Stare
 
@@ -36,7 +39,8 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 | F | Coada de joburi ARQ+Redis (opt-in) — `InlineJobQueue` ramane implicita | ✅ |
 | + | RAG omnicanal (Google/Meta/TikTok) — swipe unificat, proxy de performanta, ingestie CSV universala | ✅ |
 | + | Meta ca brate Thompson + touchpoint-uri Markov (combinat cu Google Ads + TikTok Ads) | ✅ |
-| — | Integrare `live` (Google Ads / GSC / GBP / Meta / TikTok Ads / Fish Speech / Flick / OAuth) | ⏳ |
+| + | Clienti live reali — Google/Meta/TikTok **Ads** (citire: performanta + lichiditate Meta) | ✅ |
+| — | Integrare `live` ramasa (GSC / GBP / Keyword Planner / Fish Speech / Flick / `execute` real) | ⏳ |
 
 ## Cerinte
 
@@ -65,7 +69,7 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Valoare | Efect |
 |---------|-------|
 | `mock` (implicit) | Foloseste date de test deterministice. Niciun apel de retea. |
-| `live` | Clientul LLM (Ollama, vezi mai jos) e functional. Google Ads / GSC / GBP / Meta / TikTok Ads / Fish Speech / Flick raman stub-uri care ridica `SetupRequiredError`. |
+| `live` | Clientul LLM (Ollama) si Google/Meta/TikTok **Ads** (citire) sunt functionale — vezi [Integrare live](#integrare-live-googlemetatiktok-ads). GSC/GBP/Keyword Planner/Fish Speech/Flick raman stub-uri care ridica `SetupRequiredError`. |
 
 ## Utilizare
 
@@ -211,19 +215,75 @@ Fiecare furnizor extern are trei parti in `ppc_agent/providers/`:
 |-------|--------|-------|
 | interfata (ABC) | `base.py` | completa |
 | implementare `mock` | `mock/*.py` | completa, deterministica, fara retea |
-| stub `live` | `live/__init__.py` | ridica `SetupRequiredError` |
+| implementare `live` | `live/*.py` | Google/Meta/TikTok **Ads**: reala (citire — vezi mai jos). Crawler/GSC/GBP/Keyword Planner (Modulul 1): stub, ridica `SetupRequiredError` |
 
-Pentru a activa un client real:
+Guardrails-urile din Modulul 4 raman active identic in modul `live`. `execute`
+ramane **intotdeauna simulat** (`applied=False`), indiferent de mod sau de
+`--confirm` — scrierea reala pe conturi e un pas viitor, deliberat separat.
 
-1. Obtine credentialele (Google Ads developer token + OAuth2, Meta app, TikTok
-   Ads `PPC_TIKTOK_ACCESS_TOKEN`/`PPC_TIKTOK_ADVERTISER_ID`) si pune-le in `.env`.
-2. Implementeaza metodele din clasa `Live*Provider` corespunzatoare, folosind
-   SDK-ul oficial.
-3. Seteaza `PPC_PROVIDER_MODE=live`. `ProviderFactory` va comuta automat.
+## Integrare live: Google/Meta/TikTok Ads
 
-Guardrails-urile din Modulul 4 raman active identic in modul `live`; in plus,
-executorul din `ApprovalGate.execute` trebuie schimbat din "simuleaza" in
-"apeleaza SDK-ul" — un singur loc in cod.
+`LiveGoogleAdsProvider`/`LiveMetaMarketingProvider`/`LiveTikTokAdsProvider`
+(`ppc_agent/providers/live/{google_ads,meta,tiktok}.py`) citesc date reale de
+performanta direct prin REST (`httpx`), acelasi pattern ca `LiveLLMClient` mai
+jos — fara SDK-uri oficiale (`google-ads` gRPC, `facebook-business`, SDK
+TikTok): dependinte grele, inconsistente cu restul codebase-ului (100%
+httpx), greu de instalat pe Windows. Testabile determinist cu
+`httpx.MockTransport` (`tests/test_live_google_ads.py` / `test_live_meta.py` /
+`test_live_tiktok.py`) — zero dependinte noi.
+
+### Setup
+
+```ini
+# .env
+PPC_PROVIDER_MODE=live
+
+# Google Ads - developer token (aprobare Google) + OAuth2 (client + refresh token)
+PPC_GOOGLE_ADS_DEVELOPER_TOKEN=
+PPC_GOOGLE_ADS_CLIENT_ID=
+PPC_GOOGLE_ADS_CLIENT_SECRET=
+PPC_GOOGLE_ADS_REFRESH_TOKEN=
+PPC_GOOGLE_ADS_CUSTOMER_ID=         # contul ale carui campanii sunt citite
+PPC_GOOGLE_ADS_LOGIN_CUSTOMER_ID=   # doar daca accesezi contul de mai sus printr-un cont manager/MCC
+
+# Meta - token System User recomandat (nu expira ca un token de utilizator normal)
+PPC_META_ACCESS_TOKEN=
+PPC_META_AD_ACCOUNT_ID=
+
+# TikTok - token din TikTok for Business developer portal
+PPC_TIKTOK_ACCESS_TOKEN=
+PPC_TIKTOK_ADVERTISER_ID=
+```
+
+Obtinerea fiecarui credential e un proces extern la platforma respectiva, in
+afara scopului acestui README — vezi documentatia oficiala: [Google Ads API —
+get started](https://developers.google.com/google-ads/api/docs/get-started/introduction),
+[Meta Marketing API — access tokens](https://developers.facebook.com/docs/marketing-apis/overview/authentication),
+[TikTok for Business — authentication](https://business-api.tiktok.com/portal/docs).
+
+### Gap-uri oneste — citeste inainte sa te bazezi pe date live
+
+- **Parcursuri de conversie (`conversion_paths`)**: niciuna dintre cele trei
+  API-uri nu mai expune simplu parcursuri multi-touch (Google a depreciat
+  Multi-Channel Funnels; Meta le tine intr-un produs Attribution separat;
+  TikTok nu le expune in raportarea de baza). Fallback documentat in cod: un
+  singur touchpoint (numele campaniei/grupului/setului) per conversie si per
+  non-conversie, plafonat la 500/brat — pastreaza atribuirea Markov matematic
+  valida, dar **fara semnal multi-touch real**.
+- **Venitul TikTok**: raportul de baza nu are un camp de valoare/venit per
+  conversie confirmat (depinde de evenimentul de pixel configurat de agentie)
+  — `LiveTikTokAdsProvider.campaign_performance()` intoarce `revenue=0.0`, cu
+  comentariu explicit in cod. Pana la verificare manuala, bratele TikTok vor
+  arata ROAS 0 in Kelly/bandit.
+- **Venitul Google fara value tracking**: daca contul Google Ads nu are
+  urmarirea valorii conversiilor activata, `metrics.conversions_value` e 0 —
+  acelasi simptom (ROAS 0). Solutie: activeaza value tracking pe cont, sau
+  foloseste `target_cpa`/`budget-advice` (deja existent), care nu depinde de
+  venit.
+- **Netestat impotriva unui API real**: fara credentiale reale, verificarea
+  ramane `httpx.MockTransport` (deterministic, ca la `LiveLLMClient`) —
+  acelasi statut epistemic ca `ArqJobQueue` (netestat impotriva unui Redis
+  real). Testeaza cu credentialele tale inainte sa te bazezi pe rezultate.
 
 ## Client LLM live: Ollama local
 

@@ -50,17 +50,28 @@ class ProviderFactory:
     def google_ads(self) -> base.GoogleAdsProvider:
         """Returneaza furnizorul Google Ads (performanta + parcursuri) pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
-            return live.LiveGoogleAdsProvider()
+            settings = self._config.settings
+            return live.LiveGoogleAdsProvider(
+                developer_token=settings.google_ads_developer_token,
+                client_id=settings.google_ads_client_id,
+                client_secret=settings.google_ads_client_secret,
+                refresh_token=settings.google_ads_refresh_token,
+                login_customer_id=settings.google_ads_login_customer_id,
+            )
         return mock.MockGoogleAdsProvider()
 
     def meta(self) -> base.MetaMarketingProvider:
         """Returneaza furnizorul Meta Marketing pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
-            return live.LiveMetaMarketingProvider()
+            return live.LiveMetaMarketingProvider(
+                access_token=self._config.settings.meta_access_token
+            )
         return mock.MockMetaMarketingProvider()
 
     def tiktok_ads(self) -> base.TikTokAdsProvider:
         """Returneaza furnizorul TikTok Ads (performanta + parcursuri) pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
-            return live.LiveTikTokAdsProvider()
+            return live.LiveTikTokAdsProvider(
+                access_token=self._config.settings.tiktok_access_token
+            )
         return mock.MockTikTokAdsProvider()

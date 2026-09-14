@@ -83,14 +83,21 @@ def run_plan(
     tiktok_ads = factory.tiktok_ads()
     meta_ads = factory.meta()
 
+    # In mod live, ID-ul real de cont vine din configuratie; placeholder-ul e
+    # folosit doar cand campul e gol (implicit - asta pastreaza comportamentul
+    # mock neschimbat pentru toate testele existente).
+    customer_id = config.settings.google_ads_customer_id or _CUSTOMER_PLACEHOLDER
+    advertiser_id = config.settings.tiktok_advertiser_id or _ADVERTISER_PLACEHOLDER
+    ad_account_id = config.settings.meta_ad_account_id or _META_ACCOUNT_PLACEHOLDER
+
     google_arms = _arms_from_performance(
-        ads.campaign_performance(_CUSTOMER_PLACEHOLDER), platform="google_ads"
+        ads.campaign_performance(customer_id), platform="google_ads"
     )
     tiktok_arms = _arms_from_performance(
-        tiktok_ads.campaign_performance(_ADVERTISER_PLACEHOLDER), platform="tiktok_ads"
+        tiktok_ads.campaign_performance(advertiser_id), platform="tiktok_ads"
     )
     meta_arms = _arms_from_performance(
-        meta_ads.campaign_performance(_META_ACCOUNT_PLACEHOLDER), platform="meta_ads"
+        meta_ads.campaign_performance(ad_account_id), platform="meta_ads"
     )
     arms = google_arms + tiktok_arms + meta_arms
 
@@ -118,9 +125,9 @@ def run_plan(
     journeys = [
         Journey.from_tokens(path)
         for path in (
-            *ads.conversion_paths(_CUSTOMER_PLACEHOLDER),
-            *tiktok_ads.conversion_paths(_ADVERTISER_PLACEHOLDER),
-            *meta_ads.conversion_paths(_META_ACCOUNT_PLACEHOLDER),
+            *ads.conversion_paths(customer_id),
+            *tiktok_ads.conversion_paths(advertiser_id),
+            *meta_ads.conversion_paths(ad_account_id),
         )
     ]
     attribution = attribute(journeys)

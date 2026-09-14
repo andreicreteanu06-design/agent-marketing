@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 from typer.testing import CliRunner
 
 from ppc_agent.cli import app
@@ -11,6 +12,9 @@ from ppc_agent.config import AppConfig, Settings
 from ppc_agent.decision.pipeline import run_plan
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers.factory import ProviderFactory
+from ppc_agent.providers.mock.ads import MockGoogleAdsProvider
+from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
+from ppc_agent.providers.mock.tiktok import MockTikTokAdsProvider
 
 runner = CliRunner()
 
@@ -136,3 +140,63 @@ def test_manual_min_arm_daily_spend_floor_is_never_lowered() -> None:
     assert plan.arm_capacity.recommended_min_arm_daily_spend < config.budget.min_arm_daily_spend
     funded = [a for a in plan.budget_plan.allocations if a.daily_budget > 0]
     assert len(funded) == 1  # floor-ul manual (999) domina, ramane un singur brat finantat
+
+
+def test_run_plan_uses_configured_account_ids_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cand ID-urile de cont sunt configurate (relevant in mod live), run_plan
+    le trimite providerilor in loc de placeholder-ele mock hardcodate."""
+    captured: dict[str, str] = {}
+
+    original_google = MockGoogleAdsProvider.campaign_performance
+    original_tiktok = MockTikTokAdsProvider.campaign_performance
+    original_meta = MockMetaMarketingProvider.campaign_performance
+
+    def spy_google(self: MockGoogleAdsProvider, customer_id: str):  # type: ignore[no-untyped-def]
+        captured["google"] = customer_id
+        return original_google(self, customer_id)
+
+    def spy_tiktok(self: MockTikTokAdsProvider, advertiser_id: str):  # type: ignore[no-untyped-def]
+        captured["tiktok"] = advertiser_id
+        return original_tiktok(self, advertiser_id)
+
+    def spy_meta(self: MockMetaMarketingProvider, ad_account_id: str):  # type: ignore[no-untyped-def]
+        captured["meta"] = ad_account_id
+        return original_meta(self, ad_account_id)
+
+    monkeypatch.setattr(MockGoogleAdsProvider, "campaign_performance", spy_google)
+    monkeypatch.setattr(MockTikTokAdsProvider, "campaign_performance", spy_tiktok)
+    monkeypatch.setattr(MockMetaMarketingProvider, "campaign_performance", spy_meta)
+
+    settings = Settings(
+        _env_file=None,
+        google_ads_customer_id="acct_real_123",
+        tiktok_advertiser_id="adv_real_456",
+        meta_ad_account_id="act_real_789",
+    )
+    config = AppConfig(settings=settings)
+    factory = ProviderFactory(config)
+    run_plan(factory, config, n_samples=1000)
+
+    assert captured == {
+        "google": "acct_real_123",
+        "tiktok": "adv_real_456",
+        "meta": "act_real_789",
+    }
+
+
+def test_run_plan_falls_back_to_placeholders_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Comportament neschimbat: fara ID-uri configurate, se folosesc placeholder-ele mock."""
+    captured: dict[str, str] = {}
+    original_google = MockGoogleAdsProvider.campaign_performance
+
+    def spy_google(self: MockGoogleAdsProvider, customer_id: str):  # type: ignore[no-untyped-def]
+        captured["google"] = customer_id
+        return original_google(self, customer_id)
+
+    monkeypatch.setattr(MockGoogleAdsProvider, "campaign_performance", spy_google)
+
+    config = AppConfig(settings=Settings(_env_file=None))
+    factory = ProviderFactory(config)
+    run_plan(factory, config, n_samples=1000)
+
+    assert captured["google"] == "mock-customer"

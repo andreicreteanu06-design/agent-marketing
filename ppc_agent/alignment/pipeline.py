@@ -55,7 +55,10 @@ def run_alignment(
     page = page_context or crawl(factory.crawler(), config.target_domain)
     reports = analyze_ad_groups(sample_ad_groups(), page)
 
-    ad_sets = _ad_sets_from_frame(factory.meta().ad_sets(_META_ACCOUNT_PLACEHOLDER))
+    # In mod live, ID-ul real de cont vine din configuratie; placeholder-ul e
+    # folosit doar cand campul e gol (implicit).
+    ad_account_id = config.settings.meta_ad_account_id or _META_ACCOUNT_PLACEHOLDER
+    ad_sets = _ad_sets_from_frame(factory.meta().ad_sets(ad_account_id))
     liquidity = consolidation_plan(ad_sets, config.meta.target_weekly_conversions)
 
     return AlignmentResult(quality_score_reports=reports, liquidity_plan=liquidity)

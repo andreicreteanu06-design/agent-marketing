@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     google_ads_client_id: str = ""
     google_ads_client_secret: str = ""
     google_ads_refresh_token: str = ""
+    # Contul ale carui campanii sunt interogate (calea REST /customers/{id}/...).
+    google_ads_customer_id: str = ""
+    # Header optional login-customer-id — DOAR cand se acceseaza customer_id de
+    # mai sus printr-un cont manager/MCC; altfel ramane gol.
     google_ads_login_customer_id: str = ""
 
     # Google Search Console + Business Profile (OAuth)
