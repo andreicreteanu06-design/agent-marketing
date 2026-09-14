@@ -62,7 +62,11 @@ class GomagAdapter(BaseSourceAdapter):
     Mapeaza ``total``/``currency`` -> ``value``/``currency``, contactul din
     ``billing`` (cu fallback pe ``shipping`` daca ``billing`` lipseste) ->
     ``customer_email``/``customer_phone``, ``id`` (sau ``number``) ->
-    ``event_id``. Intotdeauna ``event_type="purchase"``.
+    ``event_id``. Intotdeauna ``event_type="purchase"``. ``ad_id``/``ad_platform``
+    nu exista in schema reala Gomag - sunt extensii ale noastre (vezi
+    ``tracking/models.py``), transmise mai departe DOAR daca sunt prezente in
+    payload; fara ambele, conversia se califica dar nu se leaga de niciun anunt
+    (``AdPerformanceRecord`` nu se creeaza - vezi ``pipeline._get_or_create_ad_record``).
     """
 
     def to_standardized(
@@ -86,6 +90,7 @@ class GomagAdapter(BaseSourceAdapter):
                 client_id=client_id,
                 source_platform="gomag",
                 ad_id=raw_payload.get("ad_id"),
+                ad_platform=raw_payload.get("ad_platform"),
             )
         except ValidationError as exc:
             raise TrackingError(f"payload Gomag invalid: {exc}") from exc
@@ -99,7 +104,8 @@ class CallTrackingAdapter(BaseSourceAdapter):
     ``caller_id``/``duration_seconds``/``call_status``); ajusteaza cheile de
     mapare la furnizorul real folosit. Intotdeauna ``event_type="phone_call"``;
     valoarea ramane ``None`` aici - proxy-ul se aplica in
-    ``ConversionQualifier``, nu in adaptor.
+    ``ConversionQualifier``, nu in adaptor. ``ad_id``/``ad_platform`` transmise
+    mai departe DOAR daca sunt prezente in payload (vezi nota din ``GomagAdapter``).
     """
 
     def to_standardized(
@@ -121,6 +127,7 @@ class CallTrackingAdapter(BaseSourceAdapter):
                     raw_payload.get("duration_seconds") or raw_payload.get("duration")
                 ),
                 ad_id=raw_payload.get("ad_id"),
+                ad_platform=raw_payload.get("ad_platform"),
             )
         except ValidationError as exc:
             raise TrackingError(f"payload call tracking invalid: {exc}") from exc

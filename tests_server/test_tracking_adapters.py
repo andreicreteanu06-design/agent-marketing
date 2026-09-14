@@ -76,6 +76,19 @@ def test_gomag_adapter_passes_through_ad_id_when_present() -> None:
     assert conversion.ad_id == "c_brand"
 
 
+def test_gomag_adapter_passes_through_ad_platform_when_present() -> None:
+    """Regresie: ad_id fara ad_platform nu ajunge sa creeze AdPerformanceRecord
+    (vezi pipeline._get_or_create_ad_record) - ambele trebuie transmise."""
+    payload = {**_GOMAG_PAYLOAD, "ad_id": "c_brand", "ad_platform": "google"}
+    conversion = GomagAdapter().to_standardized(payload, client_id="42")
+    assert conversion.ad_platform == "google"
+
+
+def test_gomag_adapter_ad_platform_defaults_to_none_when_absent() -> None:
+    conversion = GomagAdapter().to_standardized(_GOMAG_PAYLOAD, client_id="42")
+    assert conversion.ad_platform is None
+
+
 _CALL_PAYLOAD = {
     "call_id": "call_789",
     "caller_id": "+40712345678",
@@ -104,6 +117,13 @@ def test_call_tracking_adapter_accepts_alternate_field_names() -> None:
 def test_call_tracking_adapter_missing_call_id_raises() -> None:
     with pytest.raises(TrackingError):
         CallTrackingAdapter().to_standardized({"caller_id": "x"}, client_id="7")
+
+
+def test_call_tracking_adapter_passes_through_ad_id_and_platform_when_present() -> None:
+    payload = {**_CALL_PAYLOAD, "ad_id": "tt_infeed", "ad_platform": "tiktok"}
+    conversion = CallTrackingAdapter().to_standardized(payload, client_id="7")
+    assert conversion.ad_id == "tt_infeed"
+    assert conversion.ad_platform == "tiktok"
 
 
 def test_custom_web_adapter_validates_and_stamps_client_id() -> None:
