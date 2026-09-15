@@ -13,14 +13,14 @@ export function Footer() {
         <Logo />
         <ul className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-foreground-muted">
           <li>
-            <a href="#servicii" className={LINK_CLASS}>
+            <Link href="/#servicii" className={LINK_CLASS}>
               Servicii
-            </a>
+            </Link>
           </li>
           <li>
-            <a href="#despre" className={LINK_CLASS}>
+            <Link href="/#despre" className={LINK_CLASS}>
               Despre
-            </a>
+            </Link>
           </li>
           <li>
             <Link href="/creeaza-cont" className={LINK_CLASS}>

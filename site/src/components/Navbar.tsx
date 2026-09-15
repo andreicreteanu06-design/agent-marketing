@@ -10,9 +10,9 @@ import { getToken } from "@/lib/auth";
 import { CAL_LINK } from "@/lib/config";
 
 const NAV_LINKS = [
-  { href: "#servicii", label: "Servicii" },
-  { href: "#portofoliu", label: "Portofoliu" },
-  { href: "#despre", label: "Despre" },
+  { href: "/#servicii", label: "Servicii" },
+  { href: "/#portofoliu", label: "Portofoliu" },
+  { href: "/#despre", label: "Despre" },
 ];
 
 export function Navbar() {
@@ -56,13 +56,13 @@ export function Navbar() {
           <ul className="hidden items-center gap-7 lg:flex">
             {NAV_LINKS.map((link) => (
               <li key={link.href}>
-                <a
+                <Link
                   href={link.href}
                   className="group relative text-sm text-foreground-muted transition-colors hover:text-foreground"
                 >
                   {link.label}
                   <span className="absolute -bottom-1 left-0 h-px w-full origin-left scale-x-0 bg-brand-cyan transition-transform duration-300 group-hover:scale-x-100" />
-                </a>
+                </Link>
               </li>
             ))}
           </ul>
@@ -124,13 +124,13 @@ export function Navbar() {
             <ul className="flex flex-col gap-1 px-6 py-4">
               {NAV_LINKS.map((link) => (
                 <li key={link.href}>
-                  <a
+                  <Link
                     href={link.href}
                     onClick={() => setOpen(false)}
                     className="block py-2 text-base text-foreground-muted"
                   >
                     {link.label}
-                  </a>
+                  </Link>
                 </li>
               ))}
               {authenticated ? (
