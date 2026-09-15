@@ -7,12 +7,12 @@ import { List, X } from "@phosphor-icons/react/dist/ssr";
 import { Logo } from "./Logo";
 import { MagneticButton } from "./MagneticButton";
 import { getToken } from "@/lib/auth";
+import { CAL_LINK } from "@/lib/config";
 
-const NAV_LINKS = [
-  { href: "#servicii", label: "Servicii" },
-  { href: "#cum-functioneaza", label: "Cum funcționează" },
-  { href: "#despre", label: "Despre" },
-];
+// Doar "Despre" ramane ca ancora in pagina - Servicii/Cum functioneaza sunt
+// acum prezentate prin experienta scroll-world de pe homepage, nu ca sectiuni
+// separate cu id propriu.
+const NAV_LINKS = [{ href: "#despre", label: "Despre" }];
 
 export function Navbar() {
   const [open, setOpen] = useState(false);
@@ -92,7 +92,9 @@ export function Navbar() {
             </>
           )}
           <MagneticButton
-            href="#programeaza"
+            href={CAL_LINK}
+            target="_blank"
+            rel="noopener noreferrer"
             className="rounded-full bg-brand-blue px-4 py-2 text-sm font-semibold text-white"
           >
             Programează un apel
@@ -164,7 +166,9 @@ export function Navbar() {
               )}
               <li className="pt-2">
                 <a
-                  href="#programeaza"
+                  href={CAL_LINK}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   onClick={() => setOpen(false)}
                   className="block rounded-full bg-brand-blue px-4 py-3 text-center text-base font-semibold text-white"
                 >

@@ -1,5 +1,6 @@
 import { RevealSection } from "./RevealSection";
 import { AsciiArt } from "./ui/robot-human";
+import { CAL_LINK } from "@/lib/config";
 
 export function About() {
   return (
@@ -40,7 +41,9 @@ export function About() {
             </p>
           </div>
           <a
-            href="#programeaza"
+            href={CAL_LINK}
+            target="_blank"
+            rel="noopener noreferrer"
             className="mt-8 inline-block text-sm font-semibold text-brand-cyan hover:underline"
           >
             Hai să vorbim

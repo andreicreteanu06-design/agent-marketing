@@ -1,9 +1,6 @@
 import { Navbar } from "@/components/Navbar";
-import { Hero } from "@/components/Hero";
-import { Services } from "@/components/Services";
-import { HowItWorks } from "@/components/HowItWorks";
+import { ScrollWorld } from "@/components/ScrollWorld";
 import { About } from "@/components/About";
-import { FinalCta } from "@/components/FinalCta";
 import { Footer } from "@/components/Footer";
 
 export default function Home() {
@@ -11,13 +8,15 @@ export default function Home() {
     <>
       <Navbar />
       <main>
-        <Hero />
-        <Services />
-        <HowItWorks />
-        <About />
-        <FinalCta />
+        <ScrollWorld />
+        {/* Fundal opac + z-index peste straturile position:fixed ale
+            scroll-world (topbar/stage/copylayer/route, toate z<=60) - altfel
+            ultima sectiune ramane suprapusa peste tot ce urmeaza in flux. */}
+        <div className="relative z-[100] bg-background">
+          <About />
+          <Footer />
+        </div>
       </main>
-      <Footer />
     </>
   );
 }

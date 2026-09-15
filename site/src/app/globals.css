@@ -57,6 +57,23 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* Tokenele skill-ului scroll-world (vezi ScrollWorld.tsx) - aliniate pe
+   paleta site-ului, nu pe implicitele lui (bg deschis, accent mov). */
+.sw-root {
+  --sw-bg: #09090b;
+  --sw-ink: var(--foreground);
+  --sw-ink-soft: var(--foreground-muted);
+  --sw-accent: var(--brand-cyan);
+  --sw-font-display: var(--font-geist-sans);
+  --sw-font-body: var(--font-geist-sans);
+  /* Butonul primar foloseste implicit --sw-ink ca fundal, gandit pentru o
+     tema deschisa (ink = text inchis). Pe tema noastra intunecata --sw-ink e
+     aproape alb, ceea ce ar face fundalul butonului alb pe text alb - fortam
+     explicit acelasi albastru folosit pentru CTA-urile primare din restul
+     site-ului (contrast verificat cu text alb). */
+  --sw-btn-primary-bg: var(--brand-blue);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-background-elevated: var(--background-elevated);
