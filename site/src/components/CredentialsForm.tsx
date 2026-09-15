@@ -110,7 +110,7 @@ export function CredentialsForm({
       <div className="flex items-center gap-2">
         <LockSimple size={16} className="text-brand-cyan" />
         <h2 className="text-lg font-semibold text-foreground">
-          Conectează-ți conturile de reclame
+          Acces pentru agentul AI
         </h2>
       </div>
       <p className="text-sm text-foreground-muted">

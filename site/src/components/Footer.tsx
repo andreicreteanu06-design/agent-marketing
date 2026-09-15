@@ -13,9 +13,9 @@ export function Footer() {
         <Logo />
         <ul className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-foreground-muted">
           <li>
-            <Link href="/" className={LINK_CLASS}>
+            <a href="#servicii" className={LINK_CLASS}>
               Servicii
-            </Link>
+            </a>
           </li>
           <li>
             <a href="#despre" className={LINK_CLASS}>

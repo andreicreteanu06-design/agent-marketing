@@ -41,7 +41,7 @@ export function Services() {
                   href="/creeaza-cont"
                   className="text-sm font-semibold text-brand-cyan hover:underline"
                 >
-                  Conectează-ți conturile de reclame
+                  Dă-i acces agentului AI
                 </a>
               </div>
             </div>
@@ -70,9 +70,9 @@ export function Services() {
               Automatizări AI
             </h3>
             <p className="mt-3 leading-relaxed text-foreground-muted">
-              Fluxuri care preiau task-uri repetitive (raportare, calificare
-              de lead-uri, sincronizare de date), construite pe măsura
-              procesului tău, nu un șablon generic.
+              Lead-uri răspunse în minute, nu zile. Facturi restante urmărite
+              automat, nu uitate într-un Excel. Fluxuri construite pe măsura
+              departamentului tău, nu un șablon generic.
             </p>
           </SpotlightCard>
         </RevealSection>

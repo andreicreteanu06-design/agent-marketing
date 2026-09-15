@@ -9,10 +9,10 @@ import { MagneticButton } from "./MagneticButton";
 import { getToken } from "@/lib/auth";
 import { CAL_LINK } from "@/lib/config";
 
-// Doar "Despre" ramane ca ancora in pagina - Servicii/Cum functioneaza sunt
-// acum prezentate prin experienta scroll-world de pe homepage, nu ca sectiuni
-// separate cu id propriu.
-const NAV_LINKS = [{ href: "#despre", label: "Despre" }];
+const NAV_LINKS = [
+  { href: "#servicii", label: "Servicii" },
+  { href: "#despre", label: "Despre" },
+];
 
 export function Navbar() {
   const [open, setOpen] = useState(false);
