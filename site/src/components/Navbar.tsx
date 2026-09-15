@@ -11,6 +11,7 @@ import { CAL_LINK } from "@/lib/config";
 
 const NAV_LINKS = [
   { href: "#servicii", label: "Servicii" },
+  { href: "#portofoliu", label: "Portofoliu" },
   { href: "#despre", label: "Despre" },
 ];
 
