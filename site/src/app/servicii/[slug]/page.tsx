@@ -9,7 +9,6 @@ import { SpotlightCard } from "@/components/SpotlightCard";
 import { MagneticButton } from "@/components/MagneticButton";
 import { ServiceVisual3D } from "@/components/ServiceVisual3D";
 import { SERVICES, getServiceBySlug } from "@/lib/services";
-import { CAL_LINK } from "@/lib/config";
 
 export function generateStaticParams() {
   return SERVICES.map((service) => ({ slug: service.slug }));
@@ -65,14 +64,12 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
                 >
                   Creează cont
                 </MagneticButton>
-                <a
-                  href={CAL_LINK}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <Link
+                  href="/#programeaza"
                   className="text-sm font-semibold text-foreground hover:text-brand-cyan"
                 >
                   Programează un apel
-                </a>
+                </Link>
               </div>
             </RevealSection>
 
@@ -135,14 +132,12 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
                 >
                   Creează cont
                 </MagneticButton>
-                <a
-                  href={CAL_LINK}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <Link
+                  href="/#programeaza"
                   className="text-sm font-semibold text-foreground hover:text-brand-cyan"
                 >
                   Programează un apel
-                </a>
+                </Link>
               </div>
             </RevealSection>
 

@@ -3,6 +3,7 @@ import { ScrollWorld } from "@/components/ScrollWorld";
 import { Services } from "@/components/Services";
 import { Portfolio } from "@/components/Portfolio";
 import { About } from "@/components/About";
+import { FinalCta } from "@/components/FinalCta";
 import { Footer } from "@/components/Footer";
 
 export default function Home() {
@@ -18,6 +19,7 @@ export default function Home() {
           <Services />
           <Portfolio />
           <About />
+          <FinalCta />
           <Footer />
         </div>
       </main>

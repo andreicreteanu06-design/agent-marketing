@@ -17,8 +17,10 @@ npm run dev
       fisierul real (SVG ideal, PNG cu fundal transparent acceptabil) cand il ai.
 - [ ] **Favicon**: inca cel implicit Next.js (`src/app/favicon.ico`) — de
       inlocuit cu un favicon in culorile brandului.
-- [ ] **Link Cal.com real**: `src/lib/config.ts` -> `CAL_LINK` e un placeholder
-      (`cal.com/ac-media/apel-descoperire`). Inlocuieste cu link-ul tau real.
+- [x] **Link Cal.com real**: `src/lib/config.ts` -> `CAL_LINK` e setat acum pe
+      `cal.com/andrei-phhkm0/apel-de-descoperire`, un cont Cal.com real
+      (20 min, disponibilitate non-stop). Poate fi mutat ulterior pe un
+      username/domeniu dedicat brandului AC Media, daca il faci.
 - [ ] **Email de contact real**: `src/lib/config.ts` -> `CONTACT_EMAIL`.
 - [ ] **Domeniu**: `metadata` din `src/app/layout.tsx` (OG image/URL absolut)
       cand exista domeniul.

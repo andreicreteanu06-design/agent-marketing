@@ -2,7 +2,6 @@
 
 import { useEffect, useRef } from "react";
 import { mountScrollWorld } from "@/lib/scroll-world-engine.js";
-import { CAL_LINK } from "@/lib/config";
 
 const CYAN = "#3fd8e8";
 const BLUE = "#1450d8";
@@ -99,7 +98,7 @@ export function ScrollWorld() {
           body: "Vezi exact cum ar arăta agentul lucrând pentru afacerea ta.",
           tags: [],
           cta: {
-            primary: { label: "Programează un apel", href: CAL_LINK },
+            primary: { label: "Programează un apel", href: "/#programeaza" },
             secondary: { label: "Creează cont", href: "/creeaza-cont" },
           },
         },

@@ -7,7 +7,6 @@ import { List, X } from "@phosphor-icons/react/dist/ssr";
 import { Logo } from "./Logo";
 import { MagneticButton } from "./MagneticButton";
 import { getToken } from "@/lib/auth";
-import { CAL_LINK } from "@/lib/config";
 
 const NAV_LINKS = [
   { href: "/#servicii", label: "Servicii" },
@@ -93,9 +92,7 @@ export function Navbar() {
             </>
           )}
           <MagneticButton
-            href={CAL_LINK}
-            target="_blank"
-            rel="noopener noreferrer"
+            href="/#programeaza"
             className="rounded-full bg-brand-blue px-4 py-2 text-sm font-semibold text-white"
           >
             Programează un apel
@@ -166,15 +163,13 @@ export function Navbar() {
                 </>
               )}
               <li className="pt-2">
-                <a
-                  href={CAL_LINK}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <Link
+                  href="/#programeaza"
                   onClick={() => setOpen(false)}
                   className="block rounded-full bg-brand-blue px-4 py-3 text-center text-base font-semibold text-white"
                 >
                   Programează un apel
-                </a>
+                </Link>
               </li>
             </ul>
           </motion.div>
