@@ -50,9 +50,10 @@ files = ["ppc_agent"]
 # exclude() se aplica si cand mypy e chemat explicit pe ppc_agent_server.
 exclude = ["ppc_agent_server/migrations/versions/"]
 
-# scikit-learn si torch nu au stub-uri complete; le ignoram punctual.
+# scikit-learn, torch si timesfm nu au stub-uri complete (timesfm e o dependinta
+# OPTIONALA - vezi requirements-timesfm.txt); le ignoram punctual.
 [[tool.mypy.overrides]]
-module = ["sklearn.*", "torch.*"]
+module = ["sklearn.*", "torch.*", "timesfm.*"]
 ignore_missing_imports = true
 
 # ------------------------------------------------------------------------------

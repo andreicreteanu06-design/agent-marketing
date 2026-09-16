@@ -1,0 +1,12 @@
+# Dependinte OPTIONALE pentru LiveTimesFmForecaster (ppc_agent/decision/forecasting.py).
+# NU sunt in requirements.txt: torch + timesfm insumeaza sute de MB, plus un
+# download separat al greutatilor pre-antrenate (~200-400MB) la prima folosire
+# (google/timesfm-2.5-200m-pytorch, Apache-2.0 - vezi README.md pentru nota de
+# licenta). Fara acest fisier instalat, MockForecaster (determinist, fara ML)
+# ramane implicit si functioneaza normal - restul pachetului (CLI, teste,
+# mypy) nu depinde de aceste dependinte.
+#
+# Instalare (CPU, recomandat pentru CPU-only - evita un build CUDA de cateva GB):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-timesfm.txt
+timesfm[torch]>=3.0,<4

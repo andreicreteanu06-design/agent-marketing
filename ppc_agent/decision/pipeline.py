@@ -12,8 +12,9 @@ from ppc_agent.config import AppConfig
 from ppc_agent.decision.attribution import Journey, attribute
 from ppc_agent.decision.budget import ThompsonBudgetAllocator
 from ppc_agent.decision.budget_strategy import recommend_arm_capacity
+from ppc_agent.decision.forecasting import Forecaster, apply_forecast
 from ppc_agent.decision.kelly_sizing import size_daily_budget
-from ppc_agent.decision.models import ArmCapacityAdvice, ArmStats, PlanResult
+from ppc_agent.decision.models import ArmCapacityAdvice, ArmStats, DailyArmMetric, PlanResult
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers.factory import ProviderFactory
 
@@ -48,6 +49,9 @@ def run_plan(
     seed: int | None = _DEFAULT_SEED,
     n_samples: int = _DEFAULT_SAMPLES,
     kelly_fraction: float = 0.5,
+    forecaster: Forecaster | None = None,
+    histories: dict[str, list[DailyArmMetric]] | None = None,
+    forecast_horizon_days: int = 14,
 ) -> PlanResult:
     """Executa Modulul 2: dimensionare Kelly + alocare Thompson + atribuire Markov.
 
@@ -69,12 +73,26 @@ def run_plan(
     ``decision.budget_strategy.recommend_arm_capacity`` (relevant la conturi cu
     buget mic, unde altfel bugetul s-ar dilua intre prea multe brate).
 
+    ``forecaster``/``histories`` sunt OPTIONALE si NEactivate implicit -
+    ``forecaster=None`` (implicit) pastreaza comportamentul exact de dinainte
+    (Kelly/Thompson vad direct agregatele istorice ``ads.campaign_performance()``).
+    Cand ambele sunt date, bratele cu istoric in ``histories`` (cheie ``arm_id``)
+    intra in Kelly/Thompson ca ArmStats PROIECTATE pe urmatoarele
+    ``forecast_horizon_days`` zile (vezi ``forecasting.apply_forecast``), in loc
+    de agregatul brut - deciziile devin orientate spre unde se indreapta
+    performanta, nu doar unde a fost. ``kelly_sizing.py``/``budget.py`` raman
+    complet neschimbate: primesc un ArmStats ca oricare altul.
+
     Args:
         factory: Fabrica de furnizori (mock sau live).
         config: Configuratia aplicatiei (buget, praguri).
         seed: Seed pentru esantionarea Thompson (reproducibilitate CLI si teste).
         n_samples: Numarul de esantioane Monte Carlo per posterior.
         kelly_fraction: Fractia Kelly (``0.5`` = Half-Kelly; ``0`` dezactiveaza scalarea).
+        forecaster: Cand e dat (impreuna cu ``histories``), proiecteaza bratele
+            inainte de Kelly/Thompson - vezi ``forecasting.py``.
+        histories: Istoricul zilnic per brat (cheie ``arm_id``), pentru ``forecaster``.
+        forecast_horizon_days: Orizontul de proiectie (zile), cand ``forecaster`` e dat.
 
     Returns:
         Planul complet: dimensionare Kelly + alocare de buget + atribuire.
@@ -100,6 +118,8 @@ def run_plan(
         meta_ads.campaign_performance(ad_account_id), platform="meta_ads"
     )
     arms = google_arms + tiktok_arms + meta_arms
+    if forecaster is not None and histories:
+        arms = apply_forecast(arms, histories, forecaster, horizon_days=forecast_horizon_days)
 
     kelly = size_daily_budget(
         arms,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
@@ -126,3 +127,34 @@ class PlanResult(BaseModel):
     budget_plan: BudgetPlan
     attribution: AttributionResult
     arm_capacity: ArmCapacityAdvice | None = None
+
+
+class DailyArmMetric(BaseModel):
+    """O singura zi din istoricul de performanta al unui brat.
+
+    Distinct de :class:`ArmStats` (agregat pe toata perioada, fara nicio
+    notiune de timp): un forecaster (vezi ``forecasting.py``) are nevoie de o
+    serie ordonata in timp, nu de un singur total.
+    """
+
+    date: date
+    clicks: int = Field(ge=0)
+    conversions: int = Field(ge=0)
+    cost: Decimal = Decimal("0")
+    revenue: Decimal = Decimal("0")
+
+
+class ArmForecast(BaseModel):
+    """Iesirea unui forecaster (``forecasting.py``): un :class:`ArmStats` PROIECTAT.
+
+    Deliberat acelasi tip ``ArmStats`` ca istoricul brut, nu unul nou:
+    ``kelly_sizing.size_daily_budget`` si ``budget.ThompsonBudgetAllocator``
+    raman complet neschimbate, primesc ``projected`` exact cum ar primi
+    istoricul real - nu conteaza pentru ele daca numerele vin dintr-o proiectie
+    sau dintr-un raport brut.
+    """
+
+    projected: ArmStats
+    conversions_low: float
+    conversions_high: float
+    method: Literal["trend", "timesfm"]

@@ -175,6 +175,39 @@ contului:
 
 `run_plan(..., kelly_fraction=0.0)` dezactiveaza scalarea (plafon = `max_daily_spend`).
 
+### Forecasting (opt-in) — proiectie inaintea Kelly/Thompson
+
+`decision/forecasting.py` adauga o etapa NOUA, opt-in, care se conecteaza
+*inaintea* lui Kelly/Thompson, nu in locul lor: `run_plan(..., forecaster=...,
+histories=...)` proiecteaza fiecare brat pe urmatoarele `forecast_horizon_days`
+zile si trece proiectia (nu istoricul brut) mai departe. `kelly_sizing.py` si
+`budget.py` raman **complet neschimbate** — primesc un `ArmStats` ca oricare
+altul, indiferent daca vine dintr-un raport brut sau dintr-o proiectie.
+Implicit (`forecaster=None`) comportamentul e identic cu inainte.
+
+- **`MockForecaster`** — regresie liniara determinista pe fiecare metrica, fara
+  retea si fara ML. Implicit (mock-first, ca peste tot in proiect).
+- **`LiveTimesFmForecaster`** — [TimesFM 2.5](https://github.com/google-research/timesfm)
+  (Google Research): model fundament de serii de timp, pre-antrenat, zero-shot
+  (nu are nevoie sa fie (re)antrenat pe contul clientului). Opt-in:
+
+  ```bash
+  pip install -r requirements-timesfm.txt
+  ```
+
+  **Licenta:** foloseste explicit checkpoint-ul `google/timesfm-2.5-200m-pytorch`
+  (greutati Apache-2.0, sigur comercial) — NU `3.0` (licenta non-comerciala a
+  greutatilor). Constant de cod (`_TIMESFM_CHECKPOINT`), deliberat neexpus ca
+  variabila de mediu, ca sa nu poata fi schimbat din greseala.
+  Prima folosire descarca checkpoint-ul de pe Hugging Face (retea necesara);
+  ruleaza pe CPU (torch instalat aici e build CPU-only, fara CUDA).
+
+- **Gap onest**: nici CLI-ul (`ppc_agent plan`), nici serverul nu construiesc
+  inca `histories` (nevoie de date zilnice, nu doar agregate — Google/Meta/TikTok
+  API-urile live suporta rapoarte zi-cu-zi, dar ingestia asta inca nu exista).
+  Azi, `apply_forecast`/`run_plan(forecaster=...)` sunt gata de folosit direct
+  din cod (vezi `tests/test_forecasting.py`), dar neconectate la CLI.
+
 ### Schema `proposed_changes_*.json`
 
 ```json
