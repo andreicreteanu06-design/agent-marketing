@@ -1,0 +1,16 @@
+# Dependinte pentru seo_geo_agent/ (agent AI separat, propriul FastAPI app -
+# vezi seo_geo_agent/__init__.py). Deliberat FARA sqlmodel/alembic/psycopg/
+# argon2/cryptography/redis/arq: acest agent nu are baza de date proprie si nu
+# face parte din ppc_agent_server.
+#
+# Instalare: pip install -r requirements-seo-geo.txt
+# (include automat requirements.txt - httpx/pydantic/pydantic-settings, deja
+# folosite de restul proiectului)
+-r requirements.txt
+
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+
+# Doar decodarea token-ului JWT partajat cu ppc_agent_server (vezi settings.py) -
+# fara hashing de parole/stocare de secrete, acelea raman in ppc_agent_server.
+pyjwt>=2.9,<3

@@ -36,6 +36,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # B008 (flake8-bugbear) nu cunoaste conventia (desi Annotated[X, Depends(...)]
 # ramane preferat, se poate strecura si direct in semnaturi).
 "ppc_agent_server/**/*.py" = ["B008"]
+"seo_geo_agent/**/*.py" = ["B008"]
 
 # ------------------------------------------------------------------------------
 # Mypy — verificare stricta de tip pe pachet

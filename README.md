@@ -422,6 +422,44 @@ Comutarea e automata, dupa `REDIS_URL` — niciun cod de apelat diferit.
 (la fel ca restul proiectului). `ruff check` (fara argument de cale) acopera
 deja tot, inclusiv `ppc_agent_server/` si `tests_server/`.
 
+## Agent SEO+GEO (separat)
+
+`seo_geo_agent/` e un al doilea agent AI, complet separat de `ppc_agent`/
+`ppc_agent_server` — propriul FastAPI app, propriul port, propriile dependinte
+(`requirements-seo-geo.txt`, fara SQLModel/Alembic/Redis — nu are baza de date
+proprie). Un singur endpoint: `POST /api/v1/seo-geo/analyze` — primeste un
+domeniu + rapoarte brute ale clientului (Ahrefs/Semrush/GSC, text lipit ca
+atare) si returneaza `seo_score`/`geo_score` (0-100) plus liste de sugestii
+actionabile (cod JSON-LD exact, nu sfaturi generice — vezi `prompts.py`).
+
+Autentificare: **acelasi token JWT** emis de `POST /api/v1/login` din
+`ppc_agent_server` (secret comun — `JWT_SECRET_KEY`, fara prefix, in acelasi
+`.env`) — un client deja autentificat pe site nu are nevoie de un al doilea
+login pentru acest feature premium. Fara acces la baza de date a
+`ppc_agent_server`: doar semnatura + expirarea token-ului sunt verificate.
+
+```powershell
+pip install -r requirements-seo-geo.txt
+.venv\Scripts\python.exe -m uvicorn seo_geo_agent.app:app --reload --port 8001
+```
+
+Implicit (`SEOGEO_PROVIDER_MODE=mock`), raspunde determinist, fara Ollama
+pornit — la fel ca restul proiectului. Pentru analiza reala:
+`SEOGEO_PROVIDER_MODE=live` + Ollama local (vezi
+[client LLM (Ollama local)](#client-llm-live-ollama-local) — acelasi principiu,
+alt model implicit, vezi `.env.example`).
+
+### Teste seo_geo_agent
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests_seo_geo
+.venv\Scripts\python.exe -m mypy --strict seo_geo_agent
+```
+
+100% offline — `MockLLMClient` + `httpx.MockTransport` pentru testele
+`LiveLLMClient`, zero retea reala. `ruff check` acopera deja
+`seo_geo_agent/` si `tests_seo_geo/`.
+
 ## Dezvoltare
 
 ```powershell
