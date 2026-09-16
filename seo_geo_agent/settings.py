@@ -52,6 +52,15 @@ class SeoGeoSettings(BaseSettings):
     # marketing). Implicit doar serverul Next.js local. Lista separata prin virgula.
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # Optional - vezi external_data.py. Fara ea, PageSpeed Insights functioneaza
+    # tot, doar cu o cota mica. Microlink.io/LanguageTool nu au nevoie de cheie.
+    pagespeed_api_key: str = ""
+
+    # Optional - vezi external_data.py. Spre deosebire de celelalte 3 surse, fara
+    # ea fetch_semantic_embedding nu face niciun apel (Hugging Face refuza cereri
+    # anonime pentru majoritatea modelelor). Token gratuit de pe huggingface.co.
+    huggingface_api_key: str = ""
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
