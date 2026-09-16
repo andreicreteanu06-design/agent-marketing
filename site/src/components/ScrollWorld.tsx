@@ -15,6 +15,35 @@ const BLUE = "#1450d8";
 export function ScrollWorld() {
   const ref = useRef<HTMLDivElement>(null);
 
+  // Efect separat de cel de mai jos, in mod deliberat: in StrictMode (dev)
+  // React ruleaza efectul, cleanup-ul, apoi efectul din nou la orice montare
+  // (nu doar la HMR). Daca observer-ul ar fi in ACELASI efect ca mountScrollWorld,
+  // a doua rulare s-ar opri la guard-ul childElementCount de mai jos (motorul
+  // deja a construit DOM-ul) inainte sa recreeze observer-ul disconectat de
+  // cleanup - ramanand fara niciun observer activ. Aici nu exista niciun
+  // guard de idempotenta: fiecare rulare isi disconecteaza propriul observer,
+  // e sigur sa ruleze de doua ori.
+  //
+  // Titlurile din scroll-world au glow + gradient animate continuu (vezi
+  // .sw-copy__title in globals.css) - text-shadow si background-position
+  // sunt proprietati de paint, nu de compositor, deci browserul le repicteaza
+  // in fiecare cadru cat timp animatia ruleaza. Fara asta ar rula pentru
+  // totdeauna, si dupa ce utilizatorul a scrolat mult mai jos (continutul opac
+  // cu z-index mai mare acopera oricum acest strat fixed - vezi comentariul
+  // din page.tsx). Clasa .is-offscreen le pune pe pauza cand containerul (deci
+  // toata secventa cinematica) iese din viewport; vizualul cand E vizibil
+  // ramane neschimbat.
+  useEffect(() => {
+    const container = ref.current;
+    if (!container) return;
+    const io = new IntersectionObserver(
+      ([entry]) => container.classList.toggle("is-offscreen", !entry.isIntersecting),
+      { rootMargin: "200px 0px" },
+    );
+    io.observe(container);
+    return () => io.disconnect();
+  }, []);
+
   useEffect(() => {
     const container = ref.current;
     if (!container || container.childElementCount > 0) return;

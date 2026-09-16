@@ -85,6 +85,149 @@ h3 {
   --sw-btn-primary-bg: var(--brand-blue);
 }
 
+/* Glow pe titlurile din scroll-world - suprascrie umbra plata din engine
+   (vezi comentariul "@layer sw" din scroll-world-engine.js: stilul nelayer-uit
+   de aici castiga mereu, indiferent de ordinea de injectare). Culoarea vine
+   din --sw-accent, setat per sectiune de engine (cyan/albastru), deci glow-ul
+   urmeaza automat accentul fiecarei scene. Doua surse de lumina orbiteaza
+   incet textul (offset-ul umbrelor se muta, nu doar blur-ul/opacitatea) ca
+   sa para o lumina vie, nu un puls static. Umbra de contrast (primul strat,
+   fix) ramane neschimbata pentru lizibilitate pe fundalul video. Oprit de
+   regula globala prefers-reduced-motion de mai jos (selector *). */
+.sw-copy__title {
+  background-image: linear-gradient(
+    100deg,
+    var(--brand-blue) 0%,
+    var(--sw-accent) 28%,
+    #ffffff 50%,
+    var(--sw-accent) 72%,
+    var(--brand-blue) 100%
+  );
+  background-size: 280% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    sw-title-glow 4.5s ease-in-out infinite,
+    sw-title-sheen 4.5s linear infinite;
+}
+
+/* Gradient continuu (nu doar un puls o singura data) - pur CSS, deci merge
+   identic si pe mobil, spre deosebire de o varianta reactiva la cursor.
+   Opriri de culoare tari (albastru inchis -> accent -> alb), nu nuante toate
+   apropiate de alb, ca sweep-ul sa se vada clar, nu doar sa "respire". */
+@keyframes sw-title-sheen {
+  from {
+    background-position: 0% center;
+  }
+  to {
+    background-position: -280% center;
+  }
+}
+
+@keyframes sw-title-glow {
+  0%,
+  100% {
+    text-shadow:
+      0 2px 20px color-mix(in srgb, var(--sw-bg) 70%, transparent),
+      -8px 0 30px color-mix(in srgb, var(--sw-accent) 65%, transparent),
+      8px 3px 62px color-mix(in srgb, var(--sw-accent) 40%, transparent);
+  }
+  25% {
+    text-shadow:
+      0 2px 20px color-mix(in srgb, var(--sw-bg) 70%, transparent),
+      8px -4px 34px color-mix(in srgb, var(--sw-accent) 78%, transparent),
+      -7px 4px 68px color-mix(in srgb, var(--sw-accent) 48%, transparent);
+  }
+  50% {
+    text-shadow:
+      0 2px 20px color-mix(in srgb, var(--sw-bg) 70%, transparent),
+      5px 4px 36px color-mix(in srgb, var(--sw-accent) 88%, transparent),
+      -8px -3px 76px color-mix(in srgb, var(--sw-accent) 56%, transparent);
+  }
+  75% {
+    text-shadow:
+      0 2px 20px color-mix(in srgb, var(--sw-bg) 70%, transparent),
+      -7px -4px 32px color-mix(in srgb, var(--sw-accent) 72%, transparent),
+      7px 3px 66px color-mix(in srgb, var(--sw-accent) 44%, transparent);
+  }
+}
+
+/* Acelasi "simt" de lumina vie, pentru titlurile normale (AnimatedHeading) -
+   nu au --sw-accent (nu sunt in scroll-world), asa ca folosesc direct cele
+   doua culori de brand. Aplicat de AnimatedHeading.tsx pe toate titlurile:
+   .heading-glow pe container (halo-ul care orbiteaza, text-shadow se
+   mosteneste) + .heading-gradient-word pe fiecare cuvant (fill-ul de
+   culoare, background-clip cere text propriu, nu doar mostenit). */
+.heading-glow {
+  animation: heading-glow-move 4.5s ease-in-out infinite;
+}
+
+@keyframes heading-glow-move {
+  0%,
+  100% {
+    text-shadow:
+      -8px 0 30px color-mix(in srgb, var(--brand-cyan) 55%, transparent),
+      8px 3px 60px color-mix(in srgb, var(--brand-blue) 40%, transparent);
+  }
+  25% {
+    text-shadow:
+      8px -4px 34px color-mix(in srgb, var(--brand-cyan) 65%, transparent),
+      -7px 4px 66px color-mix(in srgb, var(--brand-blue) 44%, transparent);
+  }
+  50% {
+    text-shadow:
+      5px 4px 30px color-mix(in srgb, var(--brand-blue) 62%, transparent),
+      -8px -3px 58px color-mix(in srgb, var(--brand-cyan) 36%, transparent);
+  }
+  75% {
+    text-shadow:
+      -7px -4px 32px color-mix(in srgb, var(--brand-blue) 68%, transparent),
+      7px 3px 64px color-mix(in srgb, var(--brand-cyan) 42%, transparent);
+  }
+}
+
+.heading-gradient-word {
+  background-image: linear-gradient(
+    100deg,
+    var(--brand-blue) 0%,
+    var(--brand-cyan) 30%,
+    #ffffff 50%,
+    var(--brand-cyan) 70%,
+    var(--brand-blue) 100%
+  );
+  background-size: 280% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: heading-sheen-word 4s linear infinite;
+}
+
+/* Fiecare cuvant primeste acelasi ciclu, dar cu un animation-delay negativ
+   proportional cu pozitia lui (setat inline din AnimatedHeading.tsx) - toate
+   pornesc "din mijlocul" ciclului, defazat, deci gradientul pare ca se scurge
+   de la primul spre ultimul cuvant, nu ca toate cuvintele clipesc sincron. */
+@keyframes heading-sheen-word {
+  to {
+    background-position: -280% center;
+  }
+}
+
+/* Opreste glow-ul/gradientul cand titlul nu e in viewport - text-shadow si
+   background-position sunt proprietati de paint (nu de compositor ca
+   transform/opacity), deci fara asta browserul ar repicta la nesfarsit orice
+   titlu deja scrolat departe, cat timp tab-ul ramane deschis. Clasele sunt
+   puse/scoase de un IntersectionObserver (ScrollWorld.tsx / AnimatedHeading.tsx);
+   vizualul cand elementul E vizibil ramane identic. */
+.is-offscreen .sw-copy__title {
+  animation-play-state: paused;
+}
+
+.heading-glow.is-paused,
+.is-paused .heading-gradient-word {
+  animation-play-state: paused;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-background-elevated: var(--background-elevated);
@@ -198,6 +341,30 @@ h3 {
   background-size: 200% 100%;
   mix-blend-mode: screen;
   animation: var(--animate-aurora);
+}
+
+/* Sweep continuu pe eticheta text (eyebrow/kicker) - singurul loc unde textul
+   se misca dupa reveal, ca sa nu distraga de la corpul de text citit. Oprit
+   automat de regula globala prefers-reduced-motion de mai jos. */
+.text-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--brand-cyan) 40%,
+    #ffffff 50%,
+    var(--brand-cyan) 60%
+  );
+  background-size: 250% auto;
+  background-position: 200% center;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-shimmer-sweep 4.5s ease-in-out infinite;
+}
+
+@keyframes text-shimmer-sweep {
+  to {
+    background-position: -50% center;
+  }
 }
 
 /* Grain overlay lives on a fixed, pointer-events-none layer only - never on a

@@ -1,6 +1,7 @@
 import { ArrowUpRight } from "@phosphor-icons/react/dist/ssr";
+import { AnimatedHeading } from "./AnimatedHeading";
 import { RevealSection } from "./RevealSection";
-import { Portfolio3DCard } from "./Portfolio3DCard";
+import { Portfolio3DCardLazy } from "./Portfolio3DCardLazy";
 
 const PROJECTS = [
   {
@@ -25,12 +26,13 @@ export function Portfolio() {
   return (
     <section id="portofoliu" className="mx-auto max-w-7xl px-6 py-28 lg:px-8">
       <RevealSection>
-        <span className="text-sm font-semibold uppercase tracking-widest text-brand-cyan">
+        <span className="text-shimmer text-sm font-semibold uppercase tracking-widest">
           Portofoliu
         </span>
-        <h2 className="mt-4 max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-          Site-uri live, nu machete.
-        </h2>
+        <AnimatedHeading
+          text="Site-uri live, nu machete."
+          className="mt-4 max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+        />
         <p className="mt-4 max-w-xl text-base leading-relaxed text-foreground-muted">
           Fiecare proiect de mai jos rulează live, pentru un client real.
           Design construit pentru conversie, nu doar pentru un portofoliu.
@@ -46,12 +48,12 @@ export function Portfolio() {
               rel="noopener noreferrer"
               className="group block overflow-hidden rounded-3xl border border-border-subtle bg-background-elevated"
             >
-              <Portfolio3DCard
+              <Portfolio3DCardLazy
                 src={project.image}
                 alt={`Captură de ecran a site-ului ${project.name}`}
               />
               <div className="p-6 md:p-8">
-                <p className="text-xs font-semibold uppercase tracking-widest text-brand-cyan">
+                <p className="text-shimmer text-xs font-semibold uppercase tracking-widest">
                   {project.category}
                 </p>
                 <div className="mt-2 flex items-center gap-2">

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ArrowUpRight } from "@phosphor-icons/react/dist/ssr";
+import { AnimatedHeading } from "./AnimatedHeading";
 import { RevealSection } from "./RevealSection";
 import { SpotlightCard } from "./SpotlightCard";
 import { SERVICES } from "@/lib/services";
@@ -8,9 +9,10 @@ export function Services() {
   return (
     <section id="servicii" className="mx-auto max-w-7xl px-6 py-28 lg:px-8">
       <RevealSection>
-        <h2 className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-          Trei servicii, o singură logică din spate.
-        </h2>
+        <AnimatedHeading
+          text="Trei servicii, o singură logică din spate."
+          className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+        />
         <p className="mt-4 max-w-xl text-base leading-relaxed text-foreground-muted">
           PPC, web design și automatizări nu sunt echipe separate. Tot ce
           construiesc pentru un client pornește de la datele reale ale

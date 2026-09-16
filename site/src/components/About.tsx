@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AnimatedHeading } from "./AnimatedHeading";
 import { RevealSection } from "./RevealSection";
 import { AsciiArt } from "./ui/robot-human";
 
@@ -22,9 +23,10 @@ export function About() {
         </RevealSection>
 
         <RevealSection delay={0.1}>
-          <h2 className="text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-            Nu vinzi unei agenții. Vorbești cu cine scrie codul.
-          </h2>
+          <AnimatedHeading
+            text="Nu vinzi unei agenții. Vorbești cu cine scrie codul."
+            className="text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+          />
           <div className="mt-6 space-y-4 text-base leading-relaxed text-foreground-muted">
             <p>
               Sunt Andrei, student la Academia de Studii Economice, secția

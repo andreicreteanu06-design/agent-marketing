@@ -4,10 +4,11 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, ArrowRight } from "@phosphor-icons/react/dist/ssr";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
+import { AnimatedHeading } from "@/components/AnimatedHeading";
 import { RevealSection } from "@/components/RevealSection";
 import { SpotlightCard } from "@/components/SpotlightCard";
 import { MagneticButton } from "@/components/MagneticButton";
-import { ServiceVisual3D } from "@/components/ServiceVisual3D";
+import { ServiceVisual3DLazy } from "@/components/ServiceVisual3DLazy";
 import { SERVICES, getServiceBySlug } from "@/lib/services";
 
 export function generateStaticParams() {
@@ -48,12 +49,14 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
 
           <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
             <RevealSection>
-              <span className="text-sm font-semibold uppercase tracking-widest text-brand-cyan">
+              <span className="text-shimmer text-sm font-semibold uppercase tracking-widest">
                 {service.eyebrow}
               </span>
-              <h1 className="mt-4 text-4xl font-bold tracking-tight text-foreground md:text-5xl">
-                {service.title}
-              </h1>
+              <AnimatedHeading
+                as="h1"
+                text={service.title}
+                className="mt-4 text-4xl font-bold tracking-tight text-foreground md:text-5xl"
+              />
               <p className="mt-5 max-w-lg text-lg leading-relaxed text-foreground-muted">
                 {service.subtitle}
               </p>
@@ -77,7 +80,7 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
               delay={0.1}
               className="aspect-square w-full overflow-hidden rounded-3xl border border-border-subtle bg-background-elevated bg-[radial-gradient(circle_at_50%_45%,rgba(20,80,216,0.28),transparent_70%)]"
             >
-              <ServiceVisual3D variant={service.variant} />
+              <ServiceVisual3DLazy variant={service.variant} />
             </RevealSection>
           </div>
         </section>
@@ -85,9 +88,10 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
         <section className="border-t border-border-subtle bg-background-elevated/40">
           <div className="mx-auto max-w-7xl px-6 py-24 lg:px-8">
             <RevealSection>
-              <h2 className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-                Cum funcționează
-              </h2>
+              <AnimatedHeading
+                text="Cum funcționează"
+                className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+              />
             </RevealSection>
             <div className="mt-12 grid grid-cols-1 gap-10 md:grid-cols-3">
               {service.howItWorks.map((step, i) => (
@@ -103,9 +107,10 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
 
         <section className="mx-auto max-w-7xl px-6 py-24 lg:px-8">
           <RevealSection>
-            <h2 className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-              Beneficii concrete
-            </h2>
+            <AnimatedHeading
+              text="Beneficii concrete"
+              className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+            />
           </RevealSection>
           <div className="mt-12 grid grid-cols-1 gap-5 md:grid-cols-3">
             {service.benefits.map((benefit, i) => (
@@ -122,9 +127,11 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
         <section className="border-t border-border-subtle">
           <div className="mx-auto max-w-7xl px-6 py-24 text-center lg:px-8">
             <RevealSection>
-              <h2 className="mx-auto max-w-2xl text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-                Hai să vedem dacă se potrivește pentru tine.
-              </h2>
+              <AnimatedHeading
+                text="Hai să vedem dacă se potrivește pentru tine."
+                align="center"
+                className="mx-auto max-w-2xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+              />
               <div className="mt-8 flex flex-wrap items-center justify-center gap-5">
                 <MagneticButton
                   href="/creeaza-cont"
