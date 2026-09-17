@@ -98,6 +98,28 @@ class AdLifecycleStatus(enum.StrEnum):
     FATIGUED = "fatigued"
 
 
+class AdPlatform(enum.StrEnum):
+    """Platformele pe care ``BaseMarketingProvider`` (ppc_agent/providers/base.py)
+    le poate targeta - un al treilea enum de platforma, distinct de
+    :class:`Platform` (creatie de copy, doar Google/TikTok azi) si de
+    :class:`AdFatiguePlatform` (monitorul de oboseala, Google/Meta/TikTok) -
+    acelasi principiu ca de ce exista deja doua: fiecare enum e scopat la
+    subsistemul lui, nu exista un enum universal "toate platformele".
+
+    ``CHATGPT`` are un provider real, dar stub (acces API limitat la
+    parteneri OpenAI aprobati - vezi
+    ``providers.live.LiveGenerativeEngineProvider``). ``PERPLEXITY`` e inclus
+    pentru completitudine viitoare, dar NU are azi niciun produs de reclame de
+    integrat - Perplexity a abandonat reclamele in februarie 2026
+    (subscription-only). Niciun cont/camp de conectare Perplexity nu exista pe
+    ``ClientAccount`` - ar fi o optiune UI care nu ar putea face nimic.
+    """
+
+    META = "meta"
+    CHATGPT = "chatgpt"
+    PERPLEXITY = "perplexity"
+
+
 def _now() -> datetime:
     return datetime.now(tz=UTC)
 
@@ -127,6 +149,13 @@ class ClientAccount(SQLModel, table=True):
     google_ads_customer_id: str = ""
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
+    # OpenAI Ads (ChatGPT) - vezi AdPlatform.CHATGPT si
+    # providers.live.LiveGenerativeEngineProvider (stub: acces API limitat la
+    # parteneri aprobati de OpenAI). Campul exista din azi ca sa nu ceara o a
+    # doua migratie cand providerul devine real - neexpus inca in nicio ruta a
+    # serverului (nimic nu-l citeste/scrie azi, la fel ca celelalte 3 pana la
+    # implementarea lor).
+    chatgpt_ads_account_id: str = ""
 
     # Secrete per-client, criptate (Fernet - vezi security.py), NICIODATA in
     # clar in DB. Gol = clientul nu si-a conectat inca acel cont; in acel caz
@@ -135,6 +164,7 @@ class ClientAccount(SQLModel, table=True):
     google_ads_refresh_token_enc: str = ""
     meta_access_token_enc: str = ""
     tiktok_access_token_enc: str = ""
+    chatgpt_ads_api_key_enc: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita

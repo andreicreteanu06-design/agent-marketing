@@ -331,6 +331,42 @@ get started](https://developers.google.com/google-ads/api/docs/get-started/intro
   acelasi statut epistemic ca `ArqJobQueue` (netestat impotriva unui Redis
   real). Testeaza cu credentialele tale inainte sa te bazezi pe rezultate.
 
+## Generative Engine Ads (ChatGPT) — fundatie, inca stub
+
+Cercetat explicit (nu presupus) inainte de a scrie cod — vezi si
+[developers.openai.com/ads](https://developers.openai.com/ads):
+
+- **OpenAI Ads e real**: self-serve din mai 2026 (`ads.openai.com`), campanii
+  cu buget minim 25 USD/zi, targetare **contextuala pe conversatie** (nu pe
+  cuvinte cheie, spre deosebire de Google). Exista si un API programatic real
+  (`api.ads.openai.com/v1`, obiecte `Campaign`/`AdGroup`), dar **accesul e
+  limitat la parteneri aprobati de OpenAI** — fara cont de agentie aprobat,
+  nu exista nimic de conectat azi.
+- **Perplexity NU are niciun produs de reclame** — a testat "sponsored
+  questions" in 2024-2025, dar a abandonat reclamele in februarie 2026
+  (subscription-only). Nu exista niciun provider/stub Perplexity in cod, ca sa
+  nu sugereze o integrare posibila care pur si simplu nu exista azi.
+
+**Ce exista in cod:**
+
+- `providers/base.py::BaseMarketingProvider` — contract generic
+  (`get_campaign_metrics`/`scale_budget`/`pause_ad`) pentru platforme NOI care
+  nu au inca un loc in Modulul 2. Google/Meta/TikTok **nu** mostenesc aceasta
+  clasa — au deja un contract stabilit si cablat (`campaign_performance`/
+  `conversion_paths`), schimbarea lui ar fi invaziva pentru zero beneficiu.
+- `providers.live.LiveGenerativeEngineProvider` — stub (ca celelalte 4
+  furnizori live neconectati inca): fiecare metoda ridica
+  `SetupRequiredError` cu detalii reale (API-ul exista, accesul cere
+  aprobare de partener), niciun apel de retea.
+- `ClientAccount.chatgpt_ads_account_id`/`chatgpt_ads_api_key_enc` (server) —
+  campurile de conectare exista din azi (aceeasi forma ca Google/Meta/TikTok),
+  dar neexpuse inca in nicio ruta — nimic nu le citeste/scrie pana la
+  implementarea reala a providerului.
+- `AdPlatform` (server, `models.py`) — al treilea enum de platforma
+  (`META`/`CHATGPT`/`PERPLEXITY`), scopat la `BaseMarketingProvider` — distinct
+  de `Platform` (creatie de copy) si `AdFatiguePlatform` (monitorul de
+  oboseala), acelasi principiu ca de ce exista deja doua enum-uri separate.
+
 ## Client LLM live: Ollama local
 
 Spre deosebire de Google Ads / Meta / Fish Speech / Flick, clientul LLM folosit
