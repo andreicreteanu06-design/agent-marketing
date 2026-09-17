@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, MagnifyingGlass, SignOut } from "@phosphor-icons/react/dist/ssr";
+import {
+  ArrowUpRight,
+  MagnifyingGlass,
+  ShoppingBagOpen,
+  SignOut,
+} from "@phosphor-icons/react/dist/ssr";
 import { getToken, clearToken } from "@/lib/auth";
 import { getMe, ApiError, type MeResponse } from "@/lib/api";
 import { CredentialsForm } from "./CredentialsForm";
@@ -117,6 +122,30 @@ export function AccountDashboard() {
               <p className="text-sm font-semibold text-foreground">Analiză SEO + GEO</p>
               <p className="text-sm text-foreground-muted">
                 Scoruri și sugestii tehnice exacte, pe baza rapoartelor tale.
+              </p>
+            </div>
+          </div>
+          <ArrowUpRight
+            size={18}
+            weight="bold"
+            className="shrink-0 text-foreground-muted transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-brand-cyan"
+          />
+        </Link>
+      </RevealSection>
+
+      <RevealSection delay={0.2}>
+        <Link
+          href="/cont/produse-chatgpt"
+          className="group flex items-center justify-between rounded-3xl border border-border-subtle bg-background-elevated p-6 transition-colors hover:border-brand-blue/40"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-blue/15 text-brand-cyan">
+              <ShoppingBagOpen size={20} weight="duotone" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">Convertor produse ChatGPT</p>
+              <p className="text-sm text-foreground-muted">
+                Catalogul tău (CSV/XML), transformat în formatul ChatGPT Shopping.
               </p>
             </div>
           </div>
