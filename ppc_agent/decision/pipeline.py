@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Protocol, runtime_checkable
 
 import pandas as pd
 from rich.console import Console
@@ -23,6 +24,69 @@ _ADVERTISER_PLACEHOLDER = "mock-advertiser"
 _META_ACCOUNT_PLACEHOLDER = "mock-account"
 _DEFAULT_SEED = 20260101
 _DEFAULT_SAMPLES = 20_000
+_DEFAULT_HISTORY_DAYS = 30
+
+
+def resolve_account_ids(config: AppConfig) -> tuple[str, str, str]:
+    """(customer_id, advertiser_id, ad_account_id), cu fallback pe placeholder-ele mock.
+
+    In mod live, ID-ul real de cont vine din configuratie; placeholder-ul e
+    folosit doar cand campul e gol (implicit - asta pastreaza comportamentul
+    mock neschimbat pentru toate testele existente).
+    """
+    customer_id = config.settings.google_ads_customer_id or _CUSTOMER_PLACEHOLDER
+    advertiser_id = config.settings.tiktok_advertiser_id or _ADVERTISER_PLACEHOLDER
+    ad_account_id = config.settings.meta_ad_account_id or _META_ACCOUNT_PLACEHOLDER
+    return customer_id, advertiser_id, ad_account_id
+
+
+@runtime_checkable
+class SupportsDailyPerformance(Protocol):
+    """Capacitate OPTIONALA: raportare zi-cu-zi, pentru forecasting (``--forecast`` in CLI).
+
+    Niciun furnizor (mock sau live) nu o implementeaza inca - e un contract
+    pregatit pentru cand se adauga ingestia zilnica reala (Google Ads GAQL cu
+    ``segments.date``, Meta Insights API cu ``time_increment=1``, TikTok
+    Reporting API cu ``stat_time_day``) - lucru separat, netratat aici.
+    Deliberat NEIMPLEMENTAT de providerii mock: nu fabricam un trend zilnic
+    dintr-un agregat static caruia nu i se cunoaste distributia reala.
+
+    ``isinstance(provider, SupportsDailyPerformance)`` verifica la RUNTIME daca
+    un anume furnizor o are, fara sa modifice ABC-urile din ``providers/base.py``
+    (niciun furnizor existent, mock sau live, nu se strica).
+    """
+
+    def daily_campaign_performance(self, account_id: str, *, days: int) -> pd.DataFrame:
+        """Performanta pe zile: aceleasi coloane ca ``campaign_performance()``, plus ``date``."""
+        ...
+
+
+def collect_daily_histories(
+    providers_and_ids: list[tuple[object, str]], *, days: int = _DEFAULT_HISTORY_DAYS
+) -> dict[str, list[DailyArmMetric]]:
+    """Aduna istoricul zilnic de la providerii din ``providers_and_ids`` care implementeaza
+    :class:`SupportsDailyPerformance`; ignora restul (fallback sigur - vezi docstring-ul ei).
+
+    Intoarce ``{}`` cand niciun furnizor din lista nu o implementeaza - identic
+    cu "fara forecasting" pentru ``run_plan(histories=...)``.
+    """
+    histories: dict[str, list[DailyArmMetric]] = {}
+    for provider, account_id in providers_and_ids:
+        if not isinstance(provider, SupportsDailyPerformance):
+            continue
+        frame = provider.daily_campaign_performance(account_id, days=days)
+        for arm_id, group in frame.groupby("arm_id"):
+            histories[str(arm_id)] = [
+                DailyArmMetric(
+                    date=record["date"],
+                    clicks=int(record["clicks"]),
+                    conversions=int(record["conversions"]),
+                    cost=Decimal(str(record["cost"])),
+                    revenue=Decimal(str(record.get("revenue", 0))),
+                )
+                for record in group.to_dict(orient="records")
+            ]
+    return histories
 
 
 def _arms_from_performance(frame: pd.DataFrame, *, platform: str = "google_ads") -> list[ArmStats]:
@@ -100,13 +164,7 @@ def run_plan(
     ads = factory.google_ads()
     tiktok_ads = factory.tiktok_ads()
     meta_ads = factory.meta()
-
-    # In mod live, ID-ul real de cont vine din configuratie; placeholder-ul e
-    # folosit doar cand campul e gol (implicit - asta pastreaza comportamentul
-    # mock neschimbat pentru toate testele existente).
-    customer_id = config.settings.google_ads_customer_id or _CUSTOMER_PLACEHOLDER
-    advertiser_id = config.settings.tiktok_advertiser_id or _ADVERTISER_PLACEHOLDER
-    ad_account_id = config.settings.meta_ad_account_id or _META_ACCOUNT_PLACEHOLDER
+    customer_id, advertiser_id, ad_account_id = resolve_account_ids(config)
 
     google_arms = _arms_from_performance(
         ads.campaign_performance(customer_id), platform="google_ads"

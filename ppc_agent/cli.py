@@ -23,7 +23,7 @@ import typer
 from rich.console import Console
 
 from ppc_agent.alignment.pipeline import render_alignment, run_alignment
-from ppc_agent.config import AppConfig, load_config
+from ppc_agent.config import AppConfig, ProviderMode, load_config
 from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.copywriter.models import OmniPlatform
 from ppc_agent.copywriter.pipeline import append_to_queue, render_copy, run_copy
@@ -37,7 +37,15 @@ from ppc_agent.creative.creative_pipeline import (
 from ppc_agent.creative.factory import CreativeFactory
 from ppc_agent.decision.budget_strategy import DEFAULT_EVALUATION_DAYS, recommend_arm_capacity
 from ppc_agent.decision.fatigue_monitor import load_ad_performance_states
-from ppc_agent.decision.pipeline import render_arm_capacity, render_plan, run_plan
+from ppc_agent.decision.forecasting import Forecaster, LiveTimesFmForecaster, MockForecaster
+from ppc_agent.decision.models import DailyArmMetric
+from ppc_agent.decision.pipeline import (
+    collect_daily_histories,
+    render_arm_capacity,
+    render_plan,
+    resolve_account_ids,
+    run_plan,
+)
 from ppc_agent.errors import (
     ApprovalRequiredError,
     BudgetAllocationError,
@@ -89,6 +97,50 @@ def _account_label(config: AppConfig) -> str:
     return f"{mode}:{config.settings.google_ads_login_customer_id or _MOCK_ACCOUNT}"
 
 
+_ForecastEngine = Literal["mock", "timesfm"]
+
+
+def _resolve_forecaster(
+    factory: ProviderFactory,
+    app_config: AppConfig,
+    *,
+    forecast: bool,
+    engine: _ForecastEngine,
+) -> tuple[Forecaster | None, dict[str, list[DailyArmMetric]]]:
+    """``--forecast``: activ DOAR in mod live, si doar daca cel putin un furnizor
+    conectat implementeaza raportare zilnica (vezi
+    ``pipeline.SupportsDailyPerformance``) - niciun furnizor mock nu o
+    implementeaza deliberat (fara date zilnice fabricate, vezi docstring-ul ei).
+    """
+    if not forecast:
+        return None, {}
+    if app_config.provider_mode is not ProviderMode.LIVE:
+        console.print(
+            "[yellow]--forecast cere mod live (PPC_PROVIDER_MODE=live) - "
+            "se continua fara forecasting.[/yellow]"
+        )
+        return None, {}
+
+    customer_id, advertiser_id, ad_account_id = resolve_account_ids(app_config)
+    histories = collect_daily_histories(
+        [
+            (factory.google_ads(), customer_id),
+            (factory.tiktok_ads(), advertiser_id),
+            (factory.meta(), ad_account_id),
+        ]
+    )
+    if not histories:
+        console.print(
+            "[yellow]--forecast: niciun furnizor conectat nu suporta inca raportare "
+            "zilnica - se continua fara forecasting.[/yellow]"
+        )
+        return None, {}
+
+    forecaster: Forecaster = LiveTimesFmForecaster() if engine == "timesfm" else MockForecaster()
+    console.print(f"[dim]forecasting activ ({engine}) pentru {len(histories)} brate[/dim]")
+    return forecaster, histories
+
+
 @app.command()
 def ingest(
     url: Annotated[str, typer.Option("--url", help="Domeniul de analizat.")],
@@ -102,11 +154,30 @@ def ingest(
 
 
 @app.command()
-def plan(config: _ConfigOption = "config.yaml") -> None:
+def plan(
+    config: _ConfigOption = "config.yaml",
+    forecast: Annotated[
+        bool,
+        typer.Option(
+            "--forecast",
+            help=(
+                "Proiecteaza bratele inainte de Kelly/Thompson (doar mod live, "
+                "cand furnizorul suporta raportare zilnica - vezi README)."
+            ),
+        ),
+    ] = False,
+    forecast_engine: Annotated[
+        _ForecastEngine,
+        typer.Option("--forecast-engine", help="mock (implicit) sau timesfm (necesita setup)."),
+    ] = "mock",
+) -> None:
     """Modulele 2-3: alocare buget, atribuire Markov, Quality Score, lichiditate Meta."""
     app_config = load_config(config)
     factory = ProviderFactory(app_config)
-    render_plan(run_plan(factory, app_config), console)
+    forecaster, histories = _resolve_forecaster(
+        factory, app_config, forecast=forecast, engine=forecast_engine
+    )
+    render_plan(run_plan(factory, app_config, forecaster=forecaster, histories=histories), console)
     render_alignment(run_alignment(factory, app_config), console)
 
 
@@ -410,7 +481,23 @@ def check_fatigue(
 
 
 @app.command()
-def propose(config: _ConfigOption = "config.yaml") -> None:
+def propose(
+    config: _ConfigOption = "config.yaml",
+    forecast: Annotated[
+        bool,
+        typer.Option(
+            "--forecast",
+            help=(
+                "Proiecteaza bratele inainte de Kelly/Thompson (doar mod live, "
+                "cand furnizorul suporta raportare zilnica - vezi README)."
+            ),
+        ),
+    ] = False,
+    forecast_engine: Annotated[
+        _ForecastEngine,
+        typer.Option("--forecast-engine", help="mock (implicit) sau timesfm (necesita setup)."),
+    ] = "mock",
+) -> None:
     """Modulul 4: compileaza modificarile din Modulele 1-3 in proposed_changes.json.
 
     Nu se aplica nimic. Daca cheltuiala zilnica totala depaseste limita, fisierul
@@ -420,7 +507,10 @@ def propose(config: _ConfigOption = "config.yaml") -> None:
     factory = ProviderFactory(app_config)
 
     ingestion = run_ingestion(factory, app_config.target_domain, app_config)
-    decision = run_plan(factory, app_config)
+    forecaster, histories = _resolve_forecaster(
+        factory, app_config, forecast=forecast, engine=forecast_engine
+    )
+    decision = run_plan(factory, app_config, forecaster=forecaster, histories=histories)
     alignment = run_alignment(factory, app_config, ingestion.page_context)
 
     changes = build_proposed_changes(

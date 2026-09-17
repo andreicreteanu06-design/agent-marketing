@@ -36,6 +36,23 @@ def test_plan_command_runs_and_prints_sections() -> None:
         assert section in result.output
 
 
+def test_forecast_flag_is_noop_in_mock_mode() -> None:
+    """--forecast cere mod live (alegere explicita) - in mod mock (implicit),
+    doar informeaza si continua identic cu 'plan' fara flag."""
+    baseline = runner.invoke(app, ["plan"])
+    forecasted = runner.invoke(app, ["plan", "--forecast"])
+
+    assert forecasted.exit_code == 0
+    assert "--forecast cere mod live" in forecasted.output
+    assert "Dimensionare Kelly" in forecasted.output
+
+    # Acelasi plafon Kelly in ambele cazuri - --forecast n-a schimbat nimic in mock.
+    def _cap_line(output: str) -> str:
+        return next(line for line in output.splitlines() if "plafon:" in line)
+
+    assert _cap_line(baseline.output) == _cap_line(forecasted.output)
+
+
 def test_plan_budget_allocations_sum_to_kelly_sized_cap() -> None:
     config = AppConfig(settings=Settings(_env_file=None))
     config.budget.max_daily_spend = Decimal("37.00")

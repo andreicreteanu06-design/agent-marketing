@@ -202,11 +202,24 @@ Implicit (`forecaster=None`) comportamentul e identic cu inainte.
   Prima folosire descarca checkpoint-ul de pe Hugging Face (retea necesara);
   ruleaza pe CPU (torch instalat aici e build CPU-only, fara CUDA).
 
-- **Gap onest**: nici CLI-ul (`ppc_agent plan`), nici serverul nu construiesc
-  inca `histories` (nevoie de date zilnice, nu doar agregate — Google/Meta/TikTok
-  API-urile live suporta rapoarte zi-cu-zi, dar ingestia asta inca nu exista).
-  Azi, `apply_forecast`/`run_plan(forecaster=...)` sunt gata de folosit direct
-  din cod (vezi `tests/test_forecasting.py`), dar neconectate la CLI.
+**CLI**: `ppc-agent plan --forecast` (si `propose --forecast`), optional
+`--forecast-engine mock|timesfm` (implicit `mock`). Activ **DOAR in mod live**
+(`PPC_PROVIDER_MODE=live`) **si doar** daca cel putin un furnizor conectat
+implementeaza `pipeline.SupportsDailyPerformance` (un `Protocol`
+`runtime_checkable`, verificat cu `isinstance` — nicio modificare la ABC-urile
+din `providers/base.py`, niciun furnizor live existent nu se strica). Fara
+asta, `--forecast` afiseaza un mesaj clar si continua identic cu comportamentul
+de azi — nu esueaza, nu se blocheaza.
+
+- **Gap onest**: niciun furnizor (mock SAU live) nu implementeaza inca
+  `SupportsDailyPerformance` azi — deci `--forecast` e deocamdata mereu un
+  no-op informativ, in orice mod. Deliberat: mock-ul nu fabrica un trend zilnic
+  dintr-un agregat static caruia nu i se cunoaste distributia reala (ar fi date
+  inventate, prezentate ca semnal). Pasul ramas: implementarea reala per
+  platforma (Google Ads GAQL cu `segments.date`, Meta Insights API cu
+  `time_increment=1`, TikTok Reporting API cu `stat_time_day`) pe unul din
+  `providers/live/*.py` — in clipa in care exista, `--forecast` il foloseste
+  automat, fara nicio alta modificare de cod.
 
 ### Schema `proposed_changes_*.json`
 
