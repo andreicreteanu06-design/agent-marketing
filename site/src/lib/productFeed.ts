@@ -73,9 +73,9 @@ export const PRODUCT_FIELDS: FieldSpec[] = [
   { key: "description", label: "Descriere", required: true, aliases: ["description", "descriere", "desc"] },
   { key: "url", label: "Link produs", required: true, aliases: ["url", "link", "product url", "pagina", "product link"] },
   { key: "brand", label: "Brand", required: true, aliases: ["brand", "marca", "producator", "manufacturer"] },
-  { key: "seller_name", label: "Nume vânzător", required: true, aliases: ["seller", "seller name", "vanzator", "magazin", "shop", "store name", "store"] },
+  { key: "seller_name", label: "Nume vânzător", required: true, aliases: ["seller", "seller name", "vanzator", "vânzător", "nume magazin", "denumire magazin", "nume furnizor", "store name"] },
   { key: "image_url", label: "Imagine (URL)", required: true, aliases: ["image", "image url", "imagine", "photo", "picture", "poza", "poza produs"] },
-  { key: "availability", label: "Disponibilitate", required: true, hint: "in_stock / out_of_stock / pre_order / backorder", aliases: ["availability", "stock", "in stock", "disponibilitate", "stoc"] },
+  { key: "availability", label: "Disponibilitate", required: true, hint: "in_stock / out_of_stock / pre_order / backorder", aliases: ["availability", "stock status", "in stock", "disponibilitate", "stare stoc", "stoc"] },
   { key: "price", label: "Preț", required: true, hint: "număr - moneda se adaugă automat mai jos", aliases: ["price", "pret", "preț", "cost"] },
   { key: "sale_price", label: "Preț redus", required: false, aliases: ["sale price", "discount price", "pret redus", "preț redus", "pret promotie"] },
   { key: "gtin", label: "GTIN / EAN / UPC", required: false, aliases: ["gtin", "ean", "upc", "barcode", "cod de bare"] },
@@ -92,28 +92,45 @@ export interface ParsedSource {
   rows: Record<string, string>[];
 }
 
-/** Potriveste automat coloanele sursei cu campurile tinta (exact, apoi substring), caz-insensitiv. */
+/**
+ * Potriveste automat coloanele sursei cu campurile tinta, caz-insensitiv.
+ *
+ * DOUA TRECERI GLOBALE (nu per-camp): intai potriviri EXACTE pentru toate
+ * campurile, abia apoi potriviri prin substring pentru ce a ramas nemapat.
+ * Esential - un substring slab pentru un camp procesat mai devreme (ex.
+ * "stoc" -> "Stoc Cantitativ" pentru disponibilitate) nu mai fura o coloana
+ * de care alt camp avea nevoie printr-o potrivire exacta, mai buna (ex.
+ * "Stare Stoc" == alias exact al aceluiasi camp). Descoperit testand pe un
+ * export real cu 56 de coloane (vezi conversatia) - un fisier sintetic mic nu
+ * a scos la iveala aceasta capcana.
+ */
 export function autoMapColumns(columns: string[]): Mapping {
   const lowerColumns = columns.map((c) => [c, c.trim().toLowerCase()] as const);
   const used = new Set<string>();
   const mapping: Mapping = {};
+  for (const field of PRODUCT_FIELDS) mapping[field.key] = null;
 
   for (const field of PRODUCT_FIELDS) {
-    let match = lowerColumns.find(
+    const match = lowerColumns.find(
       ([orig, lower]) => !used.has(orig) && field.aliases.includes(lower)
     );
-    if (!match) {
-      match = lowerColumns.find(
-        ([orig, lower]) => !used.has(orig) && field.aliases.some((alias) => lower.includes(alias))
-      );
-    }
     if (match) {
       mapping[field.key] = match[0];
       used.add(match[0]);
-    } else {
-      mapping[field.key] = null;
     }
   }
+
+  for (const field of PRODUCT_FIELDS) {
+    if (mapping[field.key]) continue;
+    const match = lowerColumns.find(
+      ([orig, lower]) => !used.has(orig) && field.aliases.some((alias) => lower.includes(alias))
+    );
+    if (match) {
+      mapping[field.key] = match[0];
+      used.add(match[0]);
+    }
+  }
+
   return mapping;
 }
 
