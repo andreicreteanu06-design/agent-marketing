@@ -45,7 +45,7 @@ def upgrade() -> None:
     sa.Column('checked_on', sa.DateTime(), nullable=False),
     sa.Column('keyword', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('domain', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-    sa.Column('source', sa.Enum('GSC', 'SERPER', name='serpsource'), nullable=False),
+    sa.Column('source', sa.Enum('GSC', 'OPENSERP', name='serpsource'), nullable=False),
     sa.Column('rank', sa.Float(), nullable=True),
     sa.Column('page_url', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('clicks', sa.Integer(), nullable=True),

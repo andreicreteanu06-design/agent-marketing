@@ -78,13 +78,13 @@ class SerpSource(enum.StrEnum):
 
     Distinctia conteaza la interpretare, nu doar la evidenta: ``GSC`` e pozitia
     MEDIE masurata de Google pe traficul real al site-ului (poate fi 4.7), in
-    timp ce ``SERPER`` e o fotografie a SERP-ului la un moment dat, dintr-o
+    timp ce ``OPENSERP`` e o fotografie a SERP-ului la un moment dat, dintr-o
     locatie, deci un numar intreg. Nu se compara direct si nu se amesteca in
     acelasi grafic fara eticheta.
     """
 
     GSC = "gsc"
-    SERPER = "serper"
+    OPENSERP = "openserp"
 
 
 class KeywordIntent(enum.StrEnum):
@@ -410,7 +410,7 @@ class TrackedKeyword(SQLModel, table=True):
     Distinct de interogarile care apar SINGURE in Search Console: acelea sunt
     ce s-a intamplat, astea sunt ce vrem sa se intample. Un cuvant urmarit
     poate sa nu apara niciodata in GSC (nu ranchezi inca) - exact de aceea
-    exista verificarea externa de SERP (vezi ``SerpSource.SERPER``).
+    exista verificarea externa de SERP (vezi ``SerpSource.OPENSERP``).
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -450,7 +450,7 @@ class SerpPosition(SQLModel, table=True):
     rank: float | None = None
     #: Pagina care a ranchezat (utila ca sa vezi daca e cea intentionata).
     page_url: str = ""
-    #: Doar pentru randurile din Search Console - Serper nu are cum sa le stie.
+    #: Doar pentru randurile din Search Console - o citire de SERP nu le stie.
     clicks: int | None = None
     impressions: int | None = None
     ctr: float | None = None

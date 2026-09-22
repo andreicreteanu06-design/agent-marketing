@@ -53,15 +53,17 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str = ""
     google_oauth_refresh_token: str = ""
 
-    # Serper.dev - pozitii in SERP pentru cuvinte ARBITRARE si pentru
-    # concurenti, adica singurul lucru pe care Search Console nu-l poate da
-    # (vezi ppc_agent/search_data/serp_tracker.py). Gol = functia e pur si
-    # simplu dezactivata; pozitiile proprii din Search Console merg mai departe.
-    serper_api_key: str = ""
-    # Tara si limba pentru care se citeste SERP-ul. Implicit Romania - acelasi
-    # default ca AppConfig.geo/language.
-    serper_country: str = "ro"
-    serper_language: str = "ro"
+    # OpenSERP - instanta LOCALA (Docker) pentru pozitii in SERP pe cuvinte
+    # arbitrare si pentru concurenti, adica singurul lucru pe care Search
+    # Console nu-l poate da (vezi ppc_agent/search_data/serp_tracker.py).
+    # Self-hosted, fara cheie si fara cost recurent: nu exista niciun API
+    # platit in lantul de date al platformei. Daca instanta nu ruleaza,
+    # verificarile raporteaza "unavailable" si restul merge neschimbat.
+    openserp_url: str = "http://localhost:7000"
+    # Limba si regiunea pentru care se citeste SERP-ul. Implicit Romania -
+    # acelasi default ca AppConfig.geo/language.
+    openserp_language: str = "RO"
+    openserp_region: str = "RO"
 
     # Meta Marketing API
     meta_app_id: str = ""

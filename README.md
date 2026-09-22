@@ -504,6 +504,49 @@ Comutarea e automata, dupa `REDIS_URL` — niciun cod de apelat diferit.
 (la fel ca restul proiectului). `ruff check` (fara argument de cale) acopera
 deja tot, inclusiv `ppc_agent_server/` si `tests_server/`.
 
+## Date de cautare organica (`ppc_agent/search_data/`)
+
+Partea organica a platformei, pe surse gratuite si oficiale. **Niciun API
+platit in tot lantul de date** — nu exista cheie de cumparat si niciun vendor
+care sa schimbe preturile sub noi.
+
+| sursa | ce da | cost |
+| --- | --- | --- |
+| Google Search Console | pozitii, afisari si click-uri REALE, doar site propriu | gratuit |
+| Google Ads API | volume de cautare + termenii reali care au convertit | gratuit, contul clientului |
+| OpenSERP (self-hosted) | pozitii pe cuvinte arbitrare si pentru concurenti | gratuit, local |
+| Common Crawl | autoritate de domeniu pentru orice site | gratuit |
+
+Peste ele stau cele doua analize care nu se pot face intr-un tool de SEO pur —
+el are index, dar nu stie cat platesti si ce converteste (`insights.py`):
+**canibalizare** (platim pentru termeni pe care ii detinem deja in top 3
+organic) si **oportunitati** (termeni care convertesc platit, unde organic
+lipsim). Sortate dupa bani, nu dupa volum estimat.
+
+### OpenSERP: necesar pentru urmarirea pozitiilor
+
+Verificarea pozitiilor pe cuvinte pe care **inca nu le ranchezi** e singurul
+lucru pe care Search Console nu-l poate da (el arata doar interogari pentru
+care site-ul a fost deja afisat). Pentru asta ruleaza o instanta locala de
+[OpenSERP](https://github.com/karust/openserp):
+
+```powershell
+docker run --rm -p 127.0.0.1:7000:7000 karust/openserp:latest serve -a 0.0.0.0 -p 7000
+```
+
+Fara ea, verificarile raporteaza `unavailable` cu un mesaj explicit, iar restul
+platformei merge neschimbat — nimic nu crapa, doar lipseste acea functie.
+
+**De stiut inainte sa te bazezi pe ea:** OpenSERP conduce un browser headless
+impotriva Google. E acelasi scraping pe care un serviciu platit il face in
+locul tau, mutat pe infrastructura ta — deci CAPTCHA-urile, blocarile de IP si
+stricaciunile la schimbarile de layout devin problema noastra. Codul trateaza
+asta explicit: `blocked` e o stare separata de `error` (raspunsul corect la o
+provocare anti-bot e oprirea, nu reincercarea), iar concurenta e plafonata
+deliberat la 2 cereri simultane. Pentru volume mari, alternativa onesta ramane
+un furnizor platit de SERP — interfata `SerpProvider` e un `Protocol` exact ca
+sa poata fi schimbat fara modificari mai sus.
+
 ## Agent SEO+GEO (separat)
 
 `seo_geo_agent/` e un al doilea agent, complet separat de `ppc_agent`/

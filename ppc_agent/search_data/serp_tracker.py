@@ -1,27 +1,34 @@
-"""Pozitii in SERP pentru cuvinte ARBITRARE, via Serper.dev.
+"""Pozitii in SERP pentru cuvinte ARBITRARE, via OpenSERP self-hosted.
 
 Singurul gol pe care sursele gratuite si oficiale nu-l acopera: Search Console
 arata doar interogari pentru care site-ul a fost DEJA afisat, si doar pentru
 site-ul propriu. Ca sa stim unde stam pe un cuvant pe care inca nu aparem - sau
 unde sta un concurent - avem nevoie de o citire a SERP-ului.
 
-De ce Serper.dev si nu un scraper propriu: un headless Chromium pe google.com
-incalca termenii Google, se strica la fiecare schimbare de layout si ajunge in
-CAPTCHA dupa cateva zeci de cereri, ceea ce ar cere proxy-uri rotative - adica
-un cost mascat, plus fragilitate. Serper are un nivel gratuit si costa ~1$ la
-1000 de interogari dupa. Clientul inca il poate inlocui: interfata
-:class:`SerpProvider` exista exact ca o instanta SearXNG self-hosted (sau alt
-furnizor) sa poata fi pusa in loc fara sa se schimbe nimic mai sus.
+Sursa e o instanta LOCALA de OpenSERP (https://github.com/karust/openserp),
+nu un API comercial: zero cost recurent, zero cheie, zero vendor care poate
+schimba preturile sau termenii. Compromisul, spus pe fata fiindca modeleaza
+codul de mai jos: OpenSERP conduce un browser headless impotriva Google. E
+acelasi scraping pe care un serviciu platit il face in locul tau, mutat pe
+infrastructura ta - deci CAPTCHA-urile, blocarile de IP si stricaciunile la
+fiecare schimbare de layout Google devin problema noastra. De aceea:
 
-IMPORTANT: creditele sunt o resursa finita. Orice esec (fara cheie, credite
-epuizate, retea) intoarce un rezultat marcat explicit, NU arunca in sus - o
-verificare de pozitie ratata nu trebuie sa opreasca sincronizarea zilnica a
-celorlalte cuvinte.
+- nicio eroare nu arunca in sus: o verificare ratata produce un ``SerpCheck``
+  cu status explicit, si sincronizarea celorlalte cuvinte continua;
+- ``blocked`` e o stare de sine statatoare, distincta de ``error``: cand Google
+  cere CAPTCHA, raspunsul corect nu e "reincearca imediat", ci "opreste-te";
+- concurenta e deliberat MICA (:data:`DEFAULT_CONCURRENCY`) - a trage 20 de
+  interogari deodata prin acelasi IP e cel mai rapid mod de a fi blocat.
+
+:class:`SerpProvider` ramane un ``Protocol``: o instanta SearXNG self-hosted,
+sau orice alta sursa, poate lua locul fara sa se schimbe nimic mai sus.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
@@ -30,21 +37,26 @@ import httpx
 
 logger = logging.getLogger("ppc_agent.search_data.serp_tracker")
 
-_SERPER_URL = "https://google.serper.dev/search"
-_DEFAULT_TIMEOUT = 20.0
-#: Cate rezultate organice citim. 100 = prima "pagina" clasica extinsa; peste
-#: pozitia 100 diferenta nu mai conteaza pentru nicio decizie.
-_DEFAULT_DEPTH = 100
+_DEFAULT_TIMEOUT = 60.0
+#: Cate rezultate citim. 100 e maximul acceptat de OpenSERP intr-o cerere;
+#: peste pozitia 100 diferenta nu mai conteaza pentru nicio decizie.
+DEFAULT_DEPTH = 100
 #: Cati concurenti retinem per interogare (cine ne-a luat-o inainte).
 TOP_COMPETITORS = 3
+#: Interogari simultane catre instanta locala. Mic intentionat - vezi docstring.
+DEFAULT_CONCURRENCY = 2
 
-SerpStatus = Literal["ok", "no_credits", "not_configured", "error"]
+#: Semne ca Google a servit o provocare in locul rezultatelor. OpenSERP le
+#: raporteaza ca eroare text, nu cu un cod de stare dedicat.
+_BLOCKED_MARKERS = ("captcha", "unusual traffic", "blocked", "rate limit", "too many requests")
+
+SerpStatus = Literal["ok", "unavailable", "blocked", "error"]
 
 
 def registrable_domain(value: str) -> str:
     """Domeniul comparabil dintr-un URL sau host: fara schema, fara ``www.``, litere mici.
 
-    Comparatia de domenii din SERP trebuie sa fie tolerantă la forma exacta:
+    Comparatia de domenii din SERP trebuie sa fie toleranta la forma exacta:
     ``https://www.Exemplu.ro/pagina`` si ``exemplu.ro`` sunt acelasi site.
     Nu incercam sa rezolvam sufixele publice (``.co.uk``) - pentru potrivirea
     "e site-ul meu?" e suficient hostname-ul normalizat.
@@ -84,9 +96,6 @@ class SerpCheck:
     position: int | None = None
     url: str | None = None
     competitors: list[SerpCompetitor] = field(default_factory=list)
-    #: Prezenta unui AI Overview: pentru partea de GEO conteaza daca Google
-    #: raspunde singur, fiindca atunci click-urile organice scad chiar si de pe 1.
-    has_ai_overview: bool = False
     total_results_read: int = 0
     message: str = ""
 
@@ -94,56 +103,85 @@ class SerpCheck:
 class SerpProvider(Protocol):
     """Contractul minim al unei surse de SERP - implementabil si de SearXNG."""
 
-    def check_ranking(self, keyword: str, domain: str) -> SerpCheck:
+    async def check_ranking(self, keyword: str, domain: str) -> SerpCheck:
         """Pozitia lui ``domain`` pentru ``keyword``, plus concurentii de deasupra."""
         ...
 
 
-class SerperSerpProvider:
-    """Implementare peste API-ul Serper.dev."""
+class OpenSerpProvider:
+    """Client pentru o instanta locala de OpenSERP.
+
+    Pornirea instantei (vezi README, sectiunea despre urmarirea pozitiilor)::
+
+        docker run --rm -p 127.0.0.1:7000:7000 karust/openserp:latest serve -a 0.0.0.0 -p 7000
+
+    Fara instanta pornita, :meth:`check_ranking` intoarce ``status="unavailable"``
+    cu un mesaj care spune exact asta - restul platformei (pozitiile reale din
+    Search Console, analizele incrucisate) functioneaza neschimbat.
+    """
 
     def __init__(
         self,
         *,
-        api_key: str = "",
-        country: str = "ro",
-        language: str = "ro",
-        location: str = "",
-        depth: int = _DEFAULT_DEPTH,
+        base_url: str = "http://localhost:7000",
+        engine: str = "google",
+        language: str = "RO",
+        region: str = "RO",
+        depth: int = DEFAULT_DEPTH,
         timeout: float = _DEFAULT_TIMEOUT,
-        transport: httpx.BaseTransport | None = None,
+        concurrency: int = DEFAULT_CONCURRENCY,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._api_key = api_key
-        self._country = country
+        self._base_url = base_url.rstrip("/")
+        self._engine = engine
         self._language = language
-        self._location = location
+        self._region = region
         self._depth = depth
         self._timeout = timeout
+        self._concurrency = max(1, concurrency)
         self._transport = transport
 
     @property
-    def configured(self) -> bool:
-        """``False`` = nicio cheie; apelantul poate sari peste verificari intregi."""
-        return bool(self._api_key)
+    def base_url(self) -> str:
+        """Adresa instantei interogate."""
+        return self._base_url
 
-    def check_ranking(self, keyword: str, domain: str) -> SerpCheck:
-        """Interogheaza SERP-ul o singura data si extrage ce ne trebuie.
+    def _params(self, keyword: str) -> dict[str, Any]:
+        return {
+            "text": keyword,
+            "lang": self._language,
+            "region": self._region,
+            "limit": self._depth,
+        }
 
-        Nu arunca niciodata: orice problema devine un ``SerpCheck`` cu ``status``
-        diferit de ``"ok"`` si un mesaj lizibil. Vezi docstring-ul modulului.
+    async def check_ranking(self, keyword: str, domain: str) -> SerpCheck:
+        """Verifica o singura interogare. Nu arunca niciodata - vezi docstring-ul modulului."""
+        async with httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client:
+            return await self._check_with(client, keyword, domain)
+
+    async def check_rankings(self, keywords: Sequence[str], domain: str) -> list[SerpCheck]:
+        """Verifica mai multe interogari refolosind aceeasi conexiune.
+
+        Concurenta e plafonata de ``concurrency`` (implicit 2): instanta e
+        locala, dar cererile ies tot spre Google printr-un singur IP, iar o
+        rafala e cel mai rapid mod de a primi CAPTCHA. Rezultatele pastreaza
+        ordinea din ``keywords``.
         """
+        if not keywords:
+            return []
+        semaphore = asyncio.Semaphore(self._concurrency)
+        async with httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client:
+
+            async def one(keyword: str) -> SerpCheck:
+                async with semaphore:
+                    return await self._check_with(client, keyword, domain)
+
+            return list(await asyncio.gather(*(one(keyword) for keyword in keywords)))
+
+    async def _check_with(
+        self, client: httpx.AsyncClient, keyword: str, domain: str
+    ) -> SerpCheck:
         target = registrable_domain(domain)
-        if not self._api_key:
-            return SerpCheck(
-                keyword=keyword,
-                domain=target,
-                status="not_configured",
-                message=(
-                    "SERPER_API_KEY nu e setat - verificarea pozitiilor pentru cuvinte "
-                    "arbitrare e dezactivata. Pozitiile din Search Console functioneaza "
-                    "in continuare."
-                ),
-            )
         if not keyword.strip() or not target:
             return SerpCheck(
                 keyword=keyword,
@@ -152,53 +190,41 @@ class SerperSerpProvider:
                 message="Cuvantul cheie sau domeniul lipseste.",
             )
 
-        body: dict[str, Any] = {
-            "q": keyword,
-            "gl": self._country,
-            "hl": self._language,
-            "num": self._depth,
-        }
-        if self._location:
-            body["location"] = self._location
-
+        url = f"{self._base_url}/{self._engine}/search"
         try:
-            with httpx.Client(transport=self._transport, timeout=self._timeout) as client:
-                response = client.post(
-                    _SERPER_URL,
-                    headers={"X-API-KEY": self._api_key, "Content-Type": "application/json"},
-                    json=body,
-                )
+            response = await client.get(url, params=self._params(keyword))
         except httpx.TimeoutException:
             return SerpCheck(
                 keyword=keyword,
                 domain=target,
-                status="error",
-                message=f"Serper nu a raspuns in {self._timeout:.0f}s.",
+                status="unavailable",
+                message=(
+                    f"OpenSERP nu a raspuns in {self._timeout:.0f}s. Un browser headless "
+                    "poate dura la interogari grele; daca se repeta, creste timeout-ul."
+                ),
             )
-        except httpx.HTTPError as exc:
+        except httpx.HTTPError:
             return SerpCheck(
-                keyword=keyword, domain=target, status="error", message=f"Serper inaccesibil: {exc}"
+                keyword=keyword,
+                domain=target,
+                status="unavailable",
+                message=(
+                    f"Nu pot contacta OpenSERP la {self._base_url}. Porneste instanta: "
+                    "docker run --rm -p 127.0.0.1:7000:7000 karust/openserp:latest "
+                    "serve -a 0.0.0.0 -p 7000"
+                ),
             )
 
-        # 401/403 = cheie gresita sau revocata; 429 = credite epuizate sau prea
-        # multe cereri. Le separam fiindca duc la actiuni diferite: una se
-        # repara in setari, cealalta inseamna "asteapta sau cumpara credite".
-        if response.status_code in (401, 403):
+        if response.status_code == 429 or _looks_blocked(response.text):
+            logger.warning("OpenSERP: Google a blocat interogarea '%s'", keyword)
             return SerpCheck(
                 keyword=keyword,
                 domain=target,
-                status="not_configured",
-                message="Serper a refuzat cheia API (401/403). Verific-o in setari.",
-            )
-        if response.status_code == 429:
-            logger.warning("Serper: credite epuizate sau rate limit atins")
-            return SerpCheck(
-                keyword=keyword,
-                domain=target,
-                status="no_credits",
+                status="blocked",
                 message=(
-                    "Creditele Serper s-au terminat (sau ai atins limita de rata). "
-                    "Verificarile de pozitie se reiau cand ai din nou credite."
+                    "Google a cerut verificare anti-bot (CAPTCHA sau limitare de rata). "
+                    "Opreste verificarile pentru o vreme - reincercarea imediata "
+                    "inrautateste blocarea."
                 ),
             )
         if response.status_code >= 400:
@@ -206,7 +232,7 @@ class SerperSerpProvider:
                 keyword=keyword,
                 domain=target,
                 status="error",
-                message=f"Serper a raspuns {response.status_code}: {response.text[:150]}",
+                message=f"OpenSERP a raspuns {response.status_code}: {response.text[:150]}",
             )
 
         try:
@@ -216,40 +242,70 @@ class SerperSerpProvider:
                 keyword=keyword,
                 domain=target,
                 status="error",
-                message=f"Raspuns Serper invalid: {exc}",
+                message=f"Raspuns OpenSERP invalid: {exc}",
             )
-        return _parse_serper_payload(keyword, target, payload)
+        return _parse_results(keyword, target, payload)
 
 
-def _parse_serper_payload(keyword: str, target: str, payload: dict[str, Any]) -> SerpCheck:
-    """Extrage pozitia proprie si primii concurenti din raspunsul Serper.
+def _looks_blocked(body: str) -> bool:
+    """``True`` cand corpul raspunsului tradeaza o provocare anti-bot."""
+    snippet = body[:2000].lower()
+    return any(marker in snippet for marker in _BLOCKED_MARKERS)
+
+
+def _extract_rows(payload: Any) -> list[dict[str, Any]] | None:
+    """Scoate lista de rezultate, acceptand ambele forme pe care le poate lua.
+
+    OpenSERP intoarce de obicei un array JSON la radacina, dar variantele mai
+    noi il pot infasura intr-un obiect (``{"results": [...]}``). Acceptam
+    ambele in loc sa ne legam de una si sa cadem tacut la un upgrade.
+    """
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        for key in ("results", "organic", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+    return None
+
+
+def _parse_results(keyword: str, target: str, payload: Any) -> SerpCheck:
+    """Gaseste pozitia proprie si concurentii de deasupra, in rezultatele citite.
 
     Pozitia raportata e cea NUMARATA de noi peste rezultatele organice, nu
-    campul ``position`` din raspuns: acela poate sari sau lipsi cand Google
-    insereaza blocuri speciale, iar noi vrem "al catelea rezultat organic".
+    campul ``rank`` din raspuns: acela reflecta pozitia din pagina Google, care
+    include blocuri non-organice si poate sari. Noi vrem "al catelea rezultat
+    organic", fiindca asta se compara cu pozitia medie din Search Console.
     """
-    organic = payload.get("organic")
-    if not isinstance(organic, list):
+    rows = _extract_rows(payload)
+    if rows is None:
         return SerpCheck(
             keyword=keyword,
             domain=target,
             status="error",
-            message="Raspunsul Serper nu contine rezultate organice.",
+            message="Raspunsul OpenSERP nu contine o lista de rezultate.",
         )
 
     position: int | None = None
     found_url: str | None = None
     competitors: list[SerpCompetitor] = []
+    organic_index = 0
 
-    for index, item in enumerate(organic, start=1):
-        if not isinstance(item, dict):
+    for row in rows:
+        # OpenSERP eticheteaza rezultatele; cand tipul lipseste (versiuni mai
+        # vechi), presupunem organic - altfel n-am numara nimic.
+        row_type = str(row.get("type") or "organic").lower()
+        if row_type != "organic":
             continue
-        link = str(item.get("link") or "")
-        item_domain = registrable_domain(link)
-        if not item_domain:
+        link = str(row.get("url") or "")
+        row_domain = registrable_domain(str(row.get("domain") or "") or link)
+        if not row_domain:
             continue
-        if item_domain == target and position is None:
-            position = index
+
+        organic_index += 1
+        if row_domain == target and position is None:
+            position = organic_index
             found_url = link
             continue
         # Concurentii ne intereseaza doar pana la pozitia noastra: cine e SUB
@@ -257,10 +313,10 @@ def _parse_serper_payload(keyword: str, target: str, payload: dict[str, Any]) ->
         if position is None and len(competitors) < TOP_COMPETITORS:
             competitors.append(
                 SerpCompetitor(
-                    position=index,
-                    domain=item_domain,
+                    position=organic_index,
+                    domain=row_domain,
                     url=link,
-                    title=str(item.get("title") or ""),
+                    title=str(row.get("title") or ""),
                 )
             )
 
@@ -271,8 +327,19 @@ def _parse_serper_payload(keyword: str, target: str, payload: dict[str, Any]) ->
         position=position,
         url=found_url,
         competitors=competitors,
-        # Serper expune AI Overview sub chei diferite in timp; acceptam ambele
-        # in loc sa ne legam de una singura.
-        has_ai_overview=bool(payload.get("aiOverview") or payload.get("answerBox")),
-        total_results_read=len(organic),
+        total_results_read=organic_index,
     )
+
+
+def check_rankings_sync(
+    provider: OpenSerpProvider, keywords: Sequence[str], domain: str
+) -> list[SerpCheck]:
+    """Puntea catre stratul SINCRON de joburi (``ppc_agent_server/jobs/tasks.py``).
+
+    Providerul e async fiindca verificarea a 100 de cuvinte beneficiaza de
+    concurenta (marginita), dar joburile serverului sunt functii sincrone.
+    Functia asta e singurul loc unde se face traducerea - de evitat apelarea ei
+    dintr-o bucla de evenimente deja pornita (``asyncio.run`` ar crapa acolo);
+    in cod async, apeleaza direct ``provider.check_rankings``.
+    """
+    return asyncio.run(provider.check_rankings(keywords, domain))

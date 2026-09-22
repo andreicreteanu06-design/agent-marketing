@@ -7,6 +7,7 @@ buget - nu re-testeaza httpx.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date
 from decimal import Decimal
@@ -22,7 +23,12 @@ from ppc_agent.search_data.insights import (
     SeoOpportunityFinder,
 )
 from ppc_agent.search_data.search_console import SearchConsoleClient, normalize_site_url
-from ppc_agent.search_data.serp_tracker import SerperSerpProvider, registrable_domain
+from ppc_agent.search_data.serp_tracker import (
+    OpenSerpProvider,
+    SerpCheck,
+    check_rankings_sync,
+    registrable_domain,
+)
 
 
 def _gsc_client(handler: object, **kwargs: object) -> SearchConsoleClient:
@@ -162,7 +168,7 @@ def test_paginarea_se_opreste_cand_raspunsul_e_incomplet() -> None:
     assert len(rows) == 1
 
 
-# --- Serper -----------------------------------------------------------------
+# --- OpenSERP ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -177,73 +183,124 @@ def test_domeniul_se_normalizeaza_pentru_comparatie(raw: str, expected: str) -> 
     assert registrable_domain(raw) == expected
 
 
-def _serp(payload: dict[str, object], **kwargs: object) -> SerperSerpProvider:
-    return SerperSerpProvider(
-        api_key=str(kwargs.pop("api_key", "cheie")),
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)),
-    )
+def _openserp(handler: object) -> OpenSerpProvider:
+    return OpenSerpProvider(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
+
+
+def _json_response(payload: object) -> object:
+    return lambda request: httpx.Response(200, json=payload)
+
+
+def _check(handler: object, keyword: str = "pantofi piele") -> SerpCheck:
+    return asyncio.run(_openserp(handler).check_ranking(keyword, "exemplu.ro"))
 
 
 def test_pozitia_se_numara_peste_rezultatele_organice() -> None:
-    """Numaram noi, nu ne luam dupa campul 'position' din raspuns - el poate sari."""
-    provider = _serp(
-        {
-            "organic": [
-                {"link": "https://concurent1.ro/a", "title": "C1"},
-                {"link": "https://www.concurent2.ro/b", "title": "C2"},
-                {"link": "https://www.exemplu.ro/pagina", "title": "Noi"},
+    """Numaram noi, nu ne luam dupa 'rank' - acela include blocuri non-organice."""
+    check = _check(
+        _json_response(
+            [
+                {"type": "organic", "rank": 1, "url": "https://concurent1.ro/a", "title": "C1"},
+                {"type": "organic", "rank": 4, "url": "https://www.concurent2.ro/b", "title": "C2"},
+                {"type": "organic", "rank": 6, "url": "https://www.exemplu.ro/p", "title": "Noi"},
             ]
-        }
+        )
     )
-    check = provider.check_ranking("pantofi piele", "exemplu.ro")
     assert check.status == "ok"
     assert check.position == 3
-    assert check.url == "https://www.exemplu.ro/pagina"
+    assert check.url == "https://www.exemplu.ro/p"
+
+
+def test_rezultatele_non_organice_nu_intra_in_numaratoare() -> None:
+    check = _check(
+        _json_response(
+            [
+                {"type": "ad", "url": "https://reclama.ro/x"},
+                {"type": "organic", "url": "https://exemplu.ro/p"},
+            ]
+        )
+    )
+    assert check.position == 1
 
 
 def test_se_retin_doar_concurentii_de_deasupra_noastra() -> None:
     """Cine e sub noi nu ne-a luat nimic - nu e concurent pentru interogarea asta."""
-    provider = _serp(
-        {
-            "organic": [
-                {"link": "https://concurent1.ro/a"},
-                {"link": "https://exemplu.ro/x"},
-                {"link": "https://concurent2.ro/b"},
+    check = _check(
+        _json_response(
+            [
+                {"type": "organic", "url": "https://concurent1.ro/a"},
+                {"type": "organic", "url": "https://exemplu.ro/x"},
+                {"type": "organic", "url": "https://concurent2.ro/b"},
             ]
-        }
+        )
     )
-    check = provider.check_ranking("k", "exemplu.ro")
     assert [c.domain for c in check.competitors] == ["concurent1.ro"]
 
 
 def test_domeniul_absent_e_un_raspuns_valid_nu_o_eroare() -> None:
     """"Nu ranchezi" e informatie reala; confuzia cu o eroare ar strica graficele."""
-    provider = _serp({"organic": [{"link": "https://altcineva.ro/a"}]})
-    check = provider.check_ranking("k", "exemplu.ro")
+    check = _check(_json_response([{"type": "organic", "url": "https://altcineva.ro/a"}]))
     assert check.status == "ok"
     assert check.position is None
 
 
-@pytest.mark.parametrize(
-    ("status_code", "expected"),
-    [(429, "no_credits"), (401, "not_configured"), (403, "not_configured"), (500, "error")],
-)
-def test_esecurile_nu_arunca_ci_se_raporteaza(status_code: int, expected: str) -> None:
-    """O verificare ratata nu are voie sa opreasca sincronizarea celorlalte cuvinte."""
-    provider = SerperSerpProvider(
-        api_key="cheie",
-        transport=httpx.MockTransport(lambda request: httpx.Response(status_code, text="x")),
+def test_raspunsul_infasurat_in_obiect_e_acceptat() -> None:
+    """Variantele mai noi pot intoarce {"results": [...]} - nu cadem tacut la upgrade."""
+    check = _check(_json_response({"results": [{"type": "organic", "url": "https://exemplu.ro/"}]}))
+    assert check.position == 1
+
+
+def test_instanta_oprita_da_unavailable_nu_exceptie() -> None:
+    """Fara OpenSERP pornit, restul platformei trebuie sa mearga neschimbat."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    check = _check(refuse)
+    assert check.status == "unavailable"
+    assert "docker run" in check.message
+
+
+def test_captcha_e_o_stare_distincta_de_eroare() -> None:
+    """Raspunsul corect la o provocare anti-bot e oprirea, nu reincercarea."""
+    check = _check(lambda request: httpx.Response(200, text="Our systems detected unusual traffic"))
+    assert check.status == "blocked"
+
+
+def test_429_e_tratat_tot_ca_blocare() -> None:
+    check = _check(lambda request: httpx.Response(429, text="slow down"))
+    assert check.status == "blocked"
+
+
+def test_verificarea_in_bloc_pastreaza_ordinea_cuvintelor() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        keyword = request.url.params["text"]
+        return httpx.Response(
+            200, json=[{"type": "organic", "url": f"https://exemplu.ro/{keyword}"}]
+        )
+
+    checks = asyncio.run(
+        _openserp(handler).check_rankings(["unu", "doi", "trei"], "exemplu.ro")
     )
-    assert provider.check_ranking("k", "exemplu.ro").status == expected
+    assert [c.keyword for c in checks] == ["unu", "doi", "trei"]
+    assert all(c.position == 1 for c in checks)
 
 
-def test_fara_cheie_nu_se_face_niciun_apel() -> None:
-    def explode(request: httpx.Request) -> httpx.Response:  # pragma: no cover
-        raise AssertionError("nu trebuia sa se faca niciun apel fara cheie")
+def test_o_verificare_ratata_nu_le_opreste_pe_celelalte() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["text"] == "doi":
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json=[{"type": "organic", "url": "https://exemplu.ro/"}])
 
-    provider = SerperSerpProvider(transport=httpx.MockTransport(explode))
-    assert provider.configured is False
-    assert provider.check_ranking("k", "exemplu.ro").status == "not_configured"
+    checks = asyncio.run(_openserp(handler).check_rankings(["unu", "doi", "trei"], "exemplu.ro"))
+    assert [c.status for c in checks] == ["ok", "error", "ok"]
+
+
+def test_puntea_sincrona_intoarce_aceleasi_rezultate() -> None:
+    """Joburile serverului sunt sincrone - au nevoie de un singur punct de traducere."""
+    provider = _openserp(_json_response([{"type": "organic", "url": "https://exemplu.ro/"}]))
+    checks = check_rankings_sync(provider, ["unu"], "exemplu.ro")
+    assert [c.position for c in checks] == [1]
 
 
 # --- Analizele hibride ------------------------------------------------------
