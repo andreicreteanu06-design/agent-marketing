@@ -73,6 +73,35 @@ class Platform(enum.StrEnum):
     TIKTOK = "tiktok"
 
 
+class SerpSource(enum.StrEnum):
+    """De unde stim pozitia inregistrata in :class:`SerpPosition`.
+
+    Distinctia conteaza la interpretare, nu doar la evidenta: ``GSC`` e pozitia
+    MEDIE masurata de Google pe traficul real al site-ului (poate fi 4.7), in
+    timp ce ``SERPER`` e o fotografie a SERP-ului la un moment dat, dintr-o
+    locatie, deci un numar intreg. Nu se compara direct si nu se amesteca in
+    acelasi grafic fara eticheta.
+    """
+
+    GSC = "gsc"
+    SERPER = "serper"
+
+
+class KeywordIntent(enum.StrEnum):
+    """Intentia din spatele unei interogari urmarite.
+
+    Decide ce TIP de pagina raspunde interogarii: una tranzactionala cere o
+    pagina de produs/serviciu, una informationala un articol. Completata de om
+    sau de agent, niciodata ghicita tacit.
+    """
+
+    INFORMATIONAL = "informational"
+    COMMERCIAL = "commercial"
+    TRANSACTIONAL = "transactional"
+    NAVIGATIONAL = "navigational"
+    UNKNOWN = "unknown"
+
+
 class ConversionEventType(enum.StrEnum):
     PURCHASE = "purchase"
     LEAD = "lead"
@@ -165,6 +194,14 @@ class ClientAccount(SQLModel, table=True):
     meta_access_token_enc: str = ""
     tiktok_access_token_enc: str = ""
     chatgpt_ads_api_key_enc: str = ""
+    # Search Console: token SEPARAT de cel de Google Ads, nu din neglijenta -
+    # un refresh token Google e legat de scope-urile pentru care s-a dat
+    # consimtamant, iar 'adwords' nu acopera 'webmasters.readonly' (vezi
+    # ppc_agent/search_data/google_oauth.py).
+    gsc_refresh_token_enc: str = ""
+    # Proprietatea din Search Console, exact ca acolo: 'sc-domain:exemplu.ro'
+    # (domeniu) sau 'https://exemplu.ro/' (prefix URL). Gol = neconectat.
+    gsc_site_url: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
@@ -183,6 +220,11 @@ class ClientAccount(SQLModel, table=True):
     creative_artifacts: list["CreativeArtifact"] = Relationship(back_populates="client_account")
     conversion_events: list["ConversionEvent"] = Relationship(back_populates="client_account")
     ad_performance_records: list["AdPerformanceRecord"] = Relationship(
+        back_populates="client_account"
+    )
+    tracked_keywords: list["TrackedKeyword"] = Relationship(back_populates="client_account")
+    serp_positions: list["SerpPosition"] = Relationship(back_populates="client_account")
+    search_term_conversions: list["SearchTermConversion"] = Relationship(
         back_populates="client_account"
     )
     # Optional["X"] (bracket syntax), nu "X | None" (pipe) - vezi nota din
@@ -360,3 +402,86 @@ class AdPerformanceRecord(SQLModel, table=True):
         return float(self.revenue / self.spend) if self.spend > 0 else 0.0
 
     client_account: ClientAccount = Relationship(back_populates="ad_performance_records")
+
+
+class TrackedKeyword(SQLModel, table=True):
+    """Un cuvant cheie pe care clientul vrea sa-l urmareasca organic.
+
+    Distinct de interogarile care apar SINGURE in Search Console: acelea sunt
+    ce s-a intamplat, astea sunt ce vrem sa se intample. Un cuvant urmarit
+    poate sa nu apara niciodata in GSC (nu ranchezi inca) - exact de aceea
+    exista verificarea externa de SERP (vezi ``SerpSource.SERPER``).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    keyword: str = Field(index=True)
+    intent: KeywordIntent = KeywordIntent.UNKNOWN
+    #: Pagina care AR TREBUI sa ranchezeze pe acest cuvant. Gol = nedecis inca.
+    #: Cand e completata, o pozitie buna obtinuta de ALTA pagina e semnal de
+    #: canibalizare interna, nu de succes.
+    target_url: str = ""
+    #: Fals = pastram istoricul, dar nu mai consumam credite pe el.
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=_now)
+
+    client_account: ClientAccount = Relationship(back_populates="tracked_keywords")
+
+
+class SerpPosition(SQLModel, table=True):
+    """Unde statea un domeniu pe o interogare, la o data anume.
+
+    Tabela de fapte a partii organice: un rand per (zi, interogare, domeniu,
+    sursa). ``domain`` exista ca sa putem stoca si pozitiile CONCURENTILOR cu
+    aceeasi forma - nu doar pe ale noastre.
+
+    ``rank`` e nullable INTENTIONAT si inseamna "am verificat si nu apare in
+    primele rezultate citite". Un rand lipsa inseamna altceva ("n-am verificat
+    in ziua aia"), iar confuzia dintre cele doua ar strica orice grafic de
+    evolutie.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    checked_on: datetime = Field(index=True)
+    keyword: str = Field(index=True)
+    domain: str = Field(index=True)
+    source: SerpSource
+    rank: float | None = None
+    #: Pagina care a ranchezat (utila ca sa vezi daca e cea intentionata).
+    page_url: str = ""
+    #: Doar pentru randurile din Search Console - Serper nu are cum sa le stie.
+    clicks: int | None = None
+    impressions: int | None = None
+    ctr: float | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+    client_account: ClientAccount = Relationship(back_populates="serp_positions")
+
+
+class SearchTermConversion(SQLModel, table=True):
+    """Ce a facut o interogare REALA in contul de reclame, intr-o zi.
+
+    Sursa: raportul de termeni de cautare din Google Ads - interogarile pe care
+    le-au tastat oamenii, nu cuvintele cheie licitate si nu volume estimate de
+    nimeni. Asta e partea care, imbinata cu :class:`SerpPosition`, produce
+    analizele din ``ppc_agent/search_data/insights.py``.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    day: datetime = Field(index=True)
+    search_term: str = Field(index=True)
+    #: Cuvantul cheie licitat pe care l-a declansat interogarea (poate diferi
+    #: mult de ea la potrivire larga) - util ca sa stii ce sa pui pe pauza.
+    matched_keyword: str = ""
+    clicks: int = Field(default=0, ge=0)
+    impressions: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    #: Zecimal, nu intreg: Google raporteaza conversii fractionate (atribuire
+    #: pe mai multe canale imparte o conversie intre ele).
+    conversions: float = Field(default=0.0, ge=0)
+    conversions_value: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    created_at: datetime = Field(default_factory=_now)
+
+    client_account: ClientAccount = Relationship(back_populates="search_term_conversions")
