@@ -56,10 +56,21 @@ class ChangeOp(enum.StrEnum):
 
 
 class ChangeStatus(enum.StrEnum):
+    """Starile prin care trece o propunere.
+
+    ``EXECUTED`` e starea de "aplicat pe platforma" - nu s-a adaugat un
+    ``APPLIED`` separat, ar fi fost acelasi lucru sub alt nume si ar fi lasat
+    doua stari terminale de succes, dintre care UI-ul ar trebui sa le stie pe
+    amandoua. ``FAILED`` exista fiindca lipsea: pana acum o executie cazuta
+    lasa propunerea pe ``pending``, adica exact ca si cum nimeni n-ar fi
+    incercat-o - iar omul o reincerca la nesfarsit fara sa afle de ce pica.
+    """
+
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
     EXECUTED = "executed"
+    FAILED = "failed"
 
 
 class AdQueueStatus(enum.StrEnum):
@@ -280,6 +291,10 @@ class ProposedChange(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
     decided_at: datetime | None = None
     decided_by: str | None = None
+    #: De ce a picat executia, cand ``status`` e ``FAILED``. Textul ajunge in
+    #: interfata: omul trebuie sa stie daca reincercarea are sens (token expirat)
+    #: sau nu (resursa nu mai exista pe platforma).
+    error_message: str | None = None
 
     client_account: ClientAccount = Relationship(back_populates="proposed_changes")
 
