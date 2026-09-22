@@ -4,6 +4,12 @@
  * NEXT_PUBLIC_SEO_GEO_API_URL implicit http://localhost:8001. Foloseste acelasi
  * token de client (Bearer, din lib/auth.ts) ca restul site-ului - seo_geo_agent
  * valideaza acelasi JWT emis de ppc_agent_server, fara un al doilea login.
+ *
+ * Doua familii de functii, pentru cele doua moduri ale agentului:
+ * - analyzeSeoGeo -> analiza prin LLM (o parere argumentata);
+ * - startAudit/getAuditStatus/getAuditResults -> auditul determinist (crawl real,
+ *   probleme verificabile). Trei apeluri, nu unul, fiindca un crawl dureaza:
+ *   pornesti, intrebi de progres, iei raportul. Vezi seo_geo_agent/router.py.
  */
 const SEO_GEO_API_BASE_URL = process.env.NEXT_PUBLIC_SEO_GEO_API_URL ?? "http://localhost:8001";
 
@@ -55,6 +61,10 @@ async function seoGeoFetch<T>(path: string, options: RequestInit = {}): Promise<
   return response.json() as Promise<T>;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Analiza prin LLM                                                            */
+/* -------------------------------------------------------------------------- */
+
 export interface ActionableSuggestion {
   category: string;
   current_issue: string;
@@ -70,7 +80,7 @@ export interface AnalysisResponse {
 
 export interface AnalysisRequestInput {
   domain: string;
-  client_reports: string;
+  client_reports?: string;
   target_audience?: string;
 }
 
@@ -81,3 +91,126 @@ export function analyzeSeoGeo(token: string, input: AnalysisRequestInput): Promi
     body: JSON.stringify(input),
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Audit determinist                                                           */
+/* -------------------------------------------------------------------------- */
+
+export type IssueSeverity = "critical" | "warning" | "info";
+export type IssuePillar = "seo" | "geo";
+export type AuditStatus = "running" | "completed" | "failed";
+export type PageFetchClass = "ok" | "blocked" | "rate_limited" | "error";
+
+export interface AffectedPage {
+  page_url: string;
+  /** Valorile masurate acolo (lungimi, status-uri, URL-uri tinta) - dovada problemei. */
+  details: Record<string, unknown>;
+}
+
+export interface IssueGroup {
+  issue_type: string;
+  severity: IssueSeverity;
+  pillar: IssuePillar;
+  title: string;
+  explanation: string;
+  how_to_fix: string;
+  count: number;
+  affected_pages: AffectedPage[];
+}
+
+export interface AuditPageRow {
+  url: string;
+  status_code: number;
+  fetch_class: PageFetchClass;
+  title: string;
+  meta_description: string;
+  word_count: number;
+  h1_count: number;
+  images_total: number;
+  images_missing_alt: number;
+  internal_links: number;
+  response_time_ms: number;
+  is_indexable: boolean;
+  has_structured_data: boolean;
+  crawl_depth: number | null;
+  in_sitemap: boolean;
+  issue_count: number;
+}
+
+export interface PillarScore {
+  score: number;
+  checks_run: number;
+  checks_failed: number;
+}
+
+export interface AuditSummary {
+  pages_crawled: number;
+  /** false = crawl-ul s-a oprit din buget, deci raportul e partial. */
+  completed: boolean;
+  robots_txt_found: boolean;
+  llms_txt_found: boolean;
+  sitemap_urls_found: number;
+  critical_count: number;
+  warning_count: number;
+  info_count: number;
+  blocked_pages: number;
+  rate_limited_pages: number;
+  started_at: string;
+  finished_at: string;
+}
+
+export interface AuditResults {
+  audit_id: string;
+  domain: string;
+  start_url: string;
+  brand: string;
+  summary: AuditSummary;
+  seo: PillarScore;
+  geo: PillarScore;
+  issues: IssueGroup[];
+  pages: AuditPageRow[];
+}
+
+export interface AuditStarted {
+  audit_id: string;
+  status: AuditStatus;
+  domain: string;
+}
+
+export interface AuditStatusResponse {
+  audit_id: string;
+  status: AuditStatus;
+  crawled: number;
+  queued: number;
+  max_pages: number;
+  error: string | null;
+}
+
+export interface AuditRequestInput {
+  domain: string;
+  max_pages?: number;
+  brand?: string;
+}
+
+export function startAudit(token: string, input: AuditRequestInput): Promise<AuditStarted> {
+  return seoGeoFetch<AuditStarted>("/api/v1/seo-geo/audit", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+}
+
+export function getAuditStatus(token: string, auditId: string): Promise<AuditStatusResponse> {
+  return seoGeoFetch<AuditStatusResponse>(`/api/v1/seo-geo/audit/${auditId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getAuditResults(token: string, auditId: string): Promise<AuditResults> {
+  return seoGeoFetch<AuditResults>(`/api/v1/seo-geo/audit/${auditId}/results`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+/** Cat asteptam intre doua interogari de stare. Crawl-ul avanseaza in secunde, nu in milisecunde. */
+export const AUDIT_POLL_INTERVAL_MS = 1500;

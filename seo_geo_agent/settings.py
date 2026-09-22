@@ -52,6 +52,16 @@ class SeoGeoSettings(BaseSettings):
     # marketing). Implicit doar serverul Next.js local. Lista separata prin virgula.
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # --- Auditul determinist (seo_geo_agent/audit/) ---
+    # Plafonul absolut de pagini pe care il poate cere un client, indiferent ce
+    # trimite in ``max_pages``. Un audit inseamna cate o cerere HTTP per pagina
+    # catre site-ul clientului: limita asta e si politete fata de el, si
+    # protectie pentru procesul nostru (n-are coada de joburi - vezi audit/store.py).
+    audit_max_pages: int = 100
+    # Dupa atatea secunde, crawl-ul se opreste si raportul se marcheaza PARTIAL
+    # (``completed=false``), in loc sa tina clientul agatat la nesfarsit.
+    audit_time_budget_seconds: float = 150.0
+
     # Optional - vezi external_data.py. Fara ea, PageSpeed Insights functioneaza
     # tot, doar cu o cota mica. Microlink.io/LanguageTool nu au nevoie de cheie.
     pagespeed_api_key: str = ""

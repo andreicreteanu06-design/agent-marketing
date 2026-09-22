@@ -14,7 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from seo_geo_agent import __version__
-from seo_geo_agent.errors import AnalysisError, SeoGeoAgentError, SetupRequiredError
+from seo_geo_agent.errors import (
+    AnalysisError,
+    CrawlTargetError,
+    SeoGeoAgentError,
+    SetupRequiredError,
+)
 from seo_geo_agent.router import router
 from seo_geo_agent.settings import get_seo_geo_settings
 
@@ -23,6 +28,7 @@ from seo_geo_agent.settings import get_seo_geo_settings
 # exceptiei si foloseste primul handler potrivit).
 _ERROR_STATUS_CODES: dict[type[SeoGeoAgentError], int] = {
     SetupRequiredError: 503,
+    CrawlTargetError: 422,  # domeniul cerut e invalid sau interzis - vina intrarii
     AnalysisError: 502,  # LLM-ul a raspuns, dar cu ceva ce nu putem folosi - dependinta externa
     SeoGeoAgentError: 500,  # fallback generic - ramane ultimul inregistrat
 }

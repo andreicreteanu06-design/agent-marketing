@@ -25,3 +25,12 @@ class AnalysisError(SeoGeoAgentError):
 
     Ridicata si dupa epuizarea retry-urilor din :mod:`seo_geo_agent.engine`.
     """
+
+
+class CrawlTargetError(SeoGeoAgentError):
+    """Domeniul cerut nu poate fi auditat, si vina nu e a serverului nostru.
+
+    Acopera exact doua situatii, ambele vina datelor de intrare: URL-ul nu se
+    poate parsa, sau tinteste o adresa interna/privata (vezi
+    ``audit/url_policy.py``). De aceea e mapata pe 422, nu pe 500.
+    """

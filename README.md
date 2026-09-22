@@ -506,30 +506,81 @@ deja tot, inclusiv `ppc_agent_server/` si `tests_server/`.
 
 ## Agent SEO+GEO (separat)
 
-`seo_geo_agent/` e un al doilea agent AI, complet separat de `ppc_agent`/
+`seo_geo_agent/` e un al doilea agent, complet separat de `ppc_agent`/
 `ppc_agent_server` — propriul FastAPI app, propriul port, propriile dependinte
 (`requirements-seo-geo.txt`, fara SQLModel/Alembic/Redis — nu are baza de date
-proprie). Un singur endpoint: `POST /api/v1/seo-geo/analyze` — primeste un
-domeniu + rapoarte brute ale clientului (Ahrefs/Semrush/GSC, text lipit ca
-atare) si returneaza `seo_score`/`geo_score` (0-100) plus liste de sugestii
-actionabile (cod JSON-LD exact, nu sfaturi generice — vezi `prompts.py`).
+proprie). Doua moduri de lucru, deliberat separate:
 
-Autentificare: **acelasi token JWT** emis de `POST /api/v1/login` din
-`ppc_agent_server` (secret comun — `JWT_SECRET_KEY`, fara prefix, in acelasi
-`.env`) — un client deja autentificat pe site nu are nevoie de un al doilea
-login pentru acest feature premium. Fara acces la baza de date a
-`ppc_agent_server`: doar semnatura + expirarea token-ului sunt verificate.
+**1. Audit determinist (`seo_geo_agent/audit/`) — sursa de adevar.** Un crawl
+real al domeniului, din care functii pure calculeaza probleme verificabile,
+fiecare cu dovada ei: URL-ul afectat si valorile masurate. Nu e o parere a unui
+model de limbaj.
+
+Arhitectura si regulile sunt o portare fidela a
+[`every-app/open-seo`](https://github.com/every-app/open-seo) (TypeScript pe
+Cloudflare Workers) in Python/asyncio: **aceleasi id-uri de probleme**
+(kebab-case, engleza — `missing-title`, `broken-internal-link`,
+`duplicate-content`…), **aceleasi severitati** si **aceleasi praguri numerice**
+(titlu 10–60 caractere, meta description 70–160, continut subtire sub 150 de
+cuvinte, raspuns lent peste 1500 ms, pagina adanca de la 5 clickuri). Textele
+sunt in romana, ca restul produsului. Vezi `seo_geo_agent/audit/issues.py`
+pentru registrul complet si `audit/page_reporters.py` pentru praguri.
+
+| modul | ce face |
+| --- | --- |
+| `url_policy.py` | validarea URL-ului de start, anti-SSRF (refuza IP-uri private/interne) |
+| `robots.py` | robots.txt cu wildcard-uri `*`/`$` si grupuri pe user-agent |
+| `discovery.py` | sitemap.xml + index-uri imbricate |
+| `crawler.py` | descarcarea paginilor, clasificare oneasta: `ok`/`blocked`/`rate_limited`/`error` |
+| `page_analyzer.py` | extragerea datelor SEO din HTML (tokenizer in flux, nu DOM) |
+| `page_reporters.py` | verificari pure per pagina |
+| `multipage.py` | duplicate, lanturi/bucle de redirect, linkuri rupte, pagini orfane |
+| `geo_reporters.py` | citabilitate in motoare generative (vezi mai jos) |
+| `scoring.py` | scorurile SEO/GEO, ca rata de trecere ponderata peste verificari |
+
+Partea **GEO** e adaugirea fata de `open-seo` (care masoara vizibilitatea AI din
+afara site-ului, prin DataForSEO). Aici masuram ce controleaza site-ul si se
+poate verifica din crawl, cu aceeasi disciplina: crawler-e AI blocate din
+robots.txt (GPTBot, ClaudeBot, PerplexityBot, Google-Extended), continut care
+apare doar dupa rularea JavaScript, JSON-LD lipsa, schema `Organization`, cat de
+des apare brandul explicit in text, subtitluri formulate ca intrebari, lungimea
+medie a propozitiilor, semnale de autor/data, `/llms.txt`.
+
+Trei endpoint-uri, ca in original (start / status / results) — un crawl nu
+incape intr-un request sincron:
+
+```
+POST /api/v1/seo-geo/audit                  -> 202 {audit_id}
+GET  /api/v1/seo-geo/audit/{id}             -> stare + progres
+GET  /api/v1/seo-geo/audit/{id}/results     -> raportul complet
+```
+
+Auditul traieste in memoria procesului (`audit/store.py`) — agentul trebuie
+rulat cu **un singur worker uvicorn**, altfel cererea de stare poate ajunge in
+alt proces decat cel care ruleaza auditul.
+
+**2. Analiza prin LLM (`POST /api/v1/seo-geo/analyze`)** — ramane disponibila,
+ca strat optional PESTE datele masurate: primeste un domeniu (+ optional
+rapoarte brute Ahrefs/Semrush/GSC) si returneaza `seo_score`/`geo_score` plus
+sugestii actionabile (vezi `prompts.py`). In UI e al treilea tab, marcat
+explicit ca interpretare, nu ca masuratoare.
+
+Autentificare (pentru ambele): **acelasi token JWT** emis de
+`POST /api/v1/login` din `ppc_agent_server` (secret comun — `JWT_SECRET_KEY`,
+fara prefix, in acelasi `.env`) — un client deja autentificat pe site nu are
+nevoie de un al doilea login. Fara acces la baza de date a `ppc_agent_server`:
+doar semnatura + expirarea token-ului sunt verificate.
 
 ```powershell
 pip install -r requirements-seo-geo.txt
 .venv\Scripts\python.exe -m uvicorn seo_geo_agent.app:app --reload --port 8001
 ```
 
-Implicit (`SEOGEO_PROVIDER_MODE=mock`), raspunde determinist, fara Ollama
-pornit — la fel ca restul proiectului. Pentru analiza reala:
-`SEOGEO_PROVIDER_MODE=live` + Ollama local (vezi
-[client LLM (Ollama local)](#client-llm-live-ollama-local) — acelasi principiu,
-alt model implicit, vezi `.env.example`).
+Auditul functioneaza imediat, fara nicio configurare (nu foloseste LLM).
+Pentru analiza LLM: implicit (`SEOGEO_PROVIDER_MODE=mock`) raspunde determinist,
+fara Ollama pornit; pentru raspunsuri reale, `SEOGEO_PROVIDER_MODE=live` +
+Ollama local (vezi [client LLM (Ollama local)](#client-llm-live-ollama-local) —
+acelasi principiu, alt model implicit, vezi `.env.example`).
 
 ### Teste seo_geo_agent
 
@@ -538,8 +589,9 @@ alt model implicit, vezi `.env.example`).
 .venv\Scripts\python.exe -m mypy --strict seo_geo_agent
 ```
 
-100% offline — `MockLLMClient` + `httpx.MockTransport` pentru testele
-`LiveLLMClient`, zero retea reala. `ruff check` acopera deja
+100% offline — `MockLLMClient` pentru analiza si `httpx.MockTransport` pentru
+audit (`test_audit_service.py` ruleaza intreg motorul pe un site fals: robots,
+sitemap, linkuri, pagini rupte), zero retea reala. `ruff check` acopera deja
 `seo_geo_agent/` si `tests_seo_geo/`.
 
 ## Dezvoltare
