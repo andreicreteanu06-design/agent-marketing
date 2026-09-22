@@ -21,7 +21,15 @@ from ppc_agent.errors import (
     SpendLimitExceeded,
 )
 from ppc_agent_server.db import init_db
-from ppc_agent_server.routers import auth, client_auth, clients, jobs, proposals, tracking
+from ppc_agent_server.routers import (
+    auth,
+    client_auth,
+    clients,
+    hybrid_insights,
+    jobs,
+    proposals,
+    tracking,
+)
 from ppc_agent_server.settings import get_server_settings
 
 __version__ = "0.1.0"
@@ -87,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(client_auth.router)
     app.include_router(clients.router)
+    app.include_router(hybrid_insights.router)
     app.include_router(jobs.router)
     app.include_router(proposals.router)
     app.include_router(tracking.router)

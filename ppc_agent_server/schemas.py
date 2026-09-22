@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent_server.models import KeywordIntent, SerpSource
 
 AdPlatform = Literal["google", "tiktok"]
 McConnectPlatform = Literal["google_ads", "meta", "tiktok_ads"]
@@ -248,3 +249,93 @@ class McConnectRequest(BaseModel):
 
     platform: McConnectPlatform
     authorization_code: str
+
+
+# ---------------------------------------------------------------------------
+# Motorul hibrid PPC+SEO (routers/hybrid_insights.py)
+# ---------------------------------------------------------------------------
+
+
+class TrackedKeywordCreate(BaseModel):
+    """Cererea de adaugare a unui cuvant urmarit organic."""
+
+    keyword: str = Field(min_length=1, max_length=300)
+    intent: KeywordIntent = KeywordIntent.UNKNOWN
+    target_url: str = Field(
+        default="",
+        max_length=2048,
+        description=(
+            "Pagina care AR TREBUI sa ranchezeze pe acest cuvant. Cand e completata, "
+            "o pozitie obtinuta de alta pagina devine semnal de canibalizare interna."
+        ),
+    )
+
+
+class TrackedKeywordRow(BaseModel):
+    """Un cuvant urmarit, cu ultima pozitie si cu ce face el in reclame.
+
+    Campurile de pozitie si cele de plata sunt toate optionale, si lipsa lor
+    inseamna lucruri DIFERITE: fara pozitie = inca nu s-a verificat; fara date
+    de plata = nu s-a licitat pe el in fereastra ceruta. Un zero in locul lor
+    ar sterge distinctia.
+    """
+
+    id: int
+    keyword: str
+    intent: KeywordIntent
+    target_url: str
+    is_active: bool
+    latest_rank: float | None = None
+    latest_rank_source: SerpSource | None = None
+    latest_checked_on: datetime | None = None
+    ranking_url: str = ""
+    paid_clicks: int | None = None
+    paid_cost: Decimal | None = None
+    paid_conversions: float | None = None
+    paid_cpa: Decimal | None = None
+
+
+class CannibalizationItem(BaseModel):
+    """Un termen pe care il detinem organic, dar pentru care platim."""
+
+    term: str
+    organic_position: float
+    paid_clicks: int
+    paid_cost: Decimal
+    paid_conversions: float
+    potential_saving: Decimal = Field(
+        description=(
+            "Cheltuiala pe fereastra analizata - LIMITA SUPERIOARA a economiei, nu "
+            "economia garantata: o parte din click-uri nu s-ar muta pe organic."
+        )
+    )
+
+
+class CannibalizationReport(BaseModel):
+    """Raportul de canibalizare, cu pragul folosit la vedere."""
+
+    window_days: int
+    top_position_threshold: float
+    total_potential_saving: Decimal
+    items: list[CannibalizationItem]
+
+
+class SeoOpportunityItem(BaseModel):
+    """Un termen care converteste platit, dar unde organic lipsim."""
+
+    term: str
+    paid_conversions: float
+    paid_cost: Decimal
+    paid_cpa: Decimal | None
+    roas: float
+    organic_position: float | None = Field(
+        default=None, description="None = nu aparem deloc in datele organice."
+    )
+
+
+class SeoOpportunityReport(BaseModel):
+    """Raportul de oportunitati, cu pragul folosit la vedere."""
+
+    window_days: int
+    weak_position_threshold: float
+    items: list[SeoOpportunityItem]
