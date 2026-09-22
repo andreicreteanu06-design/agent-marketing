@@ -30,6 +30,7 @@ from ppc_agent_server.routers import (
     proposals,
     tracking,
 )
+from ppc_agent_server.routers.mcp_router import MCP_MOUNT_PATH, build_mcp_asgi_app
 from ppc_agent_server.settings import get_server_settings
 
 __version__ = "0.1.0"
@@ -99,6 +100,11 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(proposals.router)
     app.include_router(tracking.router)
+
+    # Serverul MCP e o aplicatie ASGI separata, montata - nu un APIRouter:
+    # SSE-ul isi tine propriul ciclu de viata al conexiunii, iar schema lui de
+    # unelte nu apartine OpenAPI-ului REST.
+    app.mount(MCP_MOUNT_PATH, build_mcp_asgi_app())
 
     @app.get("/health")
     def health() -> dict[str, str]:
