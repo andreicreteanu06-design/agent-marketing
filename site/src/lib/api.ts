@@ -87,6 +87,7 @@ export interface MeResponse {
   google_ads_connected: boolean;
   meta_connected: boolean;
   tiktok_connected: boolean;
+  chatgpt_connected: boolean;
 }
 
 export function getMe(token: string): Promise<MeResponse> {
@@ -99,6 +100,7 @@ export interface CredentialsUpdateInput {
   google_ads_refresh_token?: string;
   meta_access_token?: string;
   tiktok_access_token?: string;
+  chatgpt_ads_api_key?: string;
 }
 
 export interface CredentialsUpdateResponse {

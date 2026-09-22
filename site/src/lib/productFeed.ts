@@ -1,5 +1,5 @@
 /**
- * Conversie catalog client (CSV/XML, coloane arbitrare) -> feed de produse in
+ * Conversie catalog client (CSV/TSV/XML/XLSX/XLS/ODS, coloane arbitrare) -> feed de produse in
  * formatul Agentic Commerce Protocol (ChatGPT Shopping), cf. schema publica
  * https://developers.openai.com/commerce/specs/file-upload/products (verificat
  * explicit - nu presupus). Doar conversie + descarcare: NU trimite nimic catre
@@ -11,6 +11,7 @@
  */
 
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 
 export type ProductAvailability =
   | "in_stock"
@@ -134,15 +135,17 @@ export function autoMapColumns(columns: string[]): Mapping {
   return mapping;
 }
 
-export function parseCsvText(text: string): ParsedSource {
+/** ``delimiter=""`` (implicit) lasa Papa sa il detecteze singur; ``"\t"`` pentru TSV explicit. */
+export function parseCsvText(text: string, delimiter = ""): ParsedSource {
   const result = Papa.parse<Record<string, string>>(text, {
     header: true,
     skipEmptyLines: true,
+    delimiter,
     transformHeader: (header) => header.trim(),
   });
   if (result.errors.length > 0) {
     const first = result.errors[0];
-    throw new Error(`CSV invalid (rândul ${first.row ?? "?"}): ${first.message}`);
+    throw new Error(`Fișier invalid (rândul ${first.row ?? "?"}): ${first.message}`);
   }
   return { columns: result.meta.fields ?? [], rows: result.data };
 }
@@ -339,13 +342,40 @@ export function convertRows(
   return { rows, issues };
 }
 
-/** Citeste ``file`` ca text si il parseaza dupa extensie (.csv sau .xml). */
+/** Prima foaie dintr-un XLSX/XLS/ODS (SheetJS) -> aceleasi randuri ca CSV-ul (antet + date). */
+export async function parseSpreadsheetFile(file: File): Promise<ParsedSource> {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error("Fișierul nu are nicio foaie de calcul.");
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+  if (rows.length === 0) {
+    throw new Error(`Foaia "${sheetName}" nu are date sub antet.`);
+  }
+  const columns = Object.keys(rows[0]);
+  return {
+    columns,
+    rows: rows.map((row) =>
+      Object.fromEntries(columns.map((col) => [col, String(row[col] ?? "").trim()]))
+    ),
+  };
+}
+
+/** Citeste ``file`` si il parseaza dupa extensie (csv/tsv, xml, xlsx/xls/ods). */
 export async function parseSourceFile(file: File): Promise<ParsedSource> {
-  const text = await file.text();
   const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension === "xlsx" || extension === "xls" || extension === "ods") {
+    return parseSpreadsheetFile(file);
+  }
+
+  const text = await file.text();
   if (extension === "xml") return parseXmlToRows(text);
   if (extension === "csv") return parseCsvText(text);
-  throw new Error("Format neacceptat - încarcă un fișier .csv sau .xml.");
+  if (extension === "tsv") return parseCsvText(text, "\t");
+  throw new Error(
+    "Format neacceptat - încarcă un fișier .csv, .tsv, .xml, .xlsx, .xls sau .ods."
+  );
 }
 
 /** CSV final, coloane in ordinea ``OUTPUT_COLUMNS`` - gata de descărcat. */

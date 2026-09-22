@@ -165,18 +165,19 @@ def test_me_returns_own_identity_and_account(
     body = response.json()
     assert body["user"]["email"] == "client@exemplu.ro"
     assert body["account"]["name"] == "Client Nou SRL"
-    # Niciun cont de reclame conectat inca - toate trei false, nu doar absente.
+    # Niciun cont de reclame conectat inca - toate patru false, nu doar absente.
     assert body["google_ads_connected"] is False
     assert body["meta_connected"] is False
     assert body["tiktok_connected"] is False
+    assert body["chatgpt_connected"] is False
 
 
 def test_me_connection_flags_follow_credentials_update(
     client: TestClient, agency_settings: Tenant
 ) -> None:
     """Dupa ce clientul conecteaza DOAR Google, ``/me`` reflecta exact asta -
-    Google trece pe true, Meta/TikTok raman false (interfata foloseste aceste
-    flag-uri pentru insigna "Conectat", nu valoarea in clar)."""
+    Google trece pe true, Meta/TikTok/ChatGPT raman false (interfata foloseste
+    aceste flag-uri pentru insigna "Conectat", nu valoarea in clar)."""
     token = _signup(client)["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
     client.patch(
@@ -189,6 +190,32 @@ def test_me_connection_flags_follow_credentials_update(
     assert body["google_ads_connected"] is True
     assert body["meta_connected"] is False
     assert body["tiktok_connected"] is False
+    assert body["chatgpt_connected"] is False
+
+
+def test_chatgpt_ads_api_key_updates_connection_flag(
+    client: TestClient, agency_settings: Tenant, session: Session
+) -> None:
+    """La fel ca Google/Meta/TikTok - chatgpt_ads_api_key se cripteaza, nu se
+    ecoueaza, si actualizeaza doar flag-ul chatgpt_connected."""
+    token = _signup(client)["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.patch(
+        "/api/v1/me/credentials",
+        headers=headers,
+        json={"chatgpt_ads_api_key": "sk-super-secret"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"updated_fields": ["chatgpt_ads_api_key"]}
+    assert "sk-super-secret" not in response.text
+
+    body = client.get("/api/v1/me", headers=headers).json()
+    assert body["chatgpt_connected"] is True
+    assert body["google_ads_connected"] is False
+
+    account = _get_account(session)
+    assert account.chatgpt_ads_api_key_enc != ""
+    assert "sk-super-secret" not in account.chatgpt_ads_api_key_enc
 
 
 def test_credentials_update_encrypts_and_never_echoes_raw_value(

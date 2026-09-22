@@ -26,7 +26,7 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   title: "AC Media Marketing: PPC gestionat de un agent AI",
   description:
-    "Management PPC pe Google, Meta și TikTok Ads printr-un agent AI cu aprobare umană, plus web design și automatizări AI.",
+    "Management PPC pe Google, Meta, TikTok și ChatGPT Ads printr-un agent AI cu aprobare umană, plus web design și automatizări AI.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

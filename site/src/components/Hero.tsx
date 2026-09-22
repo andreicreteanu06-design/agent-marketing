@@ -29,8 +29,8 @@ export function Hero() {
             className="mt-6 max-w-lg text-lg leading-relaxed text-foreground-muted"
           >
             Un agent AI mută zilnic bugetul spre campania care chiar
-            convertește, pe Google, Meta și TikTok Ads, cu aprobare umană
-            înainte de orice schimbare.
+            convertește, pe Google, Meta, TikTok și ChatGPT Ads, cu aprobare
+            umană înainte de orice schimbare.
           </motion.p>
           <motion.div
             initial={{ opacity: 0, y: 24 }}

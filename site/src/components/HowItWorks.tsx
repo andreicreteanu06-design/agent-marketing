@@ -8,7 +8,7 @@ const STEPS = [
   {
     n: "01",
     title: "Conectezi conturile",
-    body: "Google Ads, Meta Ads, TikTok Ads. Datele tale de performanță, nu un cont demo.",
+    body: "Google Ads, Meta Ads, TikTok Ads, ChatGPT Ads. Datele tale de performanță, nu un cont demo.",
   },
   {
     n: "02",

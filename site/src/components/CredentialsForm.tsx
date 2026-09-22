@@ -8,6 +8,7 @@ export interface ConnectionStatus {
   google: boolean;
   meta: boolean;
   tiktok: boolean;
+  chatgpt: boolean;
 }
 
 function CredentialField({
@@ -59,6 +60,7 @@ export function CredentialsForm({
   const [googleToken, setGoogleToken] = useState("");
   const [metaToken, setMetaToken] = useState("");
   const [tiktokToken, setTiktokToken] = useState("");
+  const [chatgptKey, setChatgptKey] = useState("");
   const [status, setStatus] = useState(initialStatus);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +77,7 @@ export function CredentialsForm({
     if (googleToken.trim()) payload.google_ads_refresh_token = googleToken.trim();
     if (metaToken.trim()) payload.meta_access_token = metaToken.trim();
     if (tiktokToken.trim()) payload.tiktok_access_token = tiktokToken.trim();
+    if (chatgptKey.trim()) payload.chatgpt_ads_api_key = chatgptKey.trim();
 
     if (Object.keys(payload).length === 0) {
       setError("Completează cel puțin un câmp înainte de a salva.");
@@ -88,12 +91,14 @@ export function CredentialsForm({
         google: prev.google || updated_fields.includes("google_ads_refresh_token"),
         meta: prev.meta || updated_fields.includes("meta_access_token"),
         tiktok: prev.tiktok || updated_fields.includes("tiktok_access_token"),
+        chatgpt: prev.chatgpt || updated_fields.includes("chatgpt_ads_api_key"),
       }));
       // Cheia introdusa nu ramane in state-ul paginii mai mult decat strict
       // necesar pentru submit - golita imediat dupa succes.
       setGoogleToken("");
       setMetaToken("");
       setTiktokToken("");
+      setChatgptKey("");
       setSuccessMessage("Salvat. Cheile sunt criptate imediat, nu rămân în clar nicăieri.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Ceva nu a mers bine. Încearcă din nou.");
@@ -143,6 +148,20 @@ export function CredentialsForm({
           onChange={(e) => setTiktokToken(e.target.value)}
           disabled={submitting}
         />
+        <div>
+          <CredentialField
+            label="ChatGPT (OpenAI Ads): Cheie API"
+            placeholder="sk-..."
+            connected={status.chatgpt}
+            value={chatgptKey}
+            onChange={(e) => setChatgptKey(e.target.value)}
+            disabled={submitting}
+          />
+          <p className="mt-1.5 text-xs text-foreground-muted">
+            O salvăm criptat de-acum, dar reclamele ChatGPT nu rulează încă -
+            OpenAI dă acces la API doar partenerilor aprobați.
+          </p>
+        </div>
       </div>
 
       {error && (

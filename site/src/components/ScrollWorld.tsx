@@ -68,7 +68,7 @@ export function ScrollWorld() {
           eyebrow: "AC Media",
           title: "Un agent AI care îți crește afacerea.",
           body: "Kelly și Thompson Sampling decid zilnic unde merge bugetul. Tu aprobi fiecare schimbare.",
-          tags: ["Google Ads", "Meta Ads", "TikTok Ads"],
+          tags: ["Google Ads", "Meta Ads", "TikTok Ads", "ChatGPT Ads"],
         },
         {
           id: "ppc",
@@ -81,7 +81,7 @@ export function ScrollWorld() {
           scroll: 1.4,
           eyebrow: "Management PPC",
           title: "Bugetul merge unde convertește.",
-          body: "Recalculare zilnică pe date reale de conversie, pe Google, Meta și TikTok Ads.",
+          body: "Recalculare zilnică pe date reale de conversie, pe Google, Meta, TikTok și ChatGPT Ads.",
           tags: ["Thompson Sampling", "Aprobare umană"],
         },
         {

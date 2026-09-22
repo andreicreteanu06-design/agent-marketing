@@ -122,17 +122,17 @@ export function ProductFeedConverter() {
           <h2 className="text-lg font-semibold text-foreground">1. Încarcă catalogul</h2>
         </div>
         <p className="mt-2 text-sm text-foreground-muted">
-          Un export CSV sau XML din magazinul tău (Shopify, WooCommerce sau orice
+          Un export din magazinul tău (Shopify, WooCommerce, Excel sau orice
           altă sursă) - coloanele pot avea orice denumire, le potrivim la pasul
           următor.
         </p>
         <label className="mt-5 flex cursor-pointer items-center justify-center gap-2 rounded-full bg-brand-blue px-6 py-3.5 text-sm font-semibold text-white transition-transform hover:scale-[1.01] active:scale-[0.99]">
           <FileArrowUp size={16} weight="bold" />
-          Alege fișier (.csv / .xml)
+          Alege fișier (.csv, .tsv, .xml, .xlsx, .xls, .ods)
           <input
             ref={fileInputRef}
             type="file"
-            accept=".csv,.xml"
+            accept=".csv,.tsv,.xml,.xlsx,.xls,.ods"
             onChange={handleFileChange}
             className="hidden"
           />

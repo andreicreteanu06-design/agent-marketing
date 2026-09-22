@@ -198,6 +198,7 @@ class ClientMeResponse(BaseModel):
     google_ads_connected: bool
     meta_connected: bool
     tiktok_connected: bool
+    chatgpt_connected: bool
 
 
 class ClientCredentialsUpdate(BaseModel):
@@ -206,11 +207,17 @@ class ClientCredentialsUpdate(BaseModel):
     Doar campurile trimise se cripteaza si se salveaza (acelasi pattern ca
     ``ClientAccountUpdate``) - niciun camp nu e obligatoriu, clientul isi
     conecteaza conturile pe rand, pe masura ce le are.
+
+    ``chatgpt_ads_api_key`` alimenteaza ``ClientAccount.chatgpt_ads_api_key_enc``
+    (vezi models.py) - folosit azi doar de stocare; ``LiveGenerativeEngineProvider``
+    (ppc_agent/providers/live/__init__.py) ramane stub pana la acces de
+    partener OpenAI aprobat, deci cheia nu declanseaza inca niciun apel real.
     """
 
     google_ads_refresh_token: str | None = None
     meta_access_token: str | None = None
     tiktok_access_token: str | None = None
+    chatgpt_ads_api_key: str | None = None
 
 
 class ClientCredentialsUpdateResponse(BaseModel):

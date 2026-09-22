@@ -31,7 +31,7 @@ export const SERVICES: ServiceDetail[] = [
     eyebrow: "Serviciu 01",
     title: "Management PPC cu agent AI",
     cardBody: [
-      "Alocare de buget prin Thompson Sampling, dimensionare Kelly Criterion după ROAS și monitorizare a oboselii creative, pe Google, Meta și TikTok Ads.",
+      "Alocare de buget prin Thompson Sampling, dimensionare Kelly Criterion după ROAS și monitorizare a oboselii creative, pe Google, Meta, TikTok și ChatGPT Ads.",
       "Fiecare modificare trece printr-o poartă de aprobare umană înainte să ajungă pe cont. Nimic nu se schimbă singur, fără confirmarea ta.",
     ],
     subtitle:
@@ -39,7 +39,7 @@ export const SERVICES: ServiceDetail[] = [
     howItWorks: [
       {
         title: "Conectezi conturile",
-        body: "Google Ads, Meta Ads și TikTok Ads se conectează o singură dată, prin chei API criptate. Agentul citește performanța la nivel de campanie și creativă.",
+        body: "Google Ads, Meta Ads, TikTok Ads și acum ChatGPT Ads se conectează o singură dată, prin chei API criptate. Agentul citește performanța la nivel de campanie și creativă.",
       },
       {
         title: "Agentul propune, tu aprobi",
@@ -60,8 +60,8 @@ export const SERVICES: ServiceDetail[] = [
         body: "Nimic nu se schimbă pe cont fără aprobarea ta explicită.",
       },
       {
-        title: "Un singur loc pentru trei canale",
-        body: "Google, Meta și TikTok Ads gestionate din aceeași logică, nu trei instrumente separate.",
+        title: "Un singur loc pentru toate canalele",
+        body: "Google, Meta, TikTok și ChatGPT Ads gestionate din aceeași logică, nu instrumente separate.",
       },
     ],
   },

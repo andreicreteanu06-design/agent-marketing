@@ -105,6 +105,7 @@ export function AccountDashboard() {
             google: session.me.google_ads_connected,
             meta: session.me.meta_connected,
             tiktok: session.me.tiktok_connected,
+            chatgpt: session.me.chatgpt_connected,
           }}
         />
       </RevealSection>
@@ -145,7 +146,7 @@ export function AccountDashboard() {
             <div>
               <p className="text-sm font-semibold text-foreground">Convertor produse ChatGPT</p>
               <p className="text-sm text-foreground-muted">
-                Catalogul tău (CSV/XML), transformat în formatul ChatGPT Shopping.
+                Catalogul tău (CSV, Excel, XML), transformat în formatul ChatGPT Shopping.
               </p>
             </div>
           </div>

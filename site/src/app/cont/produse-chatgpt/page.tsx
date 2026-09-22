@@ -26,7 +26,8 @@ export default function ProductFeedPage() {
           Convertor produse pentru ChatGPT
         </h1>
         <p className="mt-3 text-base text-foreground-muted">
-          Încarcă catalogul tău (CSV sau XML, orice coloane) și primești înapoi
+          Încarcă catalogul tău (CSV, TSV, XML, Excel sau OpenDocument, orice
+          coloane) și primești înapoi
           un fișier în formatul cerut de ChatGPT Shopping - gata de trimis când
           ai acces la programul OpenAI pentru comercianți.
         </p>

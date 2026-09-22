@@ -153,6 +153,7 @@ def read_me(
         google_ads_connected=bool(account.google_ads_refresh_token_enc),
         meta_connected=bool(account.meta_access_token_enc),
         tiktok_connected=bool(account.tiktok_access_token_enc),
+        chatgpt_connected=bool(account.chatgpt_ads_api_key_enc),
     )
 
 
