@@ -163,27 +163,34 @@ h3 {
   animation: heading-glow-move 4.5s ease-in-out infinite;
 }
 
+/* em, nu px: blur-ul vechi (30-66px fix) depasea inaltimea literelor la orice
+   marime de titlu folosita pe site (36-48px) - umbrele literelor adiacente se
+   contopeau intr-un bloc opac in loc sa citeasca a glow (bug vizual real,
+   reprodus si raportat - vezi conversatia). Blur/offset in em scaleaza cu
+   font-size-ul titlului curent (mostenit ca px calculat de copii, corect);
+   opacitatea redusa (~25-45%, nu 40-68%) pastreaza silueta literelor vizibila
+   prin glow, in loc s-o acopere. */
 @keyframes heading-glow-move {
   0%,
   100% {
     text-shadow:
-      -8px 0 30px color-mix(in srgb, var(--brand-cyan) 55%, transparent),
-      8px 3px 60px color-mix(in srgb, var(--brand-blue) 40%, transparent);
+      -0.08em 0 0.35em color-mix(in srgb, var(--brand-cyan) 40%, transparent),
+      0.08em 0.03em 0.55em color-mix(in srgb, var(--brand-blue) 28%, transparent);
   }
   25% {
     text-shadow:
-      8px -4px 34px color-mix(in srgb, var(--brand-cyan) 65%, transparent),
-      -7px 4px 66px color-mix(in srgb, var(--brand-blue) 44%, transparent);
+      0.08em -0.04em 0.4em color-mix(in srgb, var(--brand-cyan) 45%, transparent),
+      -0.07em 0.04em 0.6em color-mix(in srgb, var(--brand-blue) 30%, transparent);
   }
   50% {
     text-shadow:
-      5px 4px 30px color-mix(in srgb, var(--brand-blue) 62%, transparent),
-      -8px -3px 58px color-mix(in srgb, var(--brand-cyan) 36%, transparent);
+      0.05em 0.04em 0.35em color-mix(in srgb, var(--brand-blue) 42%, transparent),
+      -0.08em -0.03em 0.5em color-mix(in srgb, var(--brand-cyan) 25%, transparent);
   }
   75% {
     text-shadow:
-      -7px -4px 32px color-mix(in srgb, var(--brand-blue) 68%, transparent),
-      7px 3px 64px color-mix(in srgb, var(--brand-cyan) 42%, transparent);
+      -0.07em -0.04em 0.38em color-mix(in srgb, var(--brand-blue) 46%, transparent),
+      0.07em 0.03em 0.58em color-mix(in srgb, var(--brand-cyan) 28%, transparent);
   }
 }
 
