@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 from ppc_agent.config import Settings
 from ppc_agent.search_data.serp_tracker import OpenSerpProvider, SerpCheck
 from ppc_agent_server.db import get_engine
+from ppc_agent_server.jobs.autonomous_evaluator import run_autonomous_evaluations
 from ppc_agent_server.models import ClientAccount, SerpPosition, SerpSource, TrackedKeyword
 
 logger = logging.getLogger("ppc_agent_server.jobs.serp_sync")
@@ -76,7 +77,11 @@ def _to_row(client_account_id: int, check: SerpCheck, checked_on: datetime) -> S
 
 
 def run_serp_sync_job(
-    *, client_account_id: int, max_keywords: int = 200, sleep_between: bool = True
+    *,
+    client_account_id: int,
+    max_keywords: int = 200,
+    sleep_between: bool = True,
+    evaluate_after: bool = True,
 ) -> dict[str, Any]:
     """Verifica pozitiile pentru cuvintele active ale unui client si le salveaza.
 
@@ -85,6 +90,8 @@ def run_serp_sync_job(
             ramase se verifica la rularea urmatoare.
         sleep_between: ``False`` doar in teste - pauzele cu jitter sunt exact
             ce face job-ul asta sigur in productie.
+        evaluate_after: inlantuie evaluatorul autonom dupa o sincronizare
+            REUSITA. Pus pe ``False`` doar cand vrei sincronizarea singura.
 
     Returns:
         Un rezumat cu ce s-a verificat, ce s-a salvat si de ce s-a oprit.
@@ -158,13 +165,32 @@ def run_serp_sync_job(
 
         session.commit()
 
-    return {
+    result: dict[str, Any] = {
         "client_account_id": client_account_id,
         "keywords_total": len(keywords),
         "checked": checked,
         "saved": saved,
         "halted": halted_reason,
     }
+
+    # Inlantuirea: date proaspete -> evaluare -> propuneri. Doar dupa o rulare
+    # REUSITA. Pe un crawl oprit de blocare sau de un OpenSERP mort, pozitiile
+    # sunt partiale, iar o evaluare pe ele ar propune pauze pornind de la
+    # jumatate de tablou - exact genul de "automatizare increzatoare" care
+    # strica un cont. Evaluatorul nu atinge niciun API de reclame; scrie doar
+    # propuneri in asteptare (vezi autonomous_evaluator.py).
+    if evaluate_after and not halted_reason:
+        result["evaluation"] = asyncio.run(
+            run_autonomous_evaluations(client_account_id=client_account_id)
+        )
+    elif evaluate_after:
+        logger.info(
+            "[tura de noapte] sar peste evaluarea clientului %s: sincronizarea s-a "
+            "oprit (%s), deci pozitiile sunt incomplete.",
+            client_account_id,
+            halted_reason,
+        )
+    return result
 
 
 def run_serp_sync_all_clients(*, sleep_between: bool = True) -> dict[str, Any]:
