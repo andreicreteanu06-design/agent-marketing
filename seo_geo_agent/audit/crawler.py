@@ -26,7 +26,10 @@ from seo_geo_agent.audit.url_utils import normalize_url
 
 logger = logging.getLogger("seo_geo_agent.audit.crawler")
 
-_MAX_HTML_BYTES = 1024 * 1024
+#: Plafonul de octeti cititi dintr-o pagina. Public fiindca il refoloseste si
+#: crawler-ul live al agentului PPC (``ppc_agent/providers/live/crawler.py``):
+#: aceeasi limita, nu doua valori care pot diverge.
+MAX_HTML_BYTES = 1024 * 1024
 _REQUEST_TIMEOUT_SECONDS = 15.0
 
 #: Semne ale unei pagini de provocare anti-bot. Le clasificam onest ca
@@ -78,7 +81,7 @@ def parse_link_header_canonical(link_header: str | None, page_url: str) -> str |
     return None
 
 
-async def _read_text_up_to(response: httpx.Response, max_bytes: int) -> tuple[str, int]:
+async def read_text_up_to(response: httpx.Response, max_bytes: int) -> tuple[str, int]:
     """Citeste corpul raspunsului pana la ``max_bytes``; intoarce textul si octetii cititi.
 
     Plafonul exista pentru ca primul MiB contine oricum metadatele SEO si
@@ -179,7 +182,7 @@ async def crawl_page(
         is_html = "text/html" in (response.headers.get("content-type") or "")
         try:
             body, html_bytes = (
-                await _read_text_up_to(response, _MAX_HTML_BYTES) if is_html else ("", 0)
+                await read_text_up_to(response, MAX_HTML_BYTES) if is_html else ("", 0)
             )
         except httpx.HTTPError as exc:
             logger.warning("citirea corpului a esuat pentru %s: %s", url, exc)

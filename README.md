@@ -15,7 +15,8 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 > mai jos), la fel ca [clientul LLM (Ollama local)](#client-llm-live-ollama-local).
 > `execute` ramane **intotdeauna simulat** (`applied=False`), indiferent de
 > `--confirm` — scrierea reala pe conturi ramane un pas viitor, deliberat
-> separat. Crawler/GSC/GBP/Keyword Planner (Modulul 1) si Fish Speech/Flick
+> separat. Crawler-ul (Modulul 1) e real — ruleaza peste motorul de audit din
+> `seo_geo_agent`; GSC/GBP/Keyword Planner (Modulul 1) si Fish Speech/Flick
 > (Modulul 5) raman stub-uri `live`.
 
 ## Stare
@@ -261,7 +262,7 @@ Fiecare furnizor extern are trei parti in `ppc_agent/providers/`:
 |-------|--------|-------|
 | interfata (ABC) | `base.py` | completa |
 | implementare `mock` | `mock/*.py` | completa, deterministica, fara retea |
-| implementare `live` | `live/*.py` | Google/Meta/TikTok **Ads**: reala (citire — vezi mai jos). Crawler/GSC/GBP/Keyword Planner (Modulul 1): stub, ridica `SetupRequiredError` |
+| implementare `live` | `live/*.py` | Google/Meta/TikTok **Ads**: reala (citire + scriere pe Meta — vezi mai jos). Crawler (Modulul 1): real, peste `seo_geo_agent.audit`. GSC/GBP/Keyword Planner: stub, ridica `SetupRequiredError` |
 
 Guardrails-urile din Modulul 4 raman active identic in modul `live`. `execute`
 din **CLI** ramane **intotdeauna simulat** (`applied=False`), indiferent de mod
@@ -269,6 +270,26 @@ sau de `--confirm`. Scrierea reala pe conturi exista doar pe serverul
 multi-tenant, in spatele aprobarii umane din contul clientului
 (`POST /api/v1/proposals/{id}/approve`), si doar pentru Meta — vezi
 "Ce se aplica efectiv la `/approve`" mai jos.
+
+## Crawler live: un singur crawler in tot repo-ul
+
+`LiveCrawlerProvider` (`ppc_agent/providers/live/crawler.py`) nu are crawler
+propriu: importa din `seo_geo_agent.audit` validarea anti-SSRF a tintei
+(`is_crawlable_url`), plafonul de octeti (`MAX_HTML_BYTES`), antetele si
+clasificarea raspunsului (`classify_fetch`). Motivul e simplu — doua crawlere in
+acelasi repo ar insemna doua politici de siguranta care diverg in timp, iar cea
+care ramane in urma e cea care face rau.
+
+Ce traduce adaptorul e doar forma: auditul intoarce o pagina deja analizata
+(`CrawledPage`), pe cand Modulul 1 isi face singur parsarea si are nevoie de
+HTML brut (`FetchResult`) — cauta alte lucruri (CTA-uri, elemente de navigatie,
+candidati de USP), nu aceleasi.
+
+Regula de onestitate a auditului trece si ea neschimbata: cand site-ul ne
+opreste (403, 429, challenge anti-bot), adaptorul ridica `CrawlBlockedError`, nu
+intoarce o pagina goala. Numele clasei ajunge in `PageContext.failure_reason`,
+deci in raport se vede "n-am avut voie sa citesc", nu "pagina n-are continut" —
+doua lucruri foarte diferite pentru Quality Score.
 
 ## Integrare live: Google/Meta/TikTok Ads
 

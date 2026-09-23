@@ -51,6 +51,25 @@ class CrawlTimeoutError(CrawlError):
     """Pagina nu a raspuns in intervalul de timp alocat."""
 
 
+class CrawlBlockedError(CrawlError):
+    """Site-ul ne-a oprit: challenge anti-bot, 403 sau 429.
+
+    Distinct de o pagina stricata, si distinct de un timeout. Regula vine din
+    motorul de audit: cand nu am putut masura, raportul trebuie sa spuna ca nu
+    am putut masura, nu sa inregistreze pagina ca goala. Numele clasei ajunge
+    in ``PageContext.failure_reason``, deci diferenta se vede pana in raport.
+    """
+
+
+class CrawlTargetBlockedError(CrawlError):
+    """URL-ul tinta nu are voie sa fie accesat (adresa privata, schema gresita).
+
+    Protectie SSRF: un URL de landing page vine din datele clientului, deci nu
+    e de incredere. ``http://169.254.169.254/`` nu trebuie sa ajunga niciodata
+    intr-o cerere pornita de noi.
+    """
+
+
 class DecisionError(PpcAgentError):
     """Eroare in motorul matematic de decizie (Modulul 2)."""
 

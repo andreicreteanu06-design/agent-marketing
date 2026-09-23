@@ -3,11 +3,14 @@
 Google/Meta/TikTok Ads (performanta pentru bandit + lichiditate Meta) au
 implementari reale — vezi ``google_ads.py``/``meta.py``/``tiktok.py``, acelasi
 pattern ca :class:`ppc_agent.copywriter.llm.LiveLLMClient` (httpx simplu,
-testabil cu ``httpx.MockTransport``). Restul (crawler, Google Search Console,
-Google Business Profile, Keyword Planner — Modulul 1; Generative Engine Ads —
-vezi mai jos) raman stub-uri: fiecare metoda ridica
-:class:`ppc_agent.errors.SetupRequiredError`, niciun apel de retea nu este
-efectuat.
+testabil cu ``httpx.MockTransport``). Crawler-ul e si el real — vezi
+``crawler.py``, construit peste motorul de audit din ``seo_geo_agent``, ca sa nu
+existe doua crawlere cu doua politici de siguranta in acelasi repo.
+
+Restul (Google Search Console, Google Business Profile, Keyword Planner —
+Modulul 1; Generative Engine Ads — vezi mai jos) raman stub-uri: fiecare metoda
+ridica :class:`ppc_agent.errors.SetupRequiredError`, niciun apel de retea nu
+este efectuat.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 from ppc_agent.errors import SetupRequiredError
 from ppc_agent.providers import base
+from ppc_agent.providers.live.crawler import LiveCrawlerProvider
 from ppc_agent.providers.live.google_ads import LiveGoogleAdsProvider
 from ppc_agent.providers.live.meta import LiveMetaMarketingProvider
 from ppc_agent.providers.live.tiktok import LiveTikTokAdsProvider
@@ -67,22 +71,6 @@ _GENERATIVE_ENGINE_HINT = (
 def _generative_engine_not_ready() -> NoReturn:
     """Ridica intotdeauna :class:`SetupRequiredError` cu detalii specifice OpenAI Ads."""
     raise SetupRequiredError(_GENERATIVE_ENGINE_HINT)
-
-
-class LiveCrawlerProvider(base.CrawlerProvider):
-    """Stub live pentru crawling-ul domeniului.
-
-    Integrarea reala (Playwright cu fallback httpx + BeautifulSoup, plus
-    descarcarea ``robots.txt``) ramane pentru o faza ulterioara.
-    """
-
-    def fetch(self, url: str) -> base.FetchResult:
-        """Nu este disponibil inca — vezi :class:`SetupRequiredError`."""
-        _not_ready()
-
-    def robots_txt(self, base_url: str) -> str | None:
-        """Nu este disponibil inca — vezi :class:`SetupRequiredError`."""
-        _not_ready()
 
 
 class LiveGscProvider(base.GscProvider):
