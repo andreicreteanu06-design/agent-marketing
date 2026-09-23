@@ -2,27 +2,35 @@
 
 Ultimul pas al portii HITL: pana aici totul e propunere, de aici incolo se
 schimba ceva real intr-un cont pe care clientul plateste bani. De asta modulul
-are doua reguli pe care nu le incalca:
+are trei reguli pe care nu le incalca:
 
 1. **Executa doar din ``PENDING``.** O propunere deja executata, respinsa sau
    picata nu se re-executa: un dublu-click pe butonul de aprobare nu trebuie sa
    dubleze o schimbare de buget.
-2. **Nu ghiceste niciodata cum se aplica ceva.** Fiecare tip de resursa are un
-   executor declarat explicit (:data:`EXECUTORS`). Un tip fara executor NU se
-   aplica "pe aproape" - propunerea pica cu un mesaj care spune ce lipseste.
+2. **Nu ghiceste niciodata cum se aplica ceva.** Fiecare resursa se rezolva
+   intai intr-un :class:`ResourceTarget` (platforma + tip de obiect + id), si
+   doar perechile din :data:`EXECUTORS` se aplica. Ce nu e acolo NU se aplica
+   "pe aproape" - pica explicit cu :class:`NoExecutorError`.
+3. **Nu trimite un id catre platforma gresita.** Propunerile din motorul hibrid
+   (``ppc_keyword``/``keyword_budget``) poarta un TERMEN DE CAUTARE Google Ads,
+   nu un id de obiect Meta. Trimis la Graph API, "service auto" ar fi un id
+   invalid in cel mai bun caz si un obiect strain in cel mai rau. Rezolvarea
+   marcheaza explicit platforma fiecarei resurse, tocmai ca asta sa nu se poata
+   intampla - vezi :func:`resolve_target`.
 
 Modulul nu stie nimic despre HTTP si nici despre SQLModel: primeste obiectul
-propunerii si un provider capabil de mutatii, si intoarce ce s-a intamplat. Persistenta
-o face apelantul (vezi ``ppc_agent_server/routers/proposals.py``).
+propunerii si un provider capabil de mutatii, si intoarce ce s-a intamplat.
+Persistenta o face apelantul (vezi ``ppc_agent_server/routers/proposals.py``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from ppc_agent.errors import PpcAgentError
 
@@ -34,7 +42,7 @@ class ProposalNotExecutableError(PpcAgentError):
 
 
 class NoExecutorError(PpcAgentError):
-    """Nu exista executor pentru tipul de resursa al propunerii.
+    """Nu stim sa aplicam aceasta propunere.
 
     Distinct de o eroare a platformei: aici nu platforma a refuzat, ci NOI nu
     stim sa aplicam acest tip de schimbare. Mesajul o spune ca atare, ca omul
@@ -42,16 +50,26 @@ class NoExecutorError(PpcAgentError):
     """
 
 
-class MutationProvider(Protocol):
-    """Ce trebuie sa stie faca un provider ca sa poata aplica o propunere.
+#: Platformele pe care le poate tinti o propunere. Sirurile astea ajung si in
+#: ``routers/proposals.py``, care alege providerul dupa ele.
+PLATFORM_META = "meta"
+PLATFORM_GOOGLE_ADS = "google_ads"
+PLATFORM_TIKTOK = "tiktok"
 
-    Deliberat mai ingusta decat ``providers.base.BaseMarketingProvider``: aici
-    ne trebuie strict cele doua mutatii, iar un dublu ingust se scrie intr-un
-    test fara sa implementeze si ``get_campaign_metrics``.
+
+class MetaMutationProvider(Protocol):
+    """Ce trebuie sa stie face un provider Meta ca sa poata aplica o propunere.
+
+    Deliberat mai ingusta decat ``providers.base.MetaMarketingProvider``: aceea
+    e un contract de CITIRE, cablat in Modulele 2 si 3, si nu se schimba pentru
+    asta. Aici ne trebuie strict mutatiile, iar un dublu ingust se scrie
+    intr-un test fara sa implementeze si ``ad_sets``/``campaign_performance``.
     """
 
-    def pause_ad(self, ad_id: str) -> None: ...
-    def scale_budget(self, campaign_id: str, new_daily_budget: Decimal) -> None: ...
+    async def pause_campaign(self, campaign_id: str) -> None: ...
+    async def pause_adset(self, adset_id: str) -> None: ...
+    async def pause_ad(self, ad_id: str) -> None: ...
+    async def update_budget(self, object_id: str, new_daily_budget: Decimal) -> None: ...
 
 
 class ExecutableProposal(Protocol):
@@ -68,6 +86,15 @@ class ExecutableProposal(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ResourceTarget:
+    """Unde bate efectiv o propunere: ce platforma, ce fel de obiect, ce id."""
+
+    platform: str
+    kind: str
+    object_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionResult:
     """Ce s-a intamplat cu o executie. ``error`` e gol doar cand a reusit."""
 
@@ -76,43 +103,164 @@ class ExecutionResult:
     error: str = ""
 
 
-#: Cum se aplica fiecare tip de resursa: primeste providerul si propunerea, si
-#: face schimbarea reala. Intoarce descrierea a ce s-a facut.
-Executor = Callable[[MutationProvider, ExecutableProposal], str]
+#: Prefixul resursei spune platforma si tipul obiectului. Numele vin din
+#: ``guardrails/pipeline.py``, care le construieste - nu inventa altele aici
+#: fara sa le schimbi si acolo.
+_RESOURCE_PREFIXES: dict[str, tuple[str, str]] = {
+    "meta_campaign/": (PLATFORM_META, "campaign"),
+    "meta_ad_set/": (PLATFORM_META, "ad_set"),
+    "meta_ad/": (PLATFORM_META, "ad"),
+    "campaign/": (PLATFORM_GOOGLE_ADS, "campaign"),
+    "tiktok_ad_group/": (PLATFORM_TIKTOK, "ad_group"),
+    "negative_keyword/": (PLATFORM_GOOGLE_ADS, "negative_keyword"),
+}
+
+#: ``ad_set_group/{merged_id}`` (consolidarile de lichiditate, Modulul 3) are
+#: acelasi ``resource_type`` ca un set de reclame real, dar id-ul e SINTETIZAT
+#: de noi - nu exista asa ceva in contul Meta. Il oprim pe nume, nu pe tip.
+_MERGED_AD_SET_PREFIX = "ad_set_group/"
+
+#: Tipurile fara prefix in resursa: acolo ``resource`` e chiar termenul de
+#: cautare / cuvantul cheie, iar platforma e Google Ads (motorul hibrid si
+#: unealta MCP produc numai asta).
+_TYPES_WITHOUT_PREFIX: dict[str, tuple[str, str]] = {
+    "ppc_keyword": (PLATFORM_GOOGLE_ADS, "keyword"),
+    "keyword_budget": (PLATFORM_GOOGLE_ADS, "keyword"),
+}
 
 
-def _execute_keyword_change(
-    provider: MutationProvider, proposal: ExecutableProposal
-) -> str:
-    """Pauza sau schimbare de buget pe o resursa de cautare platita."""
-    if proposal.op == "PAUSE":
-        provider.pause_ad(proposal.resource)
-        return f"pauza aplicata pe '{proposal.resource}'"
-    if proposal.op == "UPDATE":
-        provider.scale_budget(proposal.resource, proposal.projected_daily_spend)
-        return (
-            f"buget zilnic actualizat pe '{proposal.resource}' la "
-            f"{proposal.projected_daily_spend}"
+def resolve_target(proposal: ExecutableProposal) -> ResourceTarget:
+    """Spune pe ce platforma si pe ce obiect bate ``proposal``.
+
+    Args:
+        proposal: Propunerea de aplicat.
+
+    Returns:
+        :class:`ResourceTarget` cu platforma, tipul obiectului si id-ul curat
+        (fara prefix).
+
+    Raises:
+        NoExecutorError: resursa nu se poate adresa pe nicio platforma.
+
+    Functie pura - apelantul o poate folosi ca sa aleaga providerul INAINTE de
+    a incepe executia.
+    """
+    resource = proposal.resource.strip()
+    for prefix, (platform, kind) in _RESOURCE_PREFIXES.items():
+        if resource.startswith(prefix):
+            object_id = resource[len(prefix) :].strip()
+            if not object_id:
+                raise NoExecutorError(
+                    f"resursa '{resource}' nu contine niciun id dupa prefix"
+                )
+            return ResourceTarget(platform=platform, kind=kind, object_id=object_id)
+
+    if resource.startswith(_MERGED_AD_SET_PREFIX):
+        raise NoExecutorError(
+            f"'{resource}' e o consolidare propusa, nu un set de reclame existent: "
+            "id-ul e sintetizat de noi, nu exista in contul Meta. Consolidarea se "
+            "face manual in Ads Manager."
         )
+
+    platform_kind = _TYPES_WITHOUT_PREFIX.get(proposal.resource_type)
+    if platform_kind is not None:
+        return ResourceTarget(
+            platform=platform_kind[0], kind=platform_kind[1], object_id=resource
+        )
+
     raise NoExecutorError(
-        f"operatia '{proposal.op}' nu are executor - se aplica manual in platforma"
+        f"nu stiu ce obiect desemneaza resursa '{resource}' "
+        f"(tip '{proposal.resource_type}') - aplic-o manual in platforma."
     )
 
 
-#: Registrul de executori, pe tip de resursa. Un tip care nu e aici NU se aplica
-#: "pe aproape" - pica explicit cu :class:`NoExecutorError`.
-EXECUTORS: dict[str, Executor] = {
-    "ppc_keyword": _execute_keyword_change,
-    "keyword_budget": _execute_keyword_change,
+#: Cum se aplica o pereche (platforma, tip de obiect). Primeste providerul,
+#: propunerea si tinta rezolvata; intoarce descrierea a ce s-a facut.
+#: ``Coroutine``, nu ``Awaitable``: ``asyncio.run`` primeste strict corutine, iar
+#: fiecare executor e o functie ``async def``.
+Executor = Callable[
+    [MetaMutationProvider, ExecutableProposal, ResourceTarget], Coroutine[Any, Any, str]
+]
+
+
+async def _update_meta_budget(
+    provider: MetaMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> str:
+    await provider.update_budget(target.object_id, proposal.projected_daily_spend)
+    return (
+        f"buget zilnic actualizat pe {target.kind} Meta {target.object_id} la "
+        f"{proposal.projected_daily_spend}"
+    )
+
+
+def _unsupported_op(
+    proposal: ExecutableProposal, target: ResourceTarget
+) -> NoExecutorError:
+    return NoExecutorError(
+        f"operatia '{proposal.op}' nu are executor pentru {target.kind} pe "
+        f"{target.platform} - se aplica manual in platforma"
+    )
+
+
+async def _execute_meta_campaign(
+    provider: MetaMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> str:
+    if proposal.op == "PAUSE":
+        await provider.pause_campaign(target.object_id)
+        return f"campanie Meta {target.object_id} pusa pe pauza"
+    if proposal.op == "UPDATE":
+        return await _update_meta_budget(provider, proposal, target)
+    raise _unsupported_op(proposal, target)
+
+
+async def _execute_meta_ad_set(
+    provider: MetaMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> str:
+    if proposal.op == "PAUSE":
+        await provider.pause_adset(target.object_id)
+        return f"set de reclame Meta {target.object_id} pus pe pauza"
+    if proposal.op == "UPDATE":
+        return await _update_meta_budget(provider, proposal, target)
+    raise _unsupported_op(proposal, target)
+
+
+async def _execute_meta_ad(
+    provider: MetaMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> str:
+    if proposal.op == "PAUSE":
+        await provider.pause_ad(target.object_id)
+        return f"anunt Meta {target.object_id} pus pe pauza"
+    raise _unsupported_op(proposal, target)
+
+
+#: Registrul de executori, pe (platforma, tip de obiect). O pereche care nu e
+#: aici NU se aplica - pica explicit cu :class:`NoExecutorError`.
+#:
+#: Google Ads si TikTok lipsesc DELIBERAT: ``GoogleAdsProvider`` si
+#: ``TikTokAdsProvider`` sunt contracte de citire, fara nicio metoda de mutatie
+#: si fara implementare in spate. Pana cand capata una, propunerile lor raman
+#: in asteptare cu un mesaj care spune exact asta, in loc sa fie trimise la
+#: Graph API-ul Meta doar fiindca ala e singurul provider care stie sa scrie.
+EXECUTORS: dict[tuple[str, str], Executor] = {
+    (PLATFORM_META, "campaign"): _execute_meta_campaign,
+    (PLATFORM_META, "ad_set"): _execute_meta_ad_set,
+    (PLATFORM_META, "ad"): _execute_meta_ad,
 }
 
 
 def execute_proposal(
-    proposal: ExecutableProposal, provider: MutationProvider, *, current_status: str
+    proposal: ExecutableProposal,
+    provider: MetaMutationProvider,
+    *,
+    current_status: str,
 ) -> ExecutionResult:
     """Aplica ``proposal`` pe platforma reala si spune ce s-a intamplat.
 
     Args:
+        proposal: Propunerea de aplicat.
+        provider: Providerul platformei pe care bate propunerea. Apelantul il
+            alege dupa :func:`resolve_target`, deci trebuie sa fie al aceleiasi
+            platforme - motorul nu il poate verifica.
         current_status: starea propunerii inainte de executie. Se primeste
             explicit ca motorul sa nu depinda de enum-ul de persistenta.
 
@@ -122,36 +270,46 @@ def execute_proposal(
 
     Raises:
         ProposalNotExecutableError: propunerea nu e in ``pending``.
-        NoExecutorError: tipul de resursa nu are executor.
+        NoExecutorError: resursa nu se poate adresa, sau perechea
+            (platforma, tip) nu are executor.
 
     Cele doua exceptii sunt RIDICATE, nu intoarse ca rezultat: amandoua inseamna
     ca executia nici nu a inceput, deci propunerea trebuie sa ramana neatinsa,
     nu marcata ca picata.
+
+    Functia e SINCRONA desi providerele scriu async: e puntea catre stratul de
+    rute/joburi, care e sincron (la fel ca
+    ``search_data/serp_tracker.py::check_rankings_sync``). De evitat apelarea
+    ei dintr-o bucla de evenimente deja pornita - ``asyncio.run`` ar crapa
+    acolo; in cod async, cheama direct metodele providerului.
     """
     if current_status != "pending":
         raise ProposalNotExecutableError(
             f"doar propunerile in asteptare se pot executa (aceasta e '{current_status}')"
         )
 
-    executor = EXECUTORS.get(proposal.resource_type)
+    target = resolve_target(proposal)
+    executor = EXECUTORS.get((target.platform, target.kind))
     if executor is None:
         raise NoExecutorError(
-            f"nu exista executor pentru tipul de resursa '{proposal.resource_type}'. "
-            "Propunerea ramane in asteptare - aplic-o manual in platforma."
+            f"nu exista inca un provider care sa aplice schimbari de tip "
+            f"'{target.kind}' pe {target.platform}. Propunerea ramane in "
+            "asteptare - aplic-o manual in platforma."
         )
 
     try:
-        detail = executor(provider, proposal)
+        detail = asyncio.run(executor(provider, proposal, target))
     except NoExecutorError:
         raise
     except Exception as exc:
-        # Orice esec al platformei (token expirat, resursa stearsa, retea) devine
-        # un rezultat, nu o exceptie: propunerea trebuie marcata FAILED cu motiv,
-        # ca omul sa stie daca reincercarea are sens.
+        # Orice esec al platformei (token expirat, obiect sters, buget sub minim,
+        # retea) devine un rezultat, nu o exceptie: propunerea trebuie marcata
+        # FAILED cu motiv, ca omul sa stie daca reincercarea are sens.
         logger.warning(
-            "executie esuata pentru '%s' (%s): %s: %s",
+            "executie esuata pentru '%s' (%s/%s): %s: %s",
             proposal.resource,
-            proposal.resource_type,
+            target.platform,
+            target.kind,
             type(exc).__name__,
             exc,
         )

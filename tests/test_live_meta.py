@@ -5,6 +5,10 @@ Foloseste ``httpx.MockTransport`` (acelasi pattern ca ``test_llm_live.py``).
 
 from __future__ import annotations
 
+import asyncio
+from decimal import Decimal
+from urllib.parse import parse_qsl
+
 import httpx
 import pytest
 
@@ -191,3 +195,124 @@ def test_conversion_paths_single_touch_fallback() -> None:
     paths = provider.conversion_paths("act_999")
     assert len(paths) == 5
     assert sum(1 for p in paths if p[-1] == "conversion") == 2
+
+
+# --- mutatii (scriere) ------------------------------------------------------
+#
+# Aici se schimba ceva real intr-un cont platit, deci testele merg pe transportul
+# httpx (MockTransport), nu pe metode inlocuite: asa trece si constructia URL-ului,
+# si serializarea corpului, si tratarea codului de raspuns.
+
+_MUTATION_URL = "https://graph.facebook.com/v25.0/23848"
+
+
+def _run(coro: object) -> object:
+    return asyncio.run(coro)  # type: ignore[arg-type]
+
+
+def test_pause_adset_posts_paused_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == _MUTATION_URL
+        assert request.headers["authorization"] == "Bearer token-123"
+        assert dict(parse_qsl(request.content.decode())) == {"status": "PAUSED"}
+        return httpx.Response(200, json={"success": True})
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    _run(provider.pause_adset("23848"))
+
+
+def test_update_budget_sends_minor_units() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert dict(parse_qsl(request.content.decode())) == {"daily_budget": "2550"}
+        return httpx.Response(200, json={"success": True})
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    _run(provider.update_budget("23848", Decimal("25.50")))
+
+
+def test_update_budget_does_not_multiply_zero_decimal_currencies() -> None:
+    """Pe HUF, x100 ar trimite un buget de 100 de ori mai mare."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert dict(parse_qsl(request.content.decode())) == {"daily_budget": "2550"}
+        return httpx.Response(200, json={"success": True})
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", currency="HUF", transport=httpx.MockTransport(handler)
+    )
+    _run(provider.update_budget("23848", Decimal("2550")))
+
+
+def test_negative_budget_never_reaches_the_api() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("nu ar trebui sa faca niciun apel HTTP")
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(ProviderError, match="negativ"):
+        _run(provider.update_budget("23848", Decimal("-1")))
+
+
+def test_empty_object_id_never_reaches_the_api() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("nu ar trebui sa faca niciun apel HTTP")
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(ProviderError, match="gol"):
+        _run(provider.pause_campaign("   "))
+
+
+def test_mutation_without_token_makes_no_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("nu ar trebui sa faca niciun apel HTTP")
+
+    provider = LiveMetaMarketingProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(SetupRequiredError):
+        _run(provider.pause_adset("23848"))
+
+
+def test_meta_rejection_keeps_its_own_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": {"message": "Invalid parameter", "code": 100}}
+        )
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(ProviderError, match="Invalid parameter"):
+        _run(provider.pause_adset("23848"))
+
+
+def test_expired_token_is_setup_not_provider_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401, json={"error": {"message": "Session has expired", "code": 190}}
+        )
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(SetupRequiredError, match="reconecteaza"):
+        _run(provider.pause_adset("23848"))
+
+
+def test_error_in_a_200_body_is_not_success() -> None:
+    """Graph API poate raspunde 200 cu "error" in corp - nu e o schimbare aplicata."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": {"message": "Nothing changed", "code": 2}})
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(ProviderError, match="Nothing changed"):
+        _run(provider.pause_adset("23848"))

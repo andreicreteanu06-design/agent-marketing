@@ -7,6 +7,7 @@ simplu, ``transport`` injectabil pentru teste deterministe. Fara SDK-ul oficial
 
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import httpx
@@ -23,6 +24,39 @@ _MAX_PAGES = 20
 # error.code 190 = OAuthException (token expirat/revocat/invalid) - documentat
 # de Meta ca eroare de autentificare, nu de continut al cererii.
 _AUTH_ERROR_CODES = frozenset({190})
+
+# Meta primeste bugetele in unitatea MINIMA a monedei contului: pentru
+# RON/EUR/USD aia e banul/centul (x100), dar pentru monedele de mai jos unitatea
+# minima E moneda insasi (x1). Inmultirea oarba cu 100 ar trimite un buget de 100
+# de ori mai mare - de-asta factorul e parametru, nu constanta.
+#
+# Lista acopera monedele uzuale fara subunitate. Sursa de adevar ramane Meta:
+# fiecare moneda are un "offset" propriu (GET /{version}/currencies), iar HUF e
+# cazul care arata de ce nu ne putem lua dupa ISO 4217 - acolo are 2 zecimale,
+# la platformele de reclame e tratata fara. Daca un cont e intr-o moneda exotica,
+# verifica offset-ul inainte, si seteaza PPC_META_CURRENCY corect.
+_ZERO_DECIMAL_CURRENCIES = frozenset(
+    {
+        "BIF",
+        "CLP",
+        "DJF",
+        "GNF",
+        "HUF",
+        "ISK",
+        "JPY",
+        "KMF",
+        "KRW",
+        "PYG",
+        "RWF",
+        "TWD",
+        "UGX",
+        "VND",
+        "VUV",
+        "XAF",
+        "XOF",
+        "XPF",
+    }
+)
 _LEARNING_STATUSES = frozenset({"LEARNING", "LEARNING_LIMITED"})
 
 # Tipurile de "actions" numarate ca si conversii/venit - proxy, la fel ca
@@ -82,19 +116,54 @@ def _summarize_targeting(targeting: dict[str, Any]) -> str:
     return " ".join(cleaned) if cleaned else "audienta nesegmentata"
 
 
+def minor_units_factor(currency: str) -> int:
+    """Cu cat se inmulteste o suma ca sa ajunga in unitatea minima a monedei.
+
+    Args:
+        currency: Codul ISO al monedei contului de reclame (``RON``, ``EUR``...).
+
+    Returns:
+        ``1`` pentru monedele fara subunitate, ``100`` pentru restul.
+    """
+    return 1 if currency.strip().upper() in _ZERO_DECIMAL_CURRENCIES else 100
+
+
 class LiveMetaMarketingProvider(MetaMarketingProvider):
-    """Client real pentru seturile de reclame Meta (citire, Graph API)."""
+    """Client real pentru seturile de reclame Meta: citire sincrona, scriere async.
+
+    Citirea a ramas sincrona (``httpx.Client``) - asa o consuma Modulele 2 si 3.
+    Mutatiile sunt ``async`` fiindca aprobarea mai multor propuneri deodata
+    beneficiaza de concurenta, iar puntea catre stratul sincron se face intr-un
+    singur loc (``services/execution_engine.py``), la fel ca la
+    ``search_data/serp_tracker.py::check_rankings_sync``.
+    """
 
     def __init__(
         self,
         *,
         access_token: str = "",
+        currency: str = "RON",
         timeout: float = _DEFAULT_TIMEOUT,
         transport: httpx.BaseTransport | None = None,
+        async_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        """
+        Args:
+            currency: Moneda contului de reclame. Decide in ce unitate se trimit
+                bugetele - vezi :func:`minor_units_factor`. Implicit ``RON``
+                (x100), corect si pentru EUR/USD; schimb-o daca contul e in
+                HUF/JPY/etc., altfel bugetul ar pleca de 100 de ori mai mare.
+            async_transport: Transportul pentru mutatii. Implicit il reia pe
+                ``transport`` cand acela stie si async (``httpx.MockTransport``
+                in teste), ca un singur argument sa acopere ambele cai.
+        """
         self._access_token = access_token
+        self._currency = currency
         self._timeout = timeout
         self._transport = transport
+        if async_transport is None and isinstance(transport, httpx.AsyncBaseTransport):
+            async_transport = transport
+        self._async_transport = async_transport
 
     @property
     def access_token_configured(self) -> bool:
@@ -257,3 +326,125 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 )
             )
         return paths
+
+    # --- mutatii (scriere pe contul real) -----------------------------------
+    #
+    # De aici incolo se schimba ceva intr-un cont pe care clientul plateste
+    # bani. Toate trec prin _mutate, singurul loc care vorbeste in scriere cu
+    # Graph API, ca taxonomia de erori sa fie una singura:
+    #   - token expirat/revocat/fara permisiuni -> SetupRequiredError (se rezolva
+    #     reconectand contul; reincercarea acum n-are sens);
+    #   - orice refuz de continut (obiect inexistent, buget sub minim, campanie
+    #     cu CBO) -> ProviderError cu mesajul EXACT de la Meta, nu parafrazat.
+    # Motorul de executie le prinde pe amandoua si le scrie in error_message.
+
+    async def _mutate(self, object_id: str, payload: dict[str, str]) -> dict[str, Any]:
+        """Trimite un POST de modificare pe ``/{object_id}`` si valideaza raspunsul.
+
+        Args:
+            object_id: Id-ul obiectului Meta (campanie, set de reclame, anunt).
+            payload: Campurile de schimbat, exact cum le asteapta Graph API.
+
+        Returns:
+            Corpul JSON al raspunsului (``{"success": true}`` de obicei).
+
+        Raises:
+            SetupRequiredError: token lipsa/expirat, sau Meta nu raspunde.
+            ProviderError: Meta a refuzat schimbarea (mesajul ei, neschimbat).
+        """
+        if not object_id.strip():
+            raise ProviderError("id de obiect Meta gol - nu am pe ce aplica schimbarea")
+        headers = self._headers()
+        url = f"{_BASE_URL}/{object_id}"
+        try:
+            async with httpx.AsyncClient(
+                transport=self._async_transport, timeout=self._timeout
+            ) as client:
+                response = await client.post(url, data=payload, headers=headers)
+        except httpx.ConnectError as exc:
+            raise SetupRequiredError(f"Meta Graph API nu raspunde la {_BASE_URL}.") from exc
+        except httpx.TimeoutException as exc:
+            raise SetupRequiredError(
+                f"Meta Graph API nu a raspuns in {self._timeout:.0f}s."
+            ) from exc
+
+        try:
+            data: dict[str, Any] = response.json()
+        except ValueError:
+            # Un 200 fara JSON nu s-a intalnit la Graph API, dar daca apare nu-l
+            # tratam ca succes tacut - vezi verificarea de status de mai jos.
+            data = {}
+        error = data.get("error") or {}
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise self._mutation_error(response, error) from exc
+        if error:
+            # Meta poate raspunde 200 cu "error" in corp; nu e succes.
+            raise self._mutation_error(response, error)
+        return data
+
+    def _mutation_error(
+        self, response: httpx.Response, error: dict[str, Any]
+    ) -> SetupRequiredError | ProviderError:
+        """Traduce un refuz Meta in eroarea noastra, pastrandu-i mesajul."""
+        message = str(error.get("message") or response.text[:200] or response.reason_phrase)
+        if response.status_code in (401, 403) or error.get("code") in _AUTH_ERROR_CODES:
+            return SetupRequiredError(
+                f"Meta Graph API a refuzat autentificarea: {message}. "
+                "Token-ul Meta e probabil expirat/revocat - reconecteaza contul."
+            )
+        return ProviderError(f"Meta Graph API a refuzat schimbarea: {message}")
+
+    async def pause_campaign(self, campaign_id: str) -> None:
+        """Pune pe pauza o campanie Meta.
+
+        Args:
+            campaign_id: Id-ul campaniei (numeric, cum il da Graph API).
+        """
+        await self._mutate(campaign_id, {"status": "PAUSED"})
+
+    async def pause_adset(self, adset_id: str) -> None:
+        """Pune pe pauza un set de reclame Meta.
+
+        Args:
+            adset_id: Id-ul setului de reclame (``arm_id`` din ``campaign_performance``).
+        """
+        await self._mutate(adset_id, {"status": "PAUSED"})
+
+    async def pause_ad(self, ad_id: str) -> None:
+        """Pune pe pauza un anunt Meta.
+
+        Args:
+            ad_id: Id-ul anuntului.
+
+        La Graph API toate trei sunt acelasi apel (``POST /{id}`` cu
+        ``status=PAUSED``); raman metode separate fiindca apelantul stie ce
+        pune pe pauza, si un id de campanie trimis din greseala ca id de anunt
+        trebuie sa se vada in cod, nu sa treaca tacut.
+        """
+        await self._mutate(ad_id, {"status": "PAUSED"})
+
+    async def update_budget(self, object_id: str, new_daily_budget: Decimal) -> None:
+        """Schimba bugetul zilnic al unei campanii sau al unui set de reclame.
+
+        Args:
+            object_id: Id-ul campaniei sau al setului de reclame.
+            new_daily_budget: Noul buget zilnic, in moneda contului.
+
+        Raises:
+            ProviderError: buget negativ, sau Meta a refuzat (vezi mai jos).
+
+        Meta refuza schimbarea, si e normal sa o faca, cand: suma e sub minimul
+        ei pe moneda respectiva; obiectul are buget PE VIATA in loc de zilnic;
+        sau setul de reclame e intr-o campanie cu buget la nivel de campanie
+        (CBO), unde bugetul se schimba pe campanie, nu pe set. Mesajul ei ajunge
+        neparafrazat in ``error_message``, ca omul sa stie care din cele trei e.
+        """
+        if new_daily_budget < 0:
+            raise ProviderError(
+                f"buget zilnic negativ ({new_daily_budget}) - Meta nu accepta asa ceva"
+            )
+        factor = minor_units_factor(self._currency)
+        minor = (new_daily_budget * factor).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        await self._mutate(object_id, {"daily_budget": str(minor)})

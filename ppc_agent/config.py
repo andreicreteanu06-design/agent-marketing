@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_access_token: str = ""
     meta_ad_account_id: str = ""
+    # Moneda contului de reclame Meta. Conteaza DOAR la scriere: Graph API
+    # primeste bugetele in unitatea minima a monedei, iar pentru monedele fara
+    # subunitate (HUF, JPY...) factorul e 1, nu 100 - vezi
+    # providers/live/meta.py::minor_units_factor. Gresita, ar trimite un buget
+    # de 100 de ori mai mare.
+    meta_currency: str = "RON"
 
     # TikTok Ads API
     tiktok_access_token: str = ""

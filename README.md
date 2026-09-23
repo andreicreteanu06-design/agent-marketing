@@ -264,8 +264,11 @@ Fiecare furnizor extern are trei parti in `ppc_agent/providers/`:
 | implementare `live` | `live/*.py` | Google/Meta/TikTok **Ads**: reala (citire — vezi mai jos). Crawler/GSC/GBP/Keyword Planner (Modulul 1): stub, ridica `SetupRequiredError` |
 
 Guardrails-urile din Modulul 4 raman active identic in modul `live`. `execute`
-ramane **intotdeauna simulat** (`applied=False`), indiferent de mod sau de
-`--confirm` — scrierea reala pe conturi e un pas viitor, deliberat separat.
+din **CLI** ramane **intotdeauna simulat** (`applied=False`), indiferent de mod
+sau de `--confirm`. Scrierea reala pe conturi exista doar pe serverul
+multi-tenant, in spatele aprobarii umane din contul clientului
+(`POST /api/v1/proposals/{id}/approve`), si doar pentru Meta — vezi
+"Ce se aplica efectiv la `/approve`" mai jos.
 
 ## Integrare live: Google/Meta/TikTok Ads
 
@@ -465,11 +468,40 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `POST /api/v1/jobs/creative` | Dispecerizeaza Modulul 5 (voce+video) -> `CreativeArtifact` |
 | `GET /api/v1/jobs/{task_id}` | Starea unui job (`queued`/`running`/`success`/`failed` + rezultat) |
 | `GET /api/v1/proposals/{client_id}` | Modificarile in asteptare (`status=pending`) ale unui client |
-| `POST /api/v1/proposals/{id}/execute` | Poarta HITL — `confirm=true` obligatoriu, trece prin `AbsoluteSpendLimiter` |
+| `POST /api/v1/proposals/{id}/execute` | Poarta HITL (agentie) — `confirm=true` obligatoriu, trece prin `AbsoluteSpendLimiter`; **simulat**, nu atinge nicio platforma |
+| `GET /api/v1/proposals/pending` | Propunerile in asteptare ale clientului autentificat (JWT de client) |
+| `POST /api/v1/proposals/{id}/approve` | Aproba **si aplica** pe platforma — vezi mai jos ce se aplica efectiv |
+| `POST /api/v1/proposals/{id}/reject` | Respinge; nu atinge nicio platforma |
 
 > **Gap semnalat, nu construit:** niciun endpoint nu creeaza inca `ProposedChange`
 > automat dintr-un plan — echivalentul comenzii `propose` din CLI. O extensie
 > naturala, in afara listei de cerinte initiale.
+
+#### Ce se aplica efectiv la `/approve`
+
+Doar **Meta**, si doar pe obiecte cu id real: `meta_campaign/{id}`,
+`meta_ad_set/{id}`, `meta_ad/{id}` (`PAUSE`, plus `UPDATE` de buget pe campanie
+si set). Se traduc in `POST https://graph.facebook.com/v25.0/{id}` cu
+`status=PAUSED`, respectiv `daily_budget` in unitatea minima a monedei
+(`PPC_META_CURRENCY`).
+
+Restul primeste **409 si ramane `pending`**, fiecare cu motivul lui:
+
+- **Google Ads / TikTok** — `GoogleAdsProvider` si `TikTokAdsProvider` sunt
+  contracte de CITIRE, fara nicio metoda de mutatie. Aici cad si propunerile
+  evaluatorului autonom (`ppc_keyword`) si cele din unealta MCP
+  (`keyword_budget`): resursa lor e un **termen de cautare**, nu un id de
+  obiect, si nu are ce cauta la Graph API.
+- **`ad_set_group/...`** (consolidarile de lichiditate) — id sintetizat de noi,
+  nu exista in contul Meta.
+- **mod `mock`, sau cont Meta neconectat** — nu aplicam nimic si nu ne prefacem
+  ca am aplicat.
+
+Cand platforma e intrebata si refuza (token expirat, obiect sters, buget sub
+minimul Meta), raspunsul e **502** si propunerea ramane `failed` cu mesajul
+**exact** al Meta in `error_message`. Distinctia conteaza in interfata: un 409
+se reincearca dupa ce se schimba ceva la noi, un 502 dupa ce se schimba ceva la
+ei.
 
 Mapare eroare -> HTTP (Starlette, pe `__mro__`): `SetupRequiredError`→503,
 `SpendLimitExceeded`→409, `ApprovalRequiredError`→403, `CopywriterError`

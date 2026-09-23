@@ -25,13 +25,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
+from ppc_agent.config import ProviderMode
 from ppc_agent.errors import ApprovalRequiredError
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.services.execution_engine import (
-    MutationProvider,
+    PLATFORM_META,
+    MetaMutationProvider,
     NoExecutorError,
     ProposalNotExecutableError,
+    ResourceTarget,
+    resolve_target,
 )
 from ppc_agent.services.execution_engine import (
     # Aliasat: endpoint-ul agentiei din acest fisier se numeste tot
@@ -55,25 +59,55 @@ from ppc_agent_server.schemas import ExecuteProposalRequest, ProposedChangeRead
 router = APIRouter(prefix="/api/v1/proposals", tags=["proposals"])
 
 
-def _mutation_provider(account: ClientAccount) -> MutationProvider | None:
-    """Providerul prin care s-ar aplica schimbarile pentru acest client.
+def _require_mutation_provider(
+    account: ClientAccount, target: ResourceTarget
+) -> MetaMutationProvider:
+    """Providerul prin care se aplica schimbarea, sau 409 cu motivul exact.
 
-    ``None`` cand nu exista niciunul - si azi asta e cazul, pentru toti.
+    Trei motive pentru care nu se poate aplica, si fiecare spune omului altceva
+    de facut - de-asta nu au acelasi mesaj:
 
-    Starea reala a codului, ca sa nu para altceva: singurul ABC din
-    ``providers/base.py`` care declara mutatii (``pause_ad``/``scale_budget``)
-    e ``BaseMarketingProvider``, implementat de o singura clasa
-    (``LiveGenerativeEngineProvider``, stub pentru OpenAI Ads).
-    ``GoogleAdsProvider`` si ``MetaMarketingProvider`` sunt contracte de
-    CITIRE - nu declara nicio mutatie, iar ``ProviderFactory`` nu are nicio
-    metoda care sa intoarca un provider capabil de scriere.
+    1. **Alta platforma decat Meta.** ``GoogleAdsProvider`` si
+       ``TikTokAdsProvider`` sunt contracte de CITIRE: n-au nicio metoda de
+       mutatie si nicio implementare in spate. Propunerile motorului hibrid
+       (termeni de cautare Google Ads) cad aici.
+    2. **Mod ``mock``.** Nu aplicam nimic si nu ne prefacem ca am aplicat.
+    3. **Cont Meta neconectat.** Lipseste token-ul.
 
-    Deci lantul e complet si testat pana la ultima veriga, iar veriga aia
-    lipseste din contractul providerilor, nu din codul asta. Cand un provider
-    capata mutatii reale, se schimba DOAR functia asta.
+    In toate trei propunerea ramane ``pending``, ca sa poata fi aplicata manual
+    sau automat mai tarziu.
+
+    Raises:
+        HTTPException: 409, cu motivul de mai sus.
     """
-    _ = ProviderFactory(_app_config_for(account))
-    return None
+    if target.platform != PLATFORM_META:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"schimbarile pe {target.platform} nu se pot aplica automat inca - "
+                "doar Meta are provider de scriere. Propunerea ramane in asteptare; "
+                "aplic-o manual in platforma."
+            ),
+        )
+    config = _app_config_for(account)
+    if config.provider_mode is not ProviderMode.LIVE:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "serverul ruleaza in mod mock (PPC_PROVIDER_MODE), deci nu aplica "
+                "schimbari reale. Propunerea ramane in asteptare."
+            ),
+        )
+    provider = ProviderFactory(config).meta_mutations()
+    if provider is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "contul Meta nu e conectat (lipseste token-ul de acces). "
+                "Conecteaza-l din setarile contului si reincearca."
+            ),
+        )
+    return provider
 
 
 def _check_spend_limit(
@@ -144,36 +178,48 @@ def approve_proposal(
     """Aproba o propunere SI o aplica pe platforma.
 
     Singurul loc din tot lantul unde se schimba ceva real intr-un cont de
-    reclame. Ordinea e intentionata: intai plafonul de cheltuiala, apoi
-    executia, apoi scrierea starii - ca o propunere sa nu ajunga niciodata
-    marcata executata fara ca platforma sa fi confirmat.
+    reclame. Ordinea e intentionata: starea, plafonul de cheltuiala, tinta
+    (ce platforma, ce obiect), providerul, abia apoi executia si scrierea
+    starii - ca o propunere sa nu ajunga niciodata marcata executata fara ca
+    platforma sa fi confirmat, si ca tot ce se poate refuza sa se refuze
+    INAINTE de primul apel catre platforma.
 
     Raises:
-        HTTPException: 404 propunere inexistenta/a altuia, 409 stare gresita
-            sau lipsa de executor, 502 platforma a refuzat.
+        HTTPException: 404 propunere inexistenta/a altuia, 409 stare gresita /
+            resursa neadresabila / lipsa de provider, 502 platforma a refuzat.
         SpendLimitExceeded: plafonul zilnic ar fi depasit (-> 409).
+
+    Un 409 lasa propunerea PENDING (nu s-a incercat nimic); un 502 o lasa
+    FAILED cu motivul de la platforma. Distinctia conteaza in interfata: prima
+    se poate reincerca dupa ce se schimba ceva la noi, a doua dupa ce se
+    schimba ceva la ei.
     """
     proposal, account = _client_proposal(proposal_id, client_user, session)
-    _check_spend_limit(session, account, proposal)
-
-    provider = _mutation_provider(account)
-    if provider is None:
-        # 501, nu FAILED: nu am incercat si nu am esuat - nu avem cu ce. Propunerea
-        # ramane PENDING, ca sa poata fi aplicata manual sau automat mai tarziu.
+    if proposal.status is not ChangeStatus.PENDING:
+        # Verificat si de motor. Aici, ca mesajul sa fie despre STARE - altfel
+        # o propunere deja executata ar primi raspunsul despre provider lipsa.
         raise HTTPException(
-            status_code=501,
+            status_code=409,
             detail=(
-                "Nu exista inca un provider care sa aplice schimbari pe platforma. "
-                "Propunerea ramane in asteptare - aplic-o manual in contul de reclame."
+                "doar propunerile in asteptare se pot aproba "
+                f"(aceasta e '{proposal.status.value}')"
             ),
         )
+    _check_spend_limit(session, account, proposal)
+
     try:
-        result = run_execution(proposal, provider, current_status=proposal.status.value)
-    except ProposalNotExecutableError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        target = resolve_target(proposal)
     except NoExecutorError as exc:
         # Propunerea ramane PENDING: nu platforma a refuzat, ci noi nu stim
         # sa aplicam tipul asta. A o marca FAILED ar sugera ca s-a incercat.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    provider = _require_mutation_provider(account, target)
+
+    try:
+        result = run_execution(proposal, provider, current_status=proposal.status.value)
+    except ProposalNotExecutableError as exc:  # pragma: no cover - verificat mai sus
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NoExecutorError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     decided_at = datetime.now(tz=UTC)

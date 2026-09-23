@@ -68,6 +68,34 @@ class ProviderFactory:
             )
         return mock.MockMetaMarketingProvider()
 
+    def meta_mutations(self) -> live.LiveMetaMarketingProvider | None:
+        """Providerul Meta capabil de SCRIERE, sau ``None`` cand nu se poate scrie.
+
+        Separat de :meth:`meta` fiindca tipul returnat e altul: ``meta()``
+        promite contractul de citire (``MetaMarketingProvider``), pe care
+        varianta ``mock`` il implementeaza la fel de bine; mutatiile exista
+        doar pe clientul live.
+
+        ``None`` in doua cazuri, amandoua intentionate:
+
+        - **mod ``mock``**: nu intoarcem un dublu care "reuseste". O propunere
+          marcata executata fara ca nimic sa se fi schimbat intr-un cont real e
+          exact minciuna pe care toata poarta HITL exista ca sa o previna.
+        - **fara token**: clientul nu si-a conectat contul Meta.
+
+        Apelantul traduce ``None`` intr-un raspuns care spune omului ce sa faca
+        (vezi ``routers/proposals.py``).
+        """
+        if self.mode is not ProviderMode.LIVE:
+            return None
+        settings = self._config.settings
+        if not settings.meta_access_token:
+            return None
+        return live.LiveMetaMarketingProvider(
+            access_token=settings.meta_access_token,
+            currency=settings.meta_currency,
+        )
+
     def tiktok_ads(self) -> base.TikTokAdsProvider:
         """Returneaza furnizorul TikTok Ads (performanta + parcursuri) pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
