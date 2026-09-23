@@ -13,6 +13,9 @@ from ppc_agent.ingestion.negatives import scaffold_negatives
 from ppc_agent.ingestion.organic import to_local_signals, to_seed_keywords
 from ppc_agent.providers.factory import ProviderFactory
 
+#: Cand nu e configurata nicio locatie reala. Furnizorul ``mock`` il
+#: foloseste ca seed determinist; cel ``live`` nu ajunge aici, fiindca
+#: primeste locatia din ``Settings`` (vezi apelul de mai jos).
 _GBP_LOCATION_PLACEHOLDER = "mock-location"
 _TOP_ROWS = 10
 
@@ -37,7 +40,9 @@ def run_ingestion(
 
     seeds = to_seed_keywords(factory.gsc().top_queries(url))
     local_signals = to_local_signals(
-        factory.gbp().local_signals(_GBP_LOCATION_PLACEHOLDER)
+        factory.gbp().local_signals(
+            config.settings.gbp_location_id or _GBP_LOCATION_PLACEHOLDER
+        )
     )
 
     seed_terms = [seed.query for seed in seeds] or [config.target_domain]

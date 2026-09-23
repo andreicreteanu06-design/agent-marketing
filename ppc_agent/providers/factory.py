@@ -32,19 +32,45 @@ class ProviderFactory:
     def gsc(self) -> base.GscProvider:
         """Returneaza furnizorul Google Search Console pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
-            return live.LiveGscProvider()
+            settings = self._config.settings
+            return live.LiveGscProvider(
+                site_url=settings.gsc_site_url,
+                client_id=settings.google_oauth_client_id,
+                client_secret=settings.google_oauth_client_secret,
+                refresh_token=settings.google_oauth_refresh_token,
+            )
         return mock.MockGscProvider()
 
     def gbp(self) -> base.GbpProvider:
         """Returneaza furnizorul Google Business Profile pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
-            return live.LiveGbpProvider()
+            settings = self._config.settings
+            return live.LiveGbpProvider(
+                account_id=settings.gbp_account_id,
+                location_id=settings.gbp_location_id,
+                client_id=settings.google_oauth_client_id,
+                client_secret=settings.google_oauth_client_secret,
+                refresh_token=settings.google_oauth_refresh_token,
+            )
         return mock.MockGbpProvider()
 
     def keyword_planner(self) -> base.KeywordPlannerProvider:
-        """Returneaza furnizorul Keyword Planner pentru modul activ."""
+        """Returneaza furnizorul Keyword Planner pentru modul activ.
+
+        Foloseste credentialele Google ADS, nu cele de Search Console/Business
+        Profile: Keyword Planner e parte din Google Ads API, cu alt scope
+        ('adwords') si alt token de dezvoltator.
+        """
         if self.mode is ProviderMode.LIVE:
-            return live.LiveKeywordPlannerProvider()
+            settings = self._config.settings
+            return live.LiveKeywordPlannerProvider(
+                developer_token=settings.google_ads_developer_token,
+                client_id=settings.google_ads_client_id,
+                client_secret=settings.google_ads_client_secret,
+                refresh_token=settings.google_ads_refresh_token,
+                customer_id=settings.google_ads_customer_id,
+                login_customer_id=settings.google_ads_login_customer_id,
+            )
         return mock.MockKeywordPlannerProvider()
 
     def google_ads(self) -> base.GoogleAdsProvider:

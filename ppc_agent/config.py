@@ -49,9 +49,21 @@ class Settings(BaseSettings):
     google_ads_login_customer_id: str = ""
 
     # Google Search Console + Business Profile (OAuth)
+    # Un singur refresh token pentru amandoua - dar consimtamantul trebuie sa
+    # includa AMBELE scope-uri ('webmasters.readonly' si 'business.manage').
+    # Un token emis doar pentru unul primeste 403 de la celalalt.
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_refresh_token: str = ""
+    # Proprietatea Search Console, exact ca in interfata: 'sc-domain:exemplu.ro'
+    # (domeniu) sau 'https://exemplu.ro/' (prefix URL). Goala = se deduce din
+    # domeniul analizat, ceea ce merge doar daca proprietatea e de tip domeniu.
+    gsc_site_url: str = ""
+    # Business Profile: locatia si contul care o detine. Contul e necesar DOAR
+    # pentru recenzii (API-ul lor le cere pe amandoua); fara el se intorc
+    # numele si categoriile, fara recenzii.
+    gbp_account_id: str = ""
+    gbp_location_id: str = ""
 
     # OpenSERP - instanta LOCALA (Docker) pentru pozitii in SERP pe cuvinte
     # arbitrare si pentru concurenti, adica singurul lucru pe care Search

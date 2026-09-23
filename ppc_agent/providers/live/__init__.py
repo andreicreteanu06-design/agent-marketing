@@ -1,16 +1,19 @@
 """Furnizorii ``live``.
 
-Google/Meta/TikTok Ads (performanta pentru bandit + lichiditate Meta) au
-implementari reale — vezi ``google_ads.py``/``meta.py``/``tiktok.py``, acelasi
-pattern ca :class:`ppc_agent.copywriter.llm.LiveLLMClient` (httpx simplu,
-testabil cu ``httpx.MockTransport``). Crawler-ul e si el real — vezi
-``crawler.py``, construit peste motorul de audit din ``seo_geo_agent``, ca sa nu
-existe doua crawlere cu doua politici de siguranta in acelasi repo.
+Toti furnizorii Modulelor 1-3 au acum implementari reale, in module proprii,
+dupa acelasi pattern (``httpx`` simplu, ``transport`` injectabil, testabil cu
+``httpx.MockTransport``, fara SDK-uri oficiale):
 
-Restul (Google Search Console, Google Business Profile, Keyword Planner —
-Modulul 1; Generative Engine Ads — vezi mai jos) raman stub-uri: fiecare metoda
-ridica :class:`ppc_agent.errors.SetupRequiredError`, niciun apel de retea nu
-este efectuat.
+- ``google_ads.py``/``meta.py``/``tiktok.py`` — performanta pentru bandit,
+  lichiditate Meta, plus mutatiile Meta;
+- ``crawler.py`` — peste motorul de audit din ``seo_geo_agent``, ca sa nu
+  existe doua crawlere cu doua politici de siguranta in acelasi repo;
+- ``search_console.py`` — peste ``search_data.SearchConsoleClient``;
+- ``keyword_planner.py`` — ``GenerateKeywordIdeas`` din Google Ads API;
+- ``gbp.py`` — Business Information + recenzii (acces aprobat de Google).
+
+Singurul stub ramas e :class:`LiveGenerativeEngineProvider` (OpenAI Ads) — vezi
+mai jos de ce.
 """
 
 from __future__ import annotations
@@ -20,8 +23,11 @@ from typing import TYPE_CHECKING, NoReturn
 from ppc_agent.errors import SetupRequiredError
 from ppc_agent.providers import base
 from ppc_agent.providers.live.crawler import LiveCrawlerProvider
+from ppc_agent.providers.live.gbp import LiveGbpProvider
 from ppc_agent.providers.live.google_ads import LiveGoogleAdsProvider
+from ppc_agent.providers.live.keyword_planner import LiveKeywordPlannerProvider
 from ppc_agent.providers.live.meta import LiveMetaMarketingProvider
+from ppc_agent.providers.live.search_console import LiveGscProvider
 from ppc_agent.providers.live.tiktok import LiveTikTokAdsProvider
 
 if TYPE_CHECKING:
@@ -71,32 +77,6 @@ _GENERATIVE_ENGINE_HINT = (
 def _generative_engine_not_ready() -> NoReturn:
     """Ridica intotdeauna :class:`SetupRequiredError` cu detalii specifice OpenAI Ads."""
     raise SetupRequiredError(_GENERATIVE_ENGINE_HINT)
-
-
-class LiveGscProvider(base.GscProvider):
-    """Stub live pentru Google Search Console."""
-
-    def top_queries(
-        self, site_url: str, days: int = 90, min_impressions: int = 100
-    ) -> pd.DataFrame:
-        """Nu este disponibil inca — vezi :class:`SetupRequiredError`."""
-        _not_ready()
-
-
-class LiveGbpProvider(base.GbpProvider):
-    """Stub live pentru Google Business Profile."""
-
-    def local_signals(self, location_id: str) -> dict[str, object]:
-        """Nu este disponibil inca — vezi :class:`SetupRequiredError`."""
-        _not_ready()
-
-
-class LiveKeywordPlannerProvider(base.KeywordPlannerProvider):
-    """Stub live pentru Google Keyword Planner."""
-
-    def expand(self, seeds: list[str], geo: str, language: str) -> pd.DataFrame:
-        """Nu este disponibil inca — vezi :class:`SetupRequiredError`."""
-        _not_ready()
 
 
 class LiveGenerativeEngineProvider(base.BaseMarketingProvider):

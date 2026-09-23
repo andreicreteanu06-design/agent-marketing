@@ -62,6 +62,23 @@ class SearchAnalyticsRow:
     position: float
 
 
+@dataclass(frozen=True, slots=True)
+class QueryTotals:
+    """O interogare, agregata pe tot intervalul cerut.
+
+    Distinct de :class:`SearchAnalyticsRow`, care e per ZI: aici Google a facut
+    deja insumarea si media. Conteaza, fiindca ``position`` nu se poate media
+    corect in Python din randuri zilnice fara sa ponderezi dupa afisari - iar
+    API-ul o face oricum mai bine, ca are datele brute.
+    """
+
+    query: str
+    clicks: int
+    impressions: int
+    ctr: float
+    position: float
+
+
 def normalize_site_url(raw: str) -> str:
     """Aduce identificatorul proprietatii la forma ceruta de API.
 
@@ -205,6 +222,54 @@ class SearchConsoleClient:
                 break
             start_row += len(batch)
         return rows
+
+
+    def fetch_query_totals(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_rows: int = _ROWS_PER_REQUEST,
+    ) -> list[QueryTotals]:
+        """Interogarile organice ale intervalului, agregate de Google.
+
+        Args:
+            start_date: Prima zi inclusa.
+            end_date: Ultima zi inclusa.
+            max_rows: Plafon de interogari returnate.
+
+        Returns:
+            Lista de :class:`QueryTotals`, in ordinea data de API (descrescator
+            dupa click-uri).
+
+        O singura cerere in loc de ``fetch_search_analytics`` cu dimensiunea
+        ``date``: cand nu ai nevoie de istoric zilnic, agregarea pe server e si
+        mai ieftina, si mai corecta.
+        """
+        payload = self._post_query(
+            {
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "dimensions": ["query"],
+                "type": "web",
+                "rowLimit": min(_ROWS_PER_REQUEST, max_rows),
+            }
+        )
+        totals: list[QueryTotals] = []
+        for raw in payload.get("rows") or []:
+            keys = raw.get("keys") or []
+            if len(keys) != 1:
+                continue
+            totals.append(
+                QueryTotals(
+                    query=str(keys[0]),
+                    clicks=int(raw.get("clicks", 0)),
+                    impressions=int(raw.get("impressions", 0)),
+                    ctr=float(raw.get("ctr", 0.0)),
+                    position=float(raw.get("position", 0.0)),
+                )
+            )
+        return totals
 
 
 def _parse_rows(

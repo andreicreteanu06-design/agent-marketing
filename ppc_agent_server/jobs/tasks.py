@@ -78,6 +78,27 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
         overrides["meta_access_token"] = decrypt_secret(account.meta_access_token_enc)
     if account.tiktok_access_token_enc:
         overrides["tiktok_access_token"] = decrypt_secret(account.tiktok_access_token_enc)
+    if account.gsc_refresh_token_enc:
+        # Search Console si Business Profile folosesc acelasi camp OAuth - vezi
+        # nota din config.py: un singur token, dar consimtamantul trebuie sa
+        # acopere ambele scope-uri.
+        overrides["google_oauth_refresh_token"] = decrypt_secret(
+            account.gsc_refresh_token_enc
+        )
+    if account.gsc_site_url:
+        overrides["gsc_site_url"] = account.gsc_site_url
+    # Identificatorii de cont, nu doar secretele: fara ei, ``run_plan`` citea
+    # conturile GLOBALE din .env pentru TOTI clientii - adica propunerile unui
+    # client s-ar fi generat din campaniile altuia. ``run_metrics_sync_job``
+    # folosea deja valorile de pe ``ClientAccount``; asta aliniaza restul.
+    for field, setting in (
+        ("google_ads_customer_id", "google_ads_customer_id"),
+        ("meta_ad_account_id", "meta_ad_account_id"),
+        ("tiktok_advertiser_id", "tiktok_advertiser_id"),
+    ):
+        value = getattr(account, field)
+        if value:
+            overrides[setting] = value
     settings = base_settings.model_copy(update=overrides) if overrides else base_settings
 
     return AppConfig(

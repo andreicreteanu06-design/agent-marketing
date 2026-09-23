@@ -15,9 +15,9 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 > mai jos), la fel ca [clientul LLM (Ollama local)](#client-llm-live-ollama-local).
 > `execute` ramane **intotdeauna simulat** (`applied=False`), indiferent de
 > `--confirm` — scrierea reala pe conturi ramane un pas viitor, deliberat
-> separat. Crawler-ul (Modulul 1) e real — ruleaza peste motorul de audit din
-> `seo_geo_agent`; GSC/GBP/Keyword Planner (Modulul 1) si Fish Speech/Flick
-> (Modulul 5) raman stub-uri `live`.
+> separat. Modulul 1 e complet `live` — crawler (peste motorul de audit din
+> `seo_geo_agent`), Search Console, Keyword Planner si Business Profile. Fish
+> Speech/Flick (Modulul 5) si OpenAI Ads raman stub-uri.
 
 ## Stare
 
@@ -262,7 +262,7 @@ Fiecare furnizor extern are trei parti in `ppc_agent/providers/`:
 |-------|--------|-------|
 | interfata (ABC) | `base.py` | completa |
 | implementare `mock` | `mock/*.py` | completa, deterministica, fara retea |
-| implementare `live` | `live/*.py` | Google/Meta/TikTok **Ads**: reala (citire + scriere pe Meta — vezi mai jos). Crawler (Modulul 1): real, peste `seo_geo_agent.audit`. GSC/GBP/Keyword Planner: stub, ridica `SetupRequiredError` |
+| implementare `live` | `live/*.py` | Toate reale. Google/Meta/TikTok **Ads** (citire + scriere pe Meta), crawler (peste `seo_geo_agent.audit`), Search Console, Keyword Planner, Business Profile. Singurul stub ramas: OpenAI Ads |
 
 Guardrails-urile din Modulul 4 raman active identic in modul `live`. `execute`
 din **CLI** ramane **intotdeauna simulat** (`applied=False`), indiferent de mod
@@ -270,6 +270,37 @@ sau de `--confirm`. Scrierea reala pe conturi exista doar pe serverul
 multi-tenant, in spatele aprobarii umane din contul clientului
 (`POST /api/v1/proposals/{id}/approve`), si doar pentru Meta — vezi
 "Ce se aplica efectiv la `/approve`" mai jos.
+
+## Modulul 1 live: Search Console, Keyword Planner, Business Profile
+
+| Furnizor | API | Ce trebuie |
+|---|---|---|
+| `LiveGscProvider` | Search Analytics | OAuth cu scope `webmasters.readonly` + proprietatea verificata (`PPC_GSC_SITE_URL`) |
+| `LiveKeywordPlannerProvider` | `GenerateKeywordIdeas` (Google Ads) | Credentialele **Google Ads** (alt scope: `adwords`, plus developer token) |
+| `LiveGbpProvider` | Business Information + My Business v4 | OAuth cu scope `business.manage` **si acces aprobat de Google** |
+
+Trei lucruri care ar strica tacut rapoarte, si cum sunt tratate:
+
+- **Constantele de limba si tara nu sunt scrise de mana.** Id-ul Google pentru
+  romana nu se deduce din codul ISO, iar o constanta gresita intoarce volume
+  pentru alta limba — fara nicio eroare, deci fara nicio sansa s-o observi din
+  raport. Furnizorul le cere de la API (`language_constant`/`geo_target_constant`)
+  si le tine in cache pe durata instantei: doua cereri in plus, o data.
+- **Proprietatea Search Console nu se ghiceste din domeniu.** `sc-domain:exemplu.ro`
+  si `https://exemplu.ro/` sunt proprietati diferite, si din "exemplu.ro" nu
+  poti sti care e verificata pe cont. Se ia din `PPC_GSC_SITE_URL` (sau din
+  `ClientAccount.gsc_site_url`), si abia daca lipseste se normalizeaza ce vine.
+- **Volumele exacte cer cheltuiala activa.** Un cont Google Ads fara istoric
+  primeste intervale (`100-1K`), nu numere. Nu compensam cu estimari proprii:
+  cifra din raport e a Google sau nu exista. Cand API-ul da doar eticheta de
+  competitie, folosim mijlocul galetii si o spunem in cod.
+
+Business Profile e singurul din trei care **nu se activeaza singur**: cere
+"Basic API Access" aprobat pentru proiect, cu raspuns in 7-10 zile lucratoare.
+Pana atunci primeste 403, iar furnizorul spune exact asta, ca sa nu para o
+setare gresita pe care ai putea-o repara. Daca lipseste doar contul (nu si
+locatia), se intorc numele si categoriile cu `review_count=0` — un semnal
+partial e mai util decat o eroare, si cifra zero o spune singura.
 
 ## Crawler live: un singur crawler in tot repo-ul
 
