@@ -15,11 +15,11 @@ raman ghilimele native (forward refs Python obisnuite), nu PEP 563.
 """
 
 import enum
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Column, Numeric
+from sqlalchemy import JSON, Column, Numeric, UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
 from ppc_agent.campaign_objective import CampaignObjective
@@ -510,3 +510,24 @@ class SearchTermConversion(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
 
     client_account: ClientAccount = Relationship(back_populates="search_term_conversions")
+
+
+class WeeklyReport(SQLModel, table=True):
+    """Raportul saptamanal al unui client, salvat exact cum l-a servit API-ul.
+
+    ``payload`` e JSON-ul ``WeeklyReportPayload``, nu coloane: forma raportului
+    evolueaza (``report_version``), iar un raport vechi trebuie sa se poata
+    citi exact cum a fost generat, cu cifrele de atunci. O saptamana are un
+    singur raport pe client - regenerarea il inlocuieste (vezi constrangerea).
+    """
+
+    __table_args__ = (
+        UniqueConstraint("client_account_id", "week_start", name="uq_weeklyreport_client_week"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    week_start: date = Field(index=True)
+    week_end: date
+    generated_at: datetime = Field(default_factory=_now)
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))

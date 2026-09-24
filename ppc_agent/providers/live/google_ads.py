@@ -9,6 +9,7 @@ inconsistenta cu restul codebase-ului (100% httpx).
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ import pandas as pd
 
 from ppc_agent.errors import ProviderError, SetupRequiredError
 from ppc_agent.providers.base import GoogleAdsProvider
+from ppc_agent.providers.live.daily import DAILY_COLUMNS, daily_window
 
 _API_VERSION = "v25"  # Google Ads API - bump cand Google depreciaza versiunea.
 _BASE_URL = f"https://googleads.googleapis.com/{_API_VERSION}"
@@ -205,6 +207,52 @@ class LiveGoogleAdsProvider(GoogleAdsProvider):
                 ) from exc
         columns = ["arm_id", "name", "clicks", "conversions", "cost", "revenue"]
         return pd.DataFrame(out, columns=columns)
+
+    def daily_campaign_performance(
+        self, customer_id: str, *, days: int, end_date: date | None = None
+    ) -> pd.DataFrame:
+        """Performanta pe campanii, zi cu zi (GAQL cu ``segments.date``).
+
+        Args:
+            customer_id: Contul Google Ads.
+            days: Cate zile, numarate inapoi de la ``end_date`` inclusiv.
+            end_date: Ultima zi inclusa; implicit ieri.
+
+        Returns:
+            Aceleasi coloane ca :meth:`campaign_performance`, plus ``date``. Spre
+            deosebire de agregatul pe 30 de zile, conversiile raman fractionare:
+            o zi cu 0,4 conversii (atribuire data-driven) nu e o zi cu zero.
+
+        Google omite zilele fara afisari - apelantul le completeaza cu zero.
+        """
+        start, end = daily_window(days, end_date)
+        query = (
+            "SELECT segments.date, campaign.id, campaign.name, metrics.clicks, "
+            "metrics.conversions, metrics.cost_micros, metrics.conversions_value "
+            f"FROM campaign WHERE segments.date BETWEEN '{start.isoformat()}' "
+            f"AND '{end.isoformat()}'"
+        )
+        out: list[dict[str, Any]] = []
+        for row in self._search(customer_id, query):
+            try:
+                campaign = row["campaign"]
+                metrics = row["metrics"]
+                out.append(
+                    {
+                        "date": date.fromisoformat(str(row["segments"]["date"])),
+                        "arm_id": str(campaign["id"]),
+                        "name": str(campaign["name"]),
+                        "clicks": int(metrics.get("clicks", 0)),
+                        "conversions": float(metrics.get("conversions", 0)),
+                        "cost": float(metrics.get("costMicros", 0)) / 1_000_000,
+                        "revenue": float(metrics.get("conversionsValue", 0)),
+                    }
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProviderError(
+                    f"rand zilnic Google Ads API cu forma neasteptata: {exc}"
+                ) from exc
+        return pd.DataFrame(out, columns=DAILY_COLUMNS)
 
     def conversion_paths(self, customer_id: str) -> list[list[str]]:
         """Parcursuri single-touch sintetizate din performanta pe campanii.

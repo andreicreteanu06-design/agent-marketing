@@ -29,6 +29,7 @@ from ppc_agent_server.routers import (
     hybrid_insights,
     jobs,
     proposals,
+    reports,
     tracking,
 )
 from ppc_agent_server.routers.mcp_router import MCP_MOUNT_PATH, build_mcp_asgi_app
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(hybrid_insights.router)
     app.include_router(jobs.router)
     app.include_router(proposals.router)
+    app.include_router(reports.router)
     app.include_router(tracking.router)
 
     # Serverul MCP e o aplicatie ASGI separata, montata - nu un APIRouter:

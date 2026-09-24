@@ -38,11 +38,16 @@ from ppc_agent_server.jobs.tasks import (
     run_plan_job,
     run_propose_job,
 )
+from ppc_agent_server.jobs.weekly_report import run_weekly_reports_job
 from ppc_agent_server.settings import get_server_settings
 
 _DEFAULT_REDIS_URL = "redis://localhost:6379"
 _DAILY_MAINTENANCE_HOUR = 3
 """03:00 - fereastra tipica de mentenanta in afara orelor de varf de trafic."""
+_WEEKLY_REPORT_WEEKDAY = 0
+"""Luni (``datetime.weekday()``): raportul acopera saptamana care tocmai s-a incheiat."""
+_WEEKLY_REPORT_HOUR = 6
+"""06:00 - dupa mentenanta de noapte, inainte ca clientul sa-si deschida contul."""
 
 
 async def _plan_task(ctx: dict[str, Any], *, client_account_id: int) -> dict[str, Any]:
@@ -114,6 +119,15 @@ async def _daily_maintenance_task(ctx: dict[str, Any]) -> dict[str, Any]:
     return await asyncio.to_thread(run_daily_maintenance_job)
 
 
+async def _weekly_reports_task(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Wrapper pentru cron - raportul saptamanal al fiecarui client activ.
+
+    Aceeasi nota ca la ``_daily_maintenance_task``: ruleaza doar cu un worker
+    ARQ real; ``run_weekly_reports_job`` e testat direct, fara Redis.
+    """
+    return await asyncio.to_thread(run_weekly_reports_job)
+
+
 class WorkerSettings:
     """Configuratia consumata de comanda ``arq``. Clasa nu e instantiata
     niciodata — ``arq`` ii citeste atributele direct (patternul documentat
@@ -132,6 +146,13 @@ class WorkerSettings:
             _daily_maintenance_task,
             name="daily_maintenance",
             hour={_DAILY_MAINTENANCE_HOUR},
+            minute={0},
+        ),
+        cron(
+            _weekly_reports_task,
+            name="weekly_reports",
+            weekday={_WEEKLY_REPORT_WEEKDAY},
+            hour={_WEEKLY_REPORT_HOUR},
             minute={0},
         ),
     ]

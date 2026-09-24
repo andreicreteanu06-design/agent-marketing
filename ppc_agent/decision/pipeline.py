@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
@@ -42,12 +43,11 @@ def resolve_account_ids(config: AppConfig) -> tuple[str, str, str]:
 
 @runtime_checkable
 class SupportsDailyPerformance(Protocol):
-    """Capacitate OPTIONALA: raportare zi-cu-zi, pentru forecasting (``--forecast`` in CLI).
+    """Capacitate OPTIONALA: raportare zi-cu-zi, pentru forecasting (``--forecast`` in CLI)
+    si pentru raportul saptamanal (``services/reporting``).
 
-    Niciun furnizor (mock sau live) nu o implementeaza inca - e un contract
-    pregatit pentru cand se adauga ingestia zilnica reala (Google Ads GAQL cu
-    ``segments.date``, Meta Insights API cu ``time_increment=1``, TikTok
-    Reporting API cu ``stat_time_day``) - lucru separat, netratat aici.
+    Implementata de furnizorii live Google Ads (GAQL cu ``segments.date``) si
+    Meta (Insights cu ``time_increment=1``). TikTok (``stat_time_day``) inca nu.
     Deliberat NEIMPLEMENTAT de providerii mock: nu fabricam un trend zilnic
     dintr-un agregat static caruia nu i se cunoaste distributia reala.
 
@@ -56,8 +56,15 @@ class SupportsDailyPerformance(Protocol):
     (niciun furnizor existent, mock sau live, nu se strica).
     """
 
-    def daily_campaign_performance(self, account_id: str, *, days: int) -> pd.DataFrame:
-        """Performanta pe zile: aceleasi coloane ca ``campaign_performance()``, plus ``date``."""
+    def daily_campaign_performance(
+        self, account_id: str, *, days: int, end_date: date | None = None
+    ) -> pd.DataFrame:
+        """Performanta pe zile: aceleasi coloane ca ``campaign_performance()``, plus ``date``.
+
+        Args:
+            days: Cate zile, numarate inapoi de la ``end_date`` inclusiv.
+            end_date: Ultima zi inclusa. ``None`` = ieri, ultima zi incheiata.
+        """
         ...
 
 
@@ -80,7 +87,9 @@ def collect_daily_histories(
                 DailyArmMetric(
                     date=record["date"],
                     clicks=int(record["clicks"]),
-                    conversions=int(record["conversions"]),
+                    # round, nu int: conversiile zilnice pot fi fractionare
+                    # (atribuire data-driven), iar int(0.9) le-ar sterge.
+                    conversions=round(float(record["conversions"])),
                     cost=Decimal(str(record["cost"])),
                     revenue=Decimal(str(record.get("revenue", 0))),
                 )

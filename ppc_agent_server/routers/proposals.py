@@ -324,6 +324,10 @@ def execute_proposal(
     proposal.status = ChangeStatus.EXECUTED
     proposal.decided_at = datetime.now(tz=UTC)
     proposal.decided_by = tenant.name
+    # Nicio platforma nu a fost atinsa. Marcajul e singurul mod in care un
+    # raport ulterior (services/reporting) poate deosebi asta de o schimbare
+    # reala - altfel clientul ar citi "aplicat" despre ceva ce nu s-a intamplat.
+    proposal.execution_result = {"simulated": True}
     session.add(proposal)
     session.commit()
     session.refresh(proposal)

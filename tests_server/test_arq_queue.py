@@ -121,7 +121,14 @@ def test_worker_settings_registers_all_functions_with_original_names() -> None:
 
 def test_worker_settings_registers_daily_maintenance_cron() -> None:
     names = {job.name for job in WorkerSettings.cron_jobs}
-    assert names == {"daily_maintenance"}
+    assert names == {"daily_maintenance", "weekly_reports"}
+
+
+def test_weekly_reports_run_monday_morning() -> None:
+    """Luni dimineata: saptamana raportata tocmai s-a incheiat."""
+    (job,) = [job for job in WorkerSettings.cron_jobs if job.name == "weekly_reports"]
+    assert job.weekday == {0}
+    assert job.hour == {6}
 
 
 def test_worker_settings_redis_settings_parses_dsn_without_connecting() -> None:

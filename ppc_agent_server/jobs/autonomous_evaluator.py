@@ -51,7 +51,7 @@ SOURCE_MODULE = "autonomous_evaluator"
 RESOURCE_TYPE = "ppc_keyword"
 
 #: Starile de abonament pentru care are sens sa producem propuneri.
-_ACTIVE_STATUSES = (SubscriptionStatus.TRIAL, SubscriptionStatus.ACTIVE)
+ACTIVE_STATUSES = (SubscriptionStatus.TRIAL, SubscriptionStatus.ACTIVE)
 
 
 def _build_rationale(finding: CannibalizationFinding) -> str:
@@ -161,7 +161,7 @@ async def run_autonomous_evaluations(
     """
     with Session(get_engine()) as session:
         statement = select(ClientAccount).join(Tenant).where(
-            Tenant.subscription_status.in_(_ACTIVE_STATUSES)  # type: ignore[attr-defined]
+            Tenant.subscription_status.in_(ACTIVE_STATUSES)  # type: ignore[attr-defined]
         )
         if client_account_id is not None:
             statement = statement.where(ClientAccount.id == client_account_id)

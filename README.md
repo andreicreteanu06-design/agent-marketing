@@ -525,6 +525,10 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `POST /api/v1/proposals/{id}/approve` | Aproba **si aplica** pe platforma — vezi mai jos ce se aplica efectiv |
 | `POST /api/v1/proposals/{id}/reject` | Respinge; nu atinge nicio platforma |
 | `POST /api/v1/campaigns/propose_launch` | Propune lansarea unei campanii Meta noi; nu creeaza nimic pana la aprobare |
+| `GET /api/v1/reports/weekly` | Istoricul rapoartelor saptamanale ale clientului |
+| `GET /api/v1/reports/weekly/latest` | Cel mai recent raport (`WeeklyReportPayload`) |
+| `GET /api/v1/reports/weekly/{week_start}` | Raportul unei saptamani (`YYYY-MM-DD`) |
+| `POST /api/v1/reports/weekly/generate` | Genereaza/regenereaza raportul ultimei saptamani incheiate (`?week_end=` optional) |
 
 > **Gap semnalat, nu construit:** niciun endpoint nu creeaza inca `ProposedChange`
 > automat dintr-un plan — echivalentul comenzii `propose` din CLI. O extensie
@@ -587,6 +591,44 @@ Ce NU face brief-ul, deliberat:
 
 O sursa indisponibila (GSC neconectat, Business Profile neaprobat inca) apare
 ca atare si nu blocheaza.
+
+#### Raportul saptamanal: "data asset as code", fara bruin sau dbt
+
+`ppc_agent/services/reporting/` imprumuta arhitectura, nu uneltele: trei straturi,
+fiecare o functie pura peste iesirea celui dinainte, testabil singur.
+
+| Strat | Modul | Ce face |
+|---|---|---|
+| RAW | `extractors.py` | zilele de la Google Ads si Meta (saptamana raportata + cea dinainte) si deciziile executate |
+| Agregat | `transformers.py` | Pandas: totaluri, CPA, ROAS, evolutia fata de saptamana anterioara |
+| Serving | `serving.py` + `summary.py` | `WeeklyReportPayload`, gata de legat in Recharts/Tremor, plus rezumatul executiv |
+
+Seriile zilnice vin din `daily_campaign_performance` — GAQL cu `segments.date`
+la Google, Insights cu `time_increment=1` la Meta. Furnizorii **mock** nu o au,
+deliberat: nu fabricam un trend zilnic dintr-un agregat. In modul mock raportul
+are graficul gol si spune de ce, in `data_gaps`.
+
+Reguli care tin raportul cinstit:
+
+- **Banii se aduna in bani intregi**, nu in float; CPA si ROAS se calculeaza
+  la final, din sume exacte.
+- **`null`, nu zero, unde valoarea nu exista:** CPA fara conversii, ROAS la un
+  obiectiv de lead-uri, evolutia fata de o saptamana cu zero. Recharts lasa un
+  gol la `null` — nu deseneaza un zero care minte.
+- **Zilele fara livrare apar cu zero**, ca graficul sa nu uneasca doua puncte
+  departate; dar cand NICIO platforma n-a raspuns, graficul e gol, nu plin de zero.
+- **Rezumatul AI e verificat:** modelul primeste faptele cu cifrele gata
+  calculate, iar orice numar din textul lui trebuie sa existe in ele. Altfel
+  ramane rezumatul din cifre (`summary_source: "template"`) si motivul apare in
+  `data_gaps`. Limita: verificarea confirma ca un numar exista, nu ca sta langa
+  eticheta corecta.
+- **Deciziile simulate nu sunt prezentate ca aplicate.** `POST
+  /api/v1/proposals/{id}/execute` (agentie) marcheaza acum `execution_result =
+  {"simulated": true}`, iar jurnalul le arata cu `applied: false`.
+
+Raportul se salveaza in `WeeklyReport` (un rand pe client si saptamana;
+regenerarea il inlocuieste) si se genereaza automat lunea la 06:00, de cronul
+ARQ `weekly_reports`, pentru clientii agentiilor active.
 
 #### Ce se aplica efectiv la `/approve`
 

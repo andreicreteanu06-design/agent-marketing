@@ -8,7 +8,9 @@ simplu, ``transport`` injectabil pentru teste deterministe. Fara SDK-ul oficial
 from __future__ import annotations
 
 import base64
+import json
 import logging
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -17,6 +19,7 @@ import pandas as pd
 
 from ppc_agent.errors import CampaignLaunchError, ProviderError, SetupRequiredError
 from ppc_agent.providers.base import MetaMarketingProvider
+from ppc_agent.providers.live.daily import DAILY_COLUMNS, daily_window
 from ppc_agent.providers.meta_campaign import (
     LaunchResult,
     MetaLaunchSpec,
@@ -108,6 +111,25 @@ def _single_touch_paths(name: str, clicks: int, conversions: int) -> list[list[s
     return [[name, "conversion"] for _ in range(conversions)] + [
         [name, "null"] for _ in range(non_converting)
     ]
+
+
+def _conversion_totals(row: dict[str, Any]) -> tuple[float, float]:
+    """Conversiile si venitul unui rand Insights, numarate pe ``_CONVERSION_ACTION_TYPES``.
+
+    Folosit si de agregatul pe 30 de zile, si de citirea zilnica - aceeasi
+    definitie a "conversiei", ca raportul sa nu contrazica planul de buget.
+    """
+    conversions = sum(
+        float(action["value"])
+        for action in row.get("actions", []) or []
+        if action.get("action_type") in _CONVERSION_ACTION_TYPES
+    )
+    revenue = sum(
+        float(action["value"])
+        for action in row.get("action_values", []) or []
+        if action.get("action_type") in _CONVERSION_ACTION_TYPES
+    )
+    return conversions, revenue
 
 
 def _summarize_targeting(targeting: dict[str, Any]) -> str:
@@ -332,18 +354,7 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         out: list[dict[str, Any]] = []
         for row in insights:
             try:
-                actions = row.get("actions", []) or []
-                action_values = row.get("action_values", []) or []
-                conversions = sum(
-                    float(a["value"])
-                    for a in actions
-                    if a.get("action_type") in _CONVERSION_ACTION_TYPES
-                )
-                revenue = sum(
-                    float(a["value"])
-                    for a in action_values
-                    if a.get("action_type") in _CONVERSION_ACTION_TYPES
-                )
+                conversions, revenue = _conversion_totals(row)
                 out.append(
                     {
                         "arm_id": str(row["adset_id"]),
@@ -358,6 +369,54 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 raise ProviderError(f"rand Meta Insights cu forma neasteptata: {exc}") from exc
         columns = ["arm_id", "name", "clicks", "conversions", "cost", "revenue"]
         return pd.DataFrame(out, columns=columns)
+
+    def daily_campaign_performance(
+        self, ad_account_id: str, *, days: int, end_date: date | None = None
+    ) -> pd.DataFrame:
+        """Performanta pe seturi de reclame, zi cu zi (Insights cu ``time_increment=1``).
+
+        Args:
+            ad_account_id: Contul de reclame (``act_...``).
+            days: Cate zile, numarate inapoi de la ``end_date`` inclusiv.
+            end_date: Ultima zi inclusa; implicit ieri.
+
+        Returns:
+            Aceleasi coloane ca :meth:`campaign_performance`, plus ``date``;
+            conversiile raman fractionare, ca la Google Ads.
+
+        Meta omite zilele fara livrare - apelantul le completeaza cu zero.
+        """
+        start, end = daily_window(days, end_date)
+        insights = self._paginate(
+            f"{ad_account_id}/insights",
+            {
+                "level": "adset",
+                "time_increment": 1,
+                "time_range": json.dumps({"since": start.isoformat(), "until": end.isoformat()}),
+                "fields": "adset_id,adset_name,clicks,spend,actions,action_values",
+                "limit": 500,
+            },
+        )
+        out: list[dict[str, Any]] = []
+        for row in insights:
+            try:
+                conversions, revenue = _conversion_totals(row)
+                out.append(
+                    {
+                        "date": date.fromisoformat(str(row["date_start"])),
+                        "arm_id": str(row["adset_id"]),
+                        "name": str(row.get("adset_name", row["adset_id"])),
+                        "clicks": int(row.get("clicks", 0)),
+                        "conversions": conversions,
+                        "cost": float(row.get("spend", 0.0)),
+                        "revenue": revenue,
+                    }
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProviderError(
+                    f"rand zilnic Meta Insights cu forma neasteptata: {exc}"
+                ) from exc
+        return pd.DataFrame(out, columns=DAILY_COLUMNS)
 
     def conversion_paths(self, ad_account_id: str) -> list[list[str]]:
         """Parcursuri single-touch sintetizate din performanta pe seturi de reclame.

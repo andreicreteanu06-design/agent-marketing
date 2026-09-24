@@ -24,6 +24,8 @@ from ppc_agent.copywriter.models import (
     CopySpec,
     OmniAdCopy,
     OmniCopySpec,
+    ReportSummary,
+    ReportSummarySpec,
     StoryboardSpec,
     TikTokAdCopy,
     TikTokCopySpec,
@@ -86,6 +88,17 @@ class BaseLLMClient(ABC):
         """
         raise NotImplementedError(
             f"{type(self).__name__} nu suporta generarea de storyboard"
+        )
+
+    def generate_report_summary(self, spec: ReportSummarySpec) -> ReportSummary:
+        """Scrie rezumatul executiv al unui raport saptamanal din ``spec.facts``.
+
+        Metoda concreta, acelasi motiv ca la celelalte: clientii de test existenti
+        raman instantiabili. Rezultatul NU e verificat aici - cifrele lui se
+        confrunta cu faptele in ``services/reporting/summary.py``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} nu suporta rezumatul de raport"
         )
 
 
@@ -414,6 +427,10 @@ class MockLLMClient(BaseLLMClient):
             ],
         )
 
+    def generate_report_summary(self, spec: ReportSummarySpec) -> ReportSummary:
+        """Intoarce rezumatul determinist din ``spec`` - fara model, fara inventie."""
+        return ReportSummary(summary=spec.template)
+
 
 _DEFAULT_ENDPOINT = "http://localhost:11434"
 _DEFAULT_TIMEOUT = 60.0
@@ -697,4 +714,21 @@ class LiveLLMClient(BaseLLMClient):
             raise CopywriterError(
                 f"raspunsul modelului '{self._model}' nu e JSON valid pentru "
                 f"schema Storyboard: {exc}"
+            ) from exc
+
+    def generate_report_summary(self, spec: ReportSummarySpec) -> ReportSummary:
+        """Cere modelului Ollama rezumatul executiv al unui raport.
+
+        Raises:
+            SetupRequiredError: Ollama nu raspunde, timeout, sau modelul nu e descarcat.
+            CopywriterError: raspunsul nu e JSON valid cu campul ``summary``.
+        """
+        user_prompt = "Fapte:\n" + "\n".join(f"- {fact}" for fact in spec.facts)
+        try:
+            parsed = self._call_ollama_chat(spec.system_prompt, user_prompt)
+            return ReportSummary.model_validate(parsed)
+        except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise CopywriterError(
+                f"raspunsul modelului '{self._model}' nu e JSON valid cu campul "
+                f"'summary': {exc}"
             ) from exc

@@ -196,6 +196,26 @@ class StoryboardSpec(BaseModel):
     system_prompt: str
 
 
+class ReportSummarySpec(BaseModel):
+    """Tot ce ii trebuie unui model ca sa scrie rezumatul executiv al unui raport.
+
+    ``facts`` sunt deja formulate, cu cifrele exacte: modelul le reformuleaza,
+    nu le calculeaza. ``template`` e rezumatul determinist construit din
+    aceleasi fapte - il intoarce clientul ``mock`` si ramane rezerva cand
+    textul modelului nu trece verificarea cifrelor.
+    """
+
+    system_prompt: str
+    facts: list[str]
+    template: str
+
+
+class ReportSummary(BaseModel):
+    """Rezumatul executiv scris de model."""
+
+    summary: str = Field(min_length=1)
+
+
 class QueuedAd(BaseModel):
     """O intrare in coada de aprobare umana ``proposed_ads_queue.json``."""
 

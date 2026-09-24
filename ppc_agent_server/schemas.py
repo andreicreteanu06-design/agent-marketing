@@ -7,7 +7,7 @@ audit) si poate evolua independent de schema DB.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -148,6 +148,15 @@ class ProposedChangeRead(BaseModel):
     error_message: str | None = None
     #: Ce a intors platforma la aplicare - la o lansare, id-urile create.
     execution_result: dict[str, Any] | None = None
+
+
+class WeeklyReportListItem(BaseModel):
+    """O intrare in istoricul rapoartelor - pentru selectorul de saptamani din UI."""
+
+    week_start: date
+    week_end: date
+    generated_at: datetime
+    summary_source: str
 
 
 class CampaignLaunchRequest(BaseModel):
