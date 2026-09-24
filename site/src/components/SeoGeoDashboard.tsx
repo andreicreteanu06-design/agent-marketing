@@ -16,7 +16,7 @@ import {
   type AuditResults,
   type AuditStatusResponse,
 } from "@/lib/seoGeoApi";
-import { RevealSection } from "./RevealSection";
+import { ResultReveal, RevealSection } from "./RevealSection";
 import { CircleProgress } from "./ui/circle-progress";
 import { AuditIssuesView } from "./seo-geo/AuditIssuesView";
 import { AuditPagesTable } from "./seo-geo/AuditPagesTable";
@@ -95,7 +95,6 @@ export function SeoGeoDashboard() {
 
   const [domain, setDomain] = useState("");
   const [brand, setBrand] = useState("");
-  const [maxPages, setMaxPages] = useState(25);
 
   const [status, setStatus] = useState<AuditStatusResponse | null>(null);
   const [results, setResults] = useState<AuditResults | null>(null);
@@ -196,9 +195,9 @@ export function SeoGeoDashboard() {
     setTab("issues");
     setStarting(true);
     try {
+      // Fara max_pages: serverul parcurge tot site-ul, pana la plafonul lui.
       const started = await startAudit(token, {
         domain: domain.trim(),
-        max_pages: maxPages,
         brand: brand.trim() || undefined,
       });
       auditIdRef.current = started.audit_id;
@@ -207,7 +206,7 @@ export function SeoGeoDashboard() {
         status: "running",
         crawled: 0,
         queued: 0,
-        max_pages: maxPages,
+        max_pages: 0, // necunoscut pana la prima interogare de stare
         error: null,
       });
       void poll(token, started.audit_id);
@@ -236,9 +235,15 @@ export function SeoGeoDashboard() {
   }
 
   const running = status?.status === "running";
+  // Cat stim ca are site-ul: paginile citite plus cele descoperite, fara sa
+  // depaseasca plafonul serverului. Raportat la plafon, un site de 12 pagini
+  // ar sta la 12% si apoi ar sari direct la final.
+  const discovered = status ? status.crawled + status.queued : 0;
+  const expectedPages =
+    status && status.max_pages > 0 ? Math.min(status.max_pages, discovered) : discovered;
   const progressPct =
-    status && status.max_pages > 0
-      ? Math.min(100, Math.round((status.crawled / status.max_pages) * 100))
+    status && expectedPages > 0
+      ? Math.min(100, Math.round((status.crawled / expectedPages) * 100))
       : 0;
 
   return (
@@ -254,45 +259,25 @@ export function SeoGeoDashboard() {
           </div>
           <p className="text-sm text-foreground-muted">
             Îți crawlăm site-ul ca un motor de căutare: citim robots.txt și
-            sitemap-ul, descărcăm paginile și verificăm fiecare regulă pe rând.
-            Primești problemele exacte, cu URL-ul și valorile măsurate - nu păreri.
+            sitemap-ul, descărcăm automat toate paginile și verificăm fiecare
+            regulă pe rând. Primești problemele exacte, cu URL-ul și valorile
+            măsurate - nu păreri.
           </p>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[2fr_1fr]">
-            <div className="flex flex-col gap-2">
-              <label htmlFor="audit-domain" className="text-sm font-medium text-foreground">
-                Domeniu
-              </label>
-              <input
-                id="audit-domain"
-                type="text"
-                value={domain}
-                onChange={(e) => setDomain(e.target.value)}
-                placeholder="exemplu.ro"
-                required
-                disabled={running || starting}
-                className="rounded-xl border border-border-subtle bg-background px-4 py-3 text-sm text-foreground placeholder:text-foreground-muted/60 outline-none transition-colors focus:border-brand-cyan disabled:cursor-not-allowed disabled:opacity-60"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label htmlFor="audit-max-pages" className="text-sm font-medium text-foreground">
-                Pagini
-              </label>
-              <select
-                id="audit-max-pages"
-                value={maxPages}
-                onChange={(e) => setMaxPages(Number(e.target.value))}
-                disabled={running || starting}
-                className="rounded-xl border border-border-subtle bg-background px-4 py-3 text-sm text-foreground outline-none transition-colors focus:border-brand-cyan disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {[10, 25, 50, 100].map((value) => (
-                  <option key={value} value={value}>
-                    {value} pagini
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="audit-domain" className="text-sm font-medium text-foreground">
+              Domeniu
+            </label>
+            <input
+              id="audit-domain"
+              type="text"
+              value={domain}
+              onChange={(e) => setDomain(e.target.value)}
+              placeholder="exemplu.ro"
+              required
+              disabled={running || starting}
+              className="rounded-xl border border-border-subtle bg-background px-4 py-3 text-sm text-foreground placeholder:text-foreground-muted/60 outline-none transition-colors focus:border-brand-cyan disabled:cursor-not-allowed disabled:opacity-60"
+            />
           </div>
 
           <div className="flex flex-col gap-2">
@@ -346,7 +331,7 @@ export function SeoGeoDashboard() {
       </RevealSection>
 
       {results && (
-        <RevealSection className="space-y-8">
+        <ResultReveal className="space-y-8">
           <div className="flex flex-col items-center justify-center gap-10 rounded-3xl border border-border-subtle bg-background-elevated p-8 sm:flex-row sm:gap-16">
             <div className="flex flex-col items-center gap-2">
               <CircleProgress value={results.seo.score} label="SEO" getColor={SEO_COLOR} />
@@ -392,7 +377,8 @@ export function SeoGeoDashboard() {
           {results.summary.rate_limited_pages > 0 && (
             <Notice>
               {results.summary.rate_limited_pages} pagini au răspuns 429 (prea
-              multe cereri). Încearcă din nou cu mai puține pagini.
+              multe cereri): site-ul a limitat crawler-ul. Încearcă din nou peste
+              câteva minute.
             </Notice>
           )}
 
@@ -451,7 +437,7 @@ export function SeoGeoDashboard() {
               )}
             </div>
           )}
-        </RevealSection>
+        </ResultReveal>
       )}
     </div>
   );

@@ -83,7 +83,6 @@ MAX_AFFECTED_URLS_PER_ISSUE = 100
 #: FastAPI fara coada de joburi nu mai e unealta potrivita.
 MAX_AUDIT_PAGES = 100
 MIN_AUDIT_PAGES = 1
-DEFAULT_AUDIT_PAGES = 25
 
 
 class AuditRequest(BaseModel):
@@ -92,11 +91,15 @@ class AuditRequest(BaseModel):
     domain: str = Field(
         min_length=1, max_length=2048, description="Domeniul auditat, ex. exemplu.ro"
     )
+    #: Implicit tot plafonul: site-ul nu mai cere un numar de pagini, iar
+    #: crawl-ul se opreste oricum singur cand nu mai gaseste pagini noi - un site
+    #: mic nu costa mai mult, unul mare nu mai iese partial la o limita aleasa
+    #: de mana. Routerul il mai taie o data la ``audit_max_pages`` din setari.
     max_pages: int = Field(
-        default=DEFAULT_AUDIT_PAGES,
+        default=MAX_AUDIT_PAGES,
         ge=MIN_AUDIT_PAGES,
         le=MAX_AUDIT_PAGES,
-        description="Cate pagini are voie sa descarce crawl-ul.",
+        description="Cate pagini are voie sa descarce crawl-ul. Implicit: plafonul serverului.",
     )
     brand: str = Field(
         default="",

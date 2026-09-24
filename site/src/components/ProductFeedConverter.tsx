@@ -20,7 +20,7 @@ import {
   type ParsedSource,
   type ProductAvailability,
 } from "@/lib/productFeed";
-import { RevealSection } from "./RevealSection";
+import { ResultReveal, RevealSection } from "./RevealSection";
 
 type Step = "upload" | "map" | "done";
 
@@ -148,7 +148,7 @@ export function ProductFeedConverter() {
       </RevealSection>
 
       {(step === "map" || step === "done") && source && (
-        <RevealSection className="rounded-3xl border border-border-subtle bg-background-elevated p-6 md:p-8">
+        <ResultReveal className="rounded-3xl border border-border-subtle bg-background-elevated p-6 md:p-8">
           <h2 className="text-lg font-semibold text-foreground">
             2. Potrivește coloanele ({source.rows.length} produse detectate)
           </h2>
@@ -234,11 +234,11 @@ export function ProductFeedConverter() {
           >
             Convertește
           </button>
-        </RevealSection>
+        </ResultReveal>
       )}
 
       {step === "done" && (
-        <RevealSection className="rounded-3xl border border-border-subtle bg-background-elevated p-6 md:p-8">
+        <ResultReveal className="rounded-3xl border border-border-subtle bg-background-elevated p-6 md:p-8">
           <div className="flex items-center gap-2">
             <CheckCircle size={18} weight="fill" className="text-brand-cyan" />
             <h2 className="text-lg font-semibold text-foreground">
@@ -305,7 +305,7 @@ export function ProductFeedConverter() {
               Începe din nou
             </button>
           </div>
-        </RevealSection>
+        </ResultReveal>
       )}
     </div>
   );

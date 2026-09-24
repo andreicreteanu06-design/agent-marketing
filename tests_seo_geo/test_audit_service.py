@@ -118,3 +118,76 @@ def test_scorurile_sunt_in_interval_si_reproductibile() -> None:
     assert 0 <= first.scores["seo"].score <= 100
     assert 0 <= first.scores["geo"].score <= 100
     assert first.scores == second.scores
+
+
+# --- domeniul tastat face redirect -------------------------------------------
+
+_WWW_ROBOTS = "User-agent: *\nAllow: /\nSitemap: https://www.exemplu.ro/sitemap.xml\n"
+_WWW_SITEMAP = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    "<url><loc>https://www.exemplu.ro/</loc></url>"
+    "<url><loc>https://www.exemplu.ro/despre</loc></url>"
+    "</urlset>"
+)
+
+
+def _www_handler(request: httpx.Request) -> httpx.Response:
+    """Site-ul traieste pe www; domeniul fara www raspunde DOAR cu 308, la orice cale."""
+    if request.url.host == "exemplu.ro":
+        return httpx.Response(308, headers={"location": f"https://www.exemplu.ro{request.url.path}"})
+    path = request.url.path
+    if path == "/robots.txt":
+        return httpx.Response(200, text=_WWW_ROBOTS)
+    if path == "/llms.txt":
+        return httpx.Response(200, text="# Exemplu\n> Service auto.\n")
+    if path == "/sitemap.xml":
+        return httpx.Response(200, headers={"content-type": "application/xml"}, text=_WWW_SITEMAP)
+    body = _SITE.get(path)
+    if body is None:
+        return httpx.Response(404, headers={"content-type": "text/html"}, text="<html>404</html>")
+    return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=body)
+
+
+def test_redirectul_spre_www_nu_ascunde_fisierele_site_ului() -> None:
+    """``exemplu.ro`` -> ``www.exemplu.ro``: robots.txt, llms.txt si sitemap-ul sunt pe www.
+
+    Cerute de pe domeniul tastat, primeau 308 si pareau lipsa - raportul spunea
+    "robots.txt: nu" si "lipseste llms.txt" unui site care le are pe amandoua.
+    """
+    result = asyncio.run(
+        run_audit(
+            "https://exemplu.ro/",
+            AuditConfig(max_pages=10),
+            transport=httpx.MockTransport(_www_handler),
+        )
+    )
+    assert result.start_url == "https://www.exemplu.ro/"
+    assert result.robots_txt_found is True
+    assert result.llms_txt_found is True
+    assert result.sitemap_urls_found == 2
+    assert all(issue.issue_type != "missing-llms-txt" for issue in result.issues)
+    # Paginile auditate sunt cele cu continut, nu raspunsul de redirect.
+    assert {page.url for page in result.pages} == {
+        "https://www.exemplu.ro/",
+        "https://www.exemplu.ro/despre",
+    }
+
+
+def test_un_redirect_spre_alt_domeniu_nu_muta_auditul() -> None:
+    """Auditul ramane pe domeniul cerut: nu urmeaza redirectul pe alt site."""
+    hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        if request.url.path == "/":
+            return httpx.Response(301, headers={"location": "https://alt-site.ro/"})
+        return httpx.Response(404, headers={"content-type": "text/html"}, text="<html>404</html>")
+
+    result = asyncio.run(
+        run_audit(
+            "https://exemplu.ro/", AuditConfig(max_pages=10), transport=httpx.MockTransport(handler)
+        )
+    )
+    assert result.start_url == "https://exemplu.ro/"
+    assert "alt-site.ro" not in hosts

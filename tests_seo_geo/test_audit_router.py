@@ -20,6 +20,7 @@ from seo_geo_agent.audit import url_policy
 from seo_geo_agent.audit.scoring import PillarScore
 from seo_geo_agent.audit.service import AuditConfig, AuditProgress, AuditResult
 from seo_geo_agent.audit.store import AuditStore
+from seo_geo_agent.settings import get_seo_geo_settings
 from tests_seo_geo.conftest import make_token
 
 _OTHER_CLIENT_ID = 99
@@ -156,6 +157,24 @@ def test_al_doilea_audit_simultan_e_refuzat(
         "/api/v1/seo-geo/audit", json={"domain": "exemplu.ro"}, headers=auth_headers
     )
     assert response.status_code == 429
+
+
+def test_fara_max_pages_crawl_ul_are_tot_plafonul_serverului(
+    audit_client: tuple[TestClient, AuditStore], auth_headers: dict[str, str]
+) -> None:
+    """Site-ul nu mai cere un numar de pagini: se parcurge tot site-ul, pana la plafon.
+
+    Crawl-ul se opreste oricum singur cand nu mai gaseste pagini noi, deci un
+    site mic nu costa mai mult; unul mare nu mai iese partial la 25 de pagini.
+    """
+    client, _ = audit_client
+    audit_id = client.post(
+        "/api/v1/seo-geo/audit", json={"domain": "exemplu.ro"}, headers=auth_headers
+    ).json()["audit_id"]
+    _wait_for_completion(client, audit_id, auth_headers)
+
+    status = client.get(f"/api/v1/seo-geo/audit/{audit_id}", headers=auth_headers).json()
+    assert status["max_pages"] == get_seo_geo_settings().audit_max_pages
 
 
 def test_max_pages_e_validat_de_schema(

@@ -69,7 +69,15 @@ h3 {
 }
 
 /* Tokenele skill-ului scroll-world (vezi ScrollWorld.tsx) - aliniate pe
-   paleta site-ului, nu pe implicitele lui (bg deschis, accent mov). */
+   paleta site-ului, nu pe implicitele lui (bg deschis, accent mov).
+
+   Si pe :root, nu doar pe containerul .sw-root: motorul injecteaza in <head>
+   `html,body{background:var(--sw-bg,#F5EDE0)}`, intr-un @layer declarat dupa
+   cele Tailwind, deci peste `bg-background`. Pe html variabila nu se mosteneste
+   din container, asa ca fara :root body-ul lua fallback-ul crem. Stilul ramane
+   in <head> si dupa navigarea client-side, deci orice pagina deschisa din
+   homepage (cont, audit, convertor) ramanea crem, cu text alb pe el. */
+:root,
 .sw-root {
   --sw-bg: #09090b;
   --sw-ink: var(--foreground);

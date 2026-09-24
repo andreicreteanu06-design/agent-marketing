@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from seo_geo_agent.audit.crawler import crawl_page, fetch_text_file
+from seo_geo_agent.audit.crawler import CRAWL_HEADERS, crawl_page, fetch_text_file
 from seo_geo_agent.audit.discovery import discover_urls
 from seo_geo_agent.audit.geo_reporters import (
     brand_token_from_url,
@@ -41,12 +41,19 @@ from seo_geo_agent.audit.robots import RobotsTxt, parse_robots_txt
 from seo_geo_agent.audit.scoring import PillarScore, compute_pillar_scores
 from seo_geo_agent.audit.types import CRAWL_USER_AGENT, CrawledPage
 from seo_geo_agent.audit.url_policy import is_crawlable_url
-from seo_geo_agent.audit.url_utils import canonical_url_key, get_origin, is_same_origin
+from seo_geo_agent.audit.url_utils import (
+    canonical_url_key,
+    get_origin,
+    is_same_origin,
+    normalize_url,
+)
 
 logger = logging.getLogger("seo_geo_agent.audit.service")
 
 _MAX_ROBOTS_TXT_BYTES = 500 * 1024
 _MAX_LLMS_TXT_BYTES = 64 * 1024
+#: Redirecturi urmate pentru URL-ul de start: http->https si apex->www incap lejer.
+_MAX_START_REDIRECTS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +136,39 @@ async def _fetch_site_files(
     return parse_robots_txt(robots_text), bool(llms_text and llms_text.strip())
 
 
+async def _resolve_start_url(client: httpx.AsyncClient, start_url: str) -> str:
+    """URL-ul la care raspunde de fapt site-ul, urmand redirecturile URL-ului de start.
+
+    ``exemplu.ro`` -> ``https://www.exemplu.ro/`` e cazul obisnuit. Fara pasul
+    asta, originea auditului ramanea domeniul tastat, iar robots.txt, llms.txt
+    si sitemap-ul se cereau acolo unde site-ul raspunde doar cu redirect - deci
+    "lipseau", desi exista.
+
+    Se urmeaza doar redirecturi in aceeasi granita de crawl (``is_same_origin``:
+    cu/fara ``www.``, upgrade la https) si catre URL-uri crawlabile - aceeasi
+    politica pe care o trec si linkurile descoperite. Un redirect spre alt
+    domeniu sau o eroare de retea lasa URL-ul de start neschimbat; crawl-ul il
+    raporteaza apoi ca de obicei.
+    """
+    origin = get_origin(start_url)
+    current = start_url
+    for _ in range(_MAX_START_REDIRECTS):
+        try:
+            request = client.build_request("GET", current, headers=CRAWL_HEADERS)
+            response = await client.send(request, stream=True, follow_redirects=False)
+            await response.aclose()
+        except (httpx.HTTPError, UnicodeError, ValueError):
+            return current
+        location = response.headers.get("location")
+        if not (300 <= response.status_code < 400 and location):
+            return current
+        target = normalize_url(location, current)
+        if target is None or not is_same_origin(target, origin) or not is_crawlable_url(target):
+            return current
+        current = target
+    return current
+
+
 def _should_crawl(url: str, origin: str, robots: RobotsTxt) -> bool:
     """Filtrul prin care trece FIECARE URL, indiferent de unde a fost descoperit."""
     return (
@@ -158,12 +198,9 @@ async def run_audit(
     """
     started_at = datetime.now(tz=UTC)
     deadline = time.monotonic() + config.time_budget_seconds
-    origin = get_origin(start_url)
-    brand = config.brand.strip() or brand_token_from_url(start_url)
 
     pages: list[CrawledPage] = []
     frontier = _Frontier()
-    frontier.add(start_url, 0, in_sitemap=False)
 
     limits = httpx.Limits(
         max_connections=config.concurrency, max_keepalive_connections=config.concurrency
@@ -171,6 +208,13 @@ async def run_audit(
     async with httpx.AsyncClient(
         timeout=15.0, limits=limits, follow_redirects=False, transport=transport
     ) as client:
+        # Tot auditul (origine, fisierele site-ului, pagina principala) porneste
+        # de unde raspunde site-ul, nu de la forma tastata a domeniului.
+        start_url = await _resolve_start_url(client, start_url)
+        origin = get_origin(start_url)
+        brand = config.brand.strip() or brand_token_from_url(start_url)
+        frontier.add(start_url, 0, in_sitemap=False)
+
         robots, llms_txt_found = await _fetch_site_files(client, origin)
 
         sitemap_urls = await discover_urls(client, origin, robots, config.max_pages)
