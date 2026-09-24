@@ -55,6 +55,7 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import ExecuteProposalRequest, ProposedChangeRead
+from ppc_agent_server.spend_guard import check_spend_limit
 
 router = APIRouter(prefix="/api/v1/proposals", tags=["proposals"])
 
@@ -113,24 +114,8 @@ def _require_mutation_provider(
 def _check_spend_limit(
     session: Session, account: ClientAccount, proposal: ProposedChange
 ) -> None:
-    """Verifica angajamentul TOTAL al clientului, nu doar randul curent.
-
-    Altfel N aprobari individuale, fiecare sub plafon, ar putea depasi impreuna
-    plafonul absolut. Echivalentul per-propunere al verificarii pe intregul
-    changeset din ``ApprovalGate.flush()`` (CLI).
-    """
-    already_executed = session.exec(
-        select(ProposedChange).where(
-            ProposedChange.client_account_id == account.id,
-            ProposedChange.status == ChangeStatus.EXECUTED,
-        )
-    ).all()
-    total_committed = sum(
-        (p.projected_daily_spend for p in already_executed), Decimal("0")
-    )
-    AbsoluteSpendLimiter(account.max_daily_spend).check(
-        total_committed + proposal.projected_daily_spend
-    )
+    """Angajamentul TOTAL al clientului plus aceasta propunere - vezi ``spend_guard``."""
+    check_spend_limit(session, account, proposal.projected_daily_spend)
 
 
 def _client_proposal(
@@ -229,6 +214,8 @@ def approve_proposal(
     else:
         proposal.status = ChangeStatus.FAILED
         proposal.error_message = result.error
+    # La o lansare: id-urile create - sau campania ramasa dupa un rollback esuat.
+    proposal.execution_result = result.created or None
     proposal.decided_at = decided_at
     proposal.decided_by = client_user.email
     session.add(proposal)

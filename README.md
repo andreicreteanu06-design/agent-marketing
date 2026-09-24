@@ -524,10 +524,32 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `GET /api/v1/proposals/pending` | Propunerile in asteptare ale clientului autentificat (JWT de client) |
 | `POST /api/v1/proposals/{id}/approve` | Aproba **si aplica** pe platforma — vezi mai jos ce se aplica efectiv |
 | `POST /api/v1/proposals/{id}/reject` | Respinge; nu atinge nicio platforma |
+| `POST /api/v1/campaigns/propose_launch` | Propune lansarea unei campanii Meta noi; nu creeaza nimic pana la aprobare |
 
 > **Gap semnalat, nu construit:** niciun endpoint nu creeaza inca `ProposedChange`
 > automat dintr-un plan — echivalentul comenzii `propose` din CLI. O extensie
 > naturala, in afara listei de cerinte initiale.
+
+#### Lansarea de campanii noi: `POST /api/v1/campaigns/propose_launch`
+
+Nu creeaza nimic in Meta. Valideaza specificatia, verifica plafonul zilnic
+(angajamentul TOTAL + bugetul nou) si depune o propunere `CREATE_CAMPAIGN`
+`pending`, cu specificatia completa in `after` — exact ce vede omul care aproba.
+Obiectivul (`OUTCOME_SALES`/`OUTCOME_LEADS`) si evenimentul implicit vin din
+`ClientAccount.objective`, niciodata din cerere.
+
+Payload-urile Meta (functii pure, `ppc_agent/providers/meta_campaign.py`) includ
+campurile fara de care v23-v25 refuza crearea: `is_adset_budget_sharing_enabled`
+si `special_ad_categories` pe campanie, `targeting_automation.advantage_audience`
+pe ad set. Campania, ad set-ul si anuntul pornesc toate `PAUSED`.
+
+La aprobare, `LiveMetaMarketingProvider.launch_campaign` descarca intai
+imaginea (validare anti-SSRF, inainte de orice apel Meta), apoi creeaza pe
+v25.0: campanie → ad set → imagine → creative → anunt. Daca un pas de
+dupa campanie pica, campania se sterge (`DELETE`), iar propunerea ramane
+`failed` cu pasul, eroarea exacta de la Meta si rezultatul rollback-ului.
+Id-urile create ajung in `execution_result`; o campanie pe care rollback-ul
+n-a putut-o sterge apare acolo ca `orphan_campaign_id`.
 
 #### Ce se aplica efectiv la `/approve`
 

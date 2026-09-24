@@ -23,6 +23,7 @@ from ppc_agent.errors import (
 from ppc_agent_server.db import init_db
 from ppc_agent_server.routers import (
     auth,
+    campaigns,
     client_auth,
     clients,
     hybrid_insights,
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth.router)
+    app.include_router(campaigns.router)
     app.include_router(client_auth.router)
     app.include_router(clients.router)
     app.include_router(hybrid_insights.router)

@@ -138,6 +138,39 @@ class ProposedChangeRead(BaseModel):
     created_at: datetime
     decided_at: datetime | None = None
     decided_by: str | None = None
+    #: Starea dorita - la o lansare, specificatia completa a campaniei. Omul care
+    #: aproba trebuie sa vada EXACT ce se va crea, nu un rezumat.
+    after: dict[str, Any] = Field(default_factory=dict)
+    #: De ce a picat executia (doar la ``failed``).
+    error_message: str | None = None
+    #: Ce a intors platforma la aplicare - la o lansare, id-urile create.
+    execution_result: dict[str, Any] | None = None
+
+
+class CampaignLaunchRequest(BaseModel):
+    """Corpul cererii ``POST /api/v1/campaigns/propose_launch``.
+
+    Obiectivul NU e aici: se ia din ``ClientAccount.objective``, niciodata
+    ghicit si niciodata suprascris per cerere - acelasi camp schimba si RAG-ul
+    de copy, si logica de urmarire a conversiilor.
+    """
+
+    campaign_name: str = Field(min_length=1, max_length=200)
+    #: In MONEDA CONTULUI (RON), nu in unitati minime. Conversia in bani se face
+    #: abia la trimiterea catre Meta, dupa aprobare.
+    daily_budget: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    pixel_id: str = Field(pattern=r"^\d+$")
+    page_id: str = Field(pattern=r"^\d+$")
+    target_url: str = Field(min_length=9, max_length=2048)
+    headline: str = Field(min_length=1, max_length=255)
+    primary_text: str = Field(min_length=1, max_length=2200)
+    image_url: str = Field(min_length=9, max_length=2048)
+    #: Implicit: evenimentul obiectivului (PURCHASE la vanzari, LEAD la lead-uri).
+    custom_event_type: str | None = None
+    #: Implicit: ``ClientAccount.geo``.
+    country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    #: Implicit: SHOP_NOW la vanzari, LEARN_MORE la lead-uri.
+    call_to_action: str | None = None
 
 
 class ExecuteProposalRequest(BaseModel):

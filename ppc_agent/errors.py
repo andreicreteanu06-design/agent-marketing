@@ -164,3 +164,26 @@ class StoryboardValidationError(CreativeError):
         self.issues = issues
         joined = "; ".join(issues)
         super().__init__(f"storyboard invalid ({len(issues)} probleme): {joined}")
+
+
+class CampaignLaunchError(ProviderError):
+    """Lansarea unei campanii a picat la un pas anume.
+
+    Mesajul spune TREI lucruri, fiindca omul care citeste ``error_message``
+    are nevoie de toate ca sa decida ce face: la ce pas a picat, ce a raspuns
+    exact platforma, si ce a ramas in cont dupa rollback.
+    """
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        reason: str,
+        outcome: str,
+        campaign_id: str | None = None,
+        rolled_back: bool = False,
+    ) -> None:
+        self.stage = stage
+        self.campaign_id = campaign_id
+        self.rolled_back = rolled_back
+        super().__init__(f"lansarea a picat la pasul '{stage}': {reason}. {outcome}")

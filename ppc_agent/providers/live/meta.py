@@ -7,19 +7,38 @@ simplu, ``transport`` injectabil pentru teste deterministe. Fara SDK-ul oficial
 
 from __future__ import annotations
 
+import base64
+import logging
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import httpx
 import pandas as pd
 
-from ppc_agent.errors import ProviderError, SetupRequiredError
+from ppc_agent.errors import CampaignLaunchError, ProviderError, SetupRequiredError
 from ppc_agent.providers.base import MetaMarketingProvider
+from ppc_agent.providers.meta_campaign import (
+    LaunchResult,
+    MetaLaunchSpec,
+    ad_fields,
+    adset_fields,
+    campaign_fields,
+    creative_fields,
+    normalize_ad_account_id,
+)
+from seo_geo_agent.audit import url_policy
+from seo_geo_agent.audit.types import CRAWL_USER_AGENT
+
+logger = logging.getLogger("ppc_agent.providers.live.meta")
 
 _API_VERSION = "v25.0"  # Graph API - Meta reviseaza de ~2x/an.
 _BASE_URL = f"https://graph.facebook.com/{_API_VERSION}"
 _DEFAULT_TIMEOUT = 30.0
 _MAX_PAGES = 20
+#: Plafonul imaginii descarcate pentru anunt. Meta accepta pana la ~30 MB, dar o
+#: imagine de reclama are rar peste cativa MB - iar descarcarea o facem noi, in
+#: memorie, dintr-un URL venit din datele clientului.
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 # error.code 190 = OAuthException (token expirat/revocat/invalid) - documentat
 # de Meta ca eroare de autentificare, nu de continut al cererii.
@@ -126,6 +145,36 @@ def minor_units_factor(currency: str) -> int:
         ``1`` pentru monedele fara subunitate, ``100`` pentru restul.
     """
     return 1 if currency.strip().upper() in _ZERO_DECIMAL_CURRENCIES else 100
+
+
+def to_minor_units(amount: Decimal, currency: str) -> int:
+    """Suma in unitatea minima a monedei, cum o cere Graph API (25.50 RON -> 2550).
+
+    Singurul loc din cod care face conversia - si actualizarea de buget, si
+    lansarea de campanii trec pe aici, ca doua rotunjiri sa nu poata diverge.
+    """
+    factor = minor_units_factor(currency)
+    return int((amount * factor).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _created_id(response: dict[str, Any], what: str) -> str:
+    value = response.get("id")
+    if not value:
+        raise ProviderError(f"Meta a raspuns fara id la crearea {what}: {str(response)[:200]}")
+    return str(value)
+
+
+def _image_hash(response: dict[str, Any]) -> str:
+    """Hash-ul din raspunsul ``/adimages``: ``{"images": {"<cheie>": {"hash": ...}}}``."""
+    images = response.get("images")
+    if isinstance(images, dict):
+        for entry in images.values():
+            if isinstance(entry, dict) and entry.get("hash"):
+                return str(entry["hash"])
+    raise ProviderError(f"Meta nu a intors hash-ul imaginii: {str(response)[:200]}")
+
+
+_NOTHING_CREATED = "Nimic nu a fost creat in contul Meta."
 
 
 class LiveMetaMarketingProvider(MetaMarketingProvider):
@@ -330,8 +379,8 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
     # --- mutatii (scriere pe contul real) -----------------------------------
     #
     # De aici incolo se schimba ceva intr-un cont pe care clientul plateste
-    # bani. Toate trec prin _mutate, singurul loc care vorbeste in scriere cu
-    # Graph API, ca taxonomia de erori sa fie una singura:
+    # bani. Toate scrierile trec prin _mutate/_delete si sunt interpretate de
+    # _checked - un singur loc, ca taxonomia de erori sa fie una singura:
     #   - token expirat/revocat/fara permisiuni -> SetupRequiredError (se rezolva
     #     reconectand contul; reincercarea acum n-are sens);
     #   - orice refuz de continut (obiect inexistent, buget sub minim, campanie
@@ -339,18 +388,19 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
     # Motorul de executie le prinde pe amandoua si le scrie in error_message.
 
     async def _mutate(self, object_id: str, payload: dict[str, str]) -> dict[str, Any]:
-        """Trimite un POST de modificare pe ``/{object_id}`` si valideaza raspunsul.
+        """Trimite un POST pe ``/{object_id}`` si valideaza raspunsul.
 
         Args:
-            object_id: Id-ul obiectului Meta (campanie, set de reclame, anunt).
-            payload: Campurile de schimbat, exact cum le asteapta Graph API.
+            object_id: Id-ul obiectului Meta, sau o cale de creare
+                (``act_123/campaigns``).
+            payload: Campurile, exact cum le asteapta Graph API.
 
         Returns:
-            Corpul JSON al raspunsului (``{"success": true}`` de obicei).
+            Corpul JSON al raspunsului (``{"success": true}`` sau ``{"id": ...}``).
 
         Raises:
             SetupRequiredError: token lipsa/expirat, sau Meta nu raspunde.
-            ProviderError: Meta a refuzat schimbarea (mesajul ei, neschimbat).
+            ProviderError: Meta a refuzat (mesajul ei, neschimbat).
         """
         if not object_id.strip():
             raise ProviderError("id de obiect Meta gol - nu am pe ce aplica schimbarea")
@@ -367,7 +417,27 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
             raise SetupRequiredError(
                 f"Meta Graph API nu a raspuns in {self._timeout:.0f}s."
             ) from exc
+        return self._checked(response)
 
+    async def _delete(self, object_id: str) -> None:
+        """``DELETE /{object_id}`` - folosit doar de rollback-ul lansarii."""
+        headers = self._headers()
+        url = f"{_BASE_URL}/{object_id}"
+        try:
+            async with httpx.AsyncClient(
+                transport=self._async_transport, timeout=self._timeout
+            ) as client:
+                response = await client.delete(url, headers=headers)
+        except httpx.ConnectError as exc:
+            raise SetupRequiredError(f"Meta Graph API nu raspunde la {_BASE_URL}.") from exc
+        except httpx.TimeoutException as exc:
+            raise SetupRequiredError(
+                f"Meta Graph API nu a raspuns in {self._timeout:.0f}s."
+            ) from exc
+        self._checked(response)
+
+    def _checked(self, response: httpx.Response) -> dict[str, Any]:
+        """Corpul unui raspuns de scriere, sau refuzul Meta tradus in eroarea noastra."""
         try:
             data: dict[str, Any] = response.json()
         except ValueError:
@@ -387,8 +457,17 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
     def _mutation_error(
         self, response: httpx.Response, error: dict[str, Any]
     ) -> SetupRequiredError | ProviderError:
-        """Traduce un refuz Meta in eroarea noastra, pastrandu-i mesajul."""
+        """Traduce un refuz Meta in eroarea noastra, pastrandu-i mesajul.
+
+        ``message`` e deseori generic ("Invalid parameter"); motivul pe care il
+        poate repara un om sta in ``error_user_msg``. Le pastram pe amandoua,
+        neparafrazate.
+        """
         message = str(error.get("message") or response.text[:200] or response.reason_phrase)
+        user_msg = error.get("error_user_msg")
+        if user_msg:
+            title = error.get("error_user_title")
+            message = f"{message} ({title}: {user_msg})" if title else f"{message} ({user_msg})"
         if response.status_code in (401, 403) or error.get("code") in _AUTH_ERROR_CODES:
             return SetupRequiredError(
                 f"Meta Graph API a refuzat autentificarea: {message}. "
@@ -445,6 +524,212 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
             raise ProviderError(
                 f"buget zilnic negativ ({new_daily_budget}) - Meta nu accepta asa ceva"
             )
-        factor = minor_units_factor(self._currency)
-        minor = (new_daily_budget * factor).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        minor = to_minor_units(new_daily_budget, self._currency)
         await self._mutate(object_id, {"daily_budget": str(minor)})
+
+    # --- lansarea unei campanii noi ------------------------------------------
+    #
+    # Ajunge aici DOAR dupa aprobarea umana a unei propuneri CREATE_CAMPAIGN
+    # (vezi services/execution_engine.py). Payload-urile le construiesc functiile
+    # pure din providers/meta_campaign.py; aici stau doar ordinea apelurilor,
+    # conversia bugetului si rollback-ul.
+
+    async def _download_image(self, image_url: str) -> bytes:
+        """Imaginea anuntului, descarcata de noi si verificata.
+
+        URL-ul vine din datele clientului, deci se valideaza ca orice tinta
+        nesigura: fara adrese interne, nici directe, nici prin DNS (acelasi
+        filtru ca la crawler-ul de audit). Redirecturile NU se urmaresc - un
+        salt ar putea duce exact unde validarea n-a verificat.
+
+        Limita cunoscuta, aceeasi ca la crawler: DNS-ul se rezolva o data la
+        validare si inca o data la cerere, deci un DNS ostil ar putea raspunde
+        diferit intre ele.
+
+        Raises:
+            ProviderError: URL refuzat, raspuns ne-200, continut care nu e
+                imagine, sau peste plafon.
+        """
+        try:
+            # Rezultatul (URL-ul normalizat) se arunca DELIBERAT: normalizarea
+            # sorteaza parametrii din query, ceea ce strica URL-urile semnate
+            # ale CDN-urilor. Validam gazda, dar cerem URL-ul exact.
+            await url_policy.normalize_and_validate_start_url(image_url)
+        except (ValueError, url_policy.CrawlTargetBlockedError) as exc:
+            raise ProviderError(
+                f"imaginea nu se poate descarca de la '{image_url}': adresa refuzata ({exc})"
+            ) from exc
+
+        chunks: list[bytes] = []
+        try:
+            async with (
+                httpx.AsyncClient(
+                    transport=self._async_transport,
+                    timeout=self._timeout,
+                    follow_redirects=False,
+                ) as client,
+                client.stream(
+                    "GET", image_url, headers={"User-Agent": CRAWL_USER_AGENT}
+                ) as response,
+            ):
+                if 300 <= response.status_code < 400:
+                    raise ProviderError(
+                        f"URL-ul imaginii redirectioneaza ({response.status_code}) - "
+                        "foloseste adresa finala a imaginii"
+                    )
+                if response.status_code != 200:
+                    raise ProviderError(
+                        f"imaginea de la '{image_url}' a raspuns {response.status_code}"
+                    )
+                content_type = response.headers.get("content-type", "").lower()
+                if not content_type.startswith("image/"):
+                    raise ProviderError(
+                        f"'{image_url}' nu e o imagine "
+                        f"(content-type '{content_type or 'lipsa'}')"
+                    )
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > _MAX_IMAGE_BYTES:
+                        raise ProviderError(
+                            f"imaginea depaseste {_MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+                        )
+                    chunks.append(chunk)
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                f"imaginea de la '{image_url}' nu a putut fi descarcata: {exc}"
+            ) from exc
+
+        image = b"".join(chunks)
+        if not image:
+            raise ProviderError(f"imaginea de la '{image_url}' e goala")
+        return image
+
+    async def _rollback(self, campaign_id: str) -> tuple[bool, str]:
+        """Sterge campania creata in aceasta lansare.
+
+        Returns:
+            ``(reusit, ce s-a intamplat)`` - textul ajunge in ``error_message``.
+
+        Stergerea campaniei ia cu ea ad set-urile si anunturile de sub ea.
+        Imaginea si creative-ul raman in biblioteca contului: singure nu pot
+        cheltui nimic, deci nu merita un al doilea punct de esec aici.
+        Nu ridica exceptii - un rollback esuat trebuie RAPORTAT, nu sa ascunda
+        eroarea initiala.
+        """
+        try:
+            await self._delete(campaign_id)
+        except Exception as exc:
+            logger.error(
+                "ROLLBACK ESUAT: campania %s poate sa fi ramas in cont: %s", campaign_id, exc
+            )
+            return False, (
+                f"ATENTIE: rollback-ul a esuat ({exc}) - campania {campaign_id} poate sa fi "
+                "ramas in cont, OPRITA (PAUSED). Verifica in Ads Manager si sterge-o manual "
+                "daca exista."
+            )
+        return True, f"Campania {campaign_id} a fost stearsa (rollback), cu tot ce era sub ea."
+
+    async def launch_campaign(self, ad_account_id: str, spec: MetaLaunchSpec) -> LaunchResult:
+        """Creeaza o campanie de conversii completa, totul OPRIT (PAUSED).
+
+        Args:
+            ad_account_id: Contul de reclame (``act_123`` sau ``123``).
+            spec: Specificatia aprobata - exact cea din propunere.
+
+        Returns:
+            Id-urile tuturor obiectelor create.
+
+        Raises:
+            CampaignLaunchError: un pas a picat. Mesajul spune pasul, eroarea
+                exacta de la Meta si ce a ramas in cont dupa rollback.
+
+        Ordinea:
+
+        0. imaginea se descarca de la noi - INAINTE de orice apel Meta, ca un
+           URL stricat sa nu lase in urma o campanie de sters;
+        1. campania; 2. ad set-ul (bugetul se converteste in unitati minime
+           ABIA acum, dupa moneda contului); 3. imaginea urcata in Meta;
+           4. creative-ul; 5. anuntul.
+
+        Daca pica ceva dupa pasul 1, campania se sterge - altfel fiecare
+        incercare esuata ar lasa resturi in contul clientului.
+        """
+        account = normalize_ad_account_id(ad_account_id)
+        try:
+            image = await self._download_image(spec.image_url)
+        except ProviderError as exc:
+            raise CampaignLaunchError(
+                stage="image_download", reason=str(exc), outcome=_NOTHING_CREATED
+            ) from exc
+
+        try:
+            campaign_id = _created_id(
+                await self._mutate(f"{account}/campaigns", campaign_fields(spec)), "campaniei"
+            )
+        except Exception as exc:
+            # Un timeout NU inseamna "nu s-a creat": Meta poate crea campania si
+            # sa piarda raspunsul pe drum. Nu stim - si o spunem.
+            outcome = (
+                "Rezultat NECUNOSCUT: Meta nu a raspuns la timp, deci campania "
+                f"'{spec.campaign_name}' poate exista totusi. Verifica in Ads Manager "
+                "inainte sa propui lansarea din nou."
+                if isinstance(exc.__cause__, httpx.TimeoutException)
+                else _NOTHING_CREATED
+            )
+            raise CampaignLaunchError(stage="campaign", reason=str(exc), outcome=outcome) from exc
+
+        stage = "adset"
+        try:
+            budget_minor = to_minor_units(spec.daily_budget, self._currency)
+            adset_id = _created_id(
+                await self._mutate(
+                    f"{account}/adsets",
+                    adset_fields(spec, campaign_id=campaign_id, daily_budget_minor=budget_minor),
+                ),
+                "setului de reclame",
+            )
+            stage = "image_upload"
+            image_hash = _image_hash(
+                await self._mutate(
+                    f"{account}/adimages", {"bytes": base64.b64encode(image).decode("ascii")}
+                )
+            )
+            stage = "creative"
+            creative_id = _created_id(
+                await self._mutate(
+                    f"{account}/adcreatives", creative_fields(spec, image_hash=image_hash)
+                ),
+                "creative-ului",
+            )
+            stage = "ad"
+            ad_id = _created_id(
+                await self._mutate(
+                    f"{account}/ads", ad_fields(spec, adset_id=adset_id, creative_id=creative_id)
+                ),
+                "anuntului",
+            )
+        except Exception as exc:
+            rolled_back, outcome = await self._rollback(campaign_id)
+            raise CampaignLaunchError(
+                stage=stage,
+                reason=str(exc),
+                outcome=outcome,
+                campaign_id=campaign_id,
+                rolled_back=rolled_back,
+            ) from exc
+
+        logger.info(
+            "campanie lansata OPRITA in %s: campanie %s, set %s, anunt %s",
+            account,
+            campaign_id,
+            adset_id,
+            ad_id,
+        )
+        return LaunchResult(
+            campaign_id=campaign_id,
+            adset_id=adset_id,
+            image_hash=image_hash,
+            creative_id=creative_id,
+            ad_id=ad_id,
+        )

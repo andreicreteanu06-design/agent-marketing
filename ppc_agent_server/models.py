@@ -53,6 +53,11 @@ class ChangeOp(enum.StrEnum):
     CREATE = "CREATE"
     UPDATE = "UPDATE"
     PAUSE = "PAUSE"
+    #: Lansarea unei campanii noi, de la zero. Distinct de CREATE (care creeaza
+    #: o piesa intr-o structura existenta, ex. un cuvant cheie negativ): aici
+    #: ``after`` poarta specificatia completa a campaniei, iar la aprobare se
+    #: creeaza campanie + ad set + anunt, toate oprite.
+    CREATE_CAMPAIGN = "CREATE_CAMPAIGN"
 
 
 class ChangeStatus(enum.StrEnum):
@@ -295,6 +300,11 @@ class ProposedChange(SQLModel, table=True):
     #: interfata: omul trebuie sa stie daca reincercarea are sens (token expirat)
     #: sau nu (resursa nu mai exista pe platforma).
     error_message: str | None = None
+    #: Ce a intors platforma cand propunerea s-a aplicat - la o lansare, id-urile
+    #: obiectelor create. Separat de ``after``, care ramane exact ce s-a aprobat.
+    execution_result: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
 
     client_account: ClientAccount = Relationship(back_populates="proposed_changes")
 
