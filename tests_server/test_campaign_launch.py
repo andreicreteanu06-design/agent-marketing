@@ -382,3 +382,47 @@ def test_cererea_invalida_da_422_si_nu_salveaza_nimic(
 
 def test_propunerea_cere_autentificare(client: TestClient) -> None:
     assert client.post("/api/v1/campaigns/propose_launch", json=_request()).status_code == 401
+
+
+# --- brief-ul de lansare ----------------------------------------------------
+
+
+def test_propunerea_poarta_brief_ul_agentilor(
+    launcher: tuple[TestClient, dict[str, str], int],
+    no_network: list[str],
+) -> None:
+    """Omul care aproba vede ce au spus ambii agenti, nu doar specificatia."""
+    client, headers, _ = launcher
+    body = client.post(
+        "/api/v1/campaigns/propose_launch", headers=headers, json=_request()
+    ).json()
+
+    brief = body["before"]
+    assert brief["verdict"] in ("ok", "warnings")
+    assert brief["landing_page"]["status"] == "ok"
+    assert brief["learning_phase"]["status"] == "ok"
+    assert brief["budget_position"]["status"] in ("ok", "no_history")
+    assert "gsc" in brief["message_signals"]
+    assert "Brief de lansare" in body["rationale"]
+    assert no_network == []
+
+
+def test_o_pagina_de_destinatie_404_opreste_propunerea(
+    launcher: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    no_network: list[str],
+) -> None:
+    """Singurul fel de problema care blocheaza: banii ar arde cu certitudine."""
+    client, headers, _ = launcher
+    response = client.post(
+        "/api/v1/campaigns/propose_launch",
+        headers=headers,
+        json=_request(target_url="https://exemplu.ro/pagina-404"),
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["blocking"]
+    assert "404" in detail["message"]
+    assert detail["brief"]["verdict"] == "blocked"
+    assert session.exec(select(ProposedChange)).all() == []

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from ppc_agent.alignment.meta_liquidity import _learning_exit_days, consolidation_plan
+from ppc_agent.alignment.meta_liquidity import consolidation_plan, learning_exit_days
 from ppc_agent.alignment.models import AdSet
 
 
@@ -83,11 +83,11 @@ def test_disjoint_audiences_are_merged_when_needed_to_reach_threshold() -> None:
 
 def test_learning_exit_days_formula() -> None:
     # 70 conversii/sapt -> 10/zi -> 50/10 = 5 zile.
-    assert _learning_exit_days(70.0, 50.0) == 5.0
+    assert learning_exit_days(70.0, 50.0) == 5.0
     # 50 conversii/sapt -> ~7.14/zi -> 7 zile (plafon nu conteaza).
-    assert _learning_exit_days(50.0, 50.0) == 7.0
+    assert learning_exit_days(50.0, 50.0) == 7.0
     # Sub prag -> None.
-    assert _learning_exit_days(30.0, 50.0) is None
+    assert learning_exit_days(30.0, 50.0) is None
 
 
 def test_recommend_cbo_only_with_real_merges() -> None:

@@ -11,8 +11,11 @@ from ppc_agent.alignment.models import AdSet, AdSetMerge, LiquidityPlan
 from ppc_agent.texttools import tokenize
 
 _AUDIENCE_OVERLAP_THRESHOLD = 0.30
-_LEARNING_WINDOW_DAYS = 7.0
-_LEARNING_EVENTS = 50.0
+#: Fereastra si pragul fazei de invatare Meta: ~50 de evenimente de optimizare
+#: in ~7 zile. Publice fiindca le foloseste si brief-ul de lansare
+#: (``services/launch_brief.py``) - aceeasi formula, nu o copie.
+LEARNING_WINDOW_DAYS = 7.0
+LEARNING_EVENTS = 50.0
 _MAX_LEARNING_DAYS = 14.0
 
 
@@ -48,7 +51,7 @@ def _cluster_by_audience(ad_sets: list[AdSet]) -> list[list[AdSet]]:
     return list(groups.values())
 
 
-def _learning_exit_days(projected_weekly: float, target: float) -> float | None:
+def learning_exit_days(projected_weekly: float, target: float) -> float | None:
     """Zile estimate pana la iesirea din faza de invatare, sau ``None`` daca nu iese.
 
     Math: Meta cere ~``50`` evenimente de optimizare in ~``7`` zile. La un ritm de
@@ -57,10 +60,10 @@ def _learning_exit_days(projected_weekly: float, target: float) -> float | None:
     """
     if projected_weekly < target:
         return None
-    daily_rate = projected_weekly / _LEARNING_WINDOW_DAYS
+    daily_rate = projected_weekly / LEARNING_WINDOW_DAYS
     if daily_rate <= 0.0:
         return None
-    return round(min(_MAX_LEARNING_DAYS, _LEARNING_EVENTS / daily_rate), 1)
+    return round(min(_MAX_LEARNING_DAYS, LEARNING_EVENTS / daily_rate), 1)
 
 
 def consolidation_plan(
@@ -135,7 +138,7 @@ def consolidation_plan(
                 source_ids=[a.ad_set_id for a in group],
                 projected_weekly_conversions=projected,
                 clears_threshold=clears,
-                learning_exit_days=_learning_exit_days(projected, target),
+                learning_exit_days=learning_exit_days(projected, target),
                 warnings=warnings,
             )
         )

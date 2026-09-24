@@ -89,7 +89,12 @@ def collect_daily_histories(
     return histories
 
 
-def _arms_from_performance(frame: pd.DataFrame, *, platform: str = "google_ads") -> list[ArmStats]:
+def arms_from_performance(frame: pd.DataFrame, *, platform: str = "google_ads") -> list[ArmStats]:
+    """Tabelul ``campaign_performance()`` al unui furnizor, ca brate pentru Kelly/Thompson.
+
+    Public fiindca il foloseste si brief-ul de lansare (``services/launch_brief.py``):
+    aceeasi conversie a banilor in ``Decimal``, nu o a doua.
+    """
     arms: list[ArmStats] = []
     for record in frame.to_dict(orient="records"):
         arms.append(
@@ -166,13 +171,13 @@ def run_plan(
     meta_ads = factory.meta()
     customer_id, advertiser_id, ad_account_id = resolve_account_ids(config)
 
-    google_arms = _arms_from_performance(
+    google_arms = arms_from_performance(
         ads.campaign_performance(customer_id), platform="google_ads"
     )
-    tiktok_arms = _arms_from_performance(
+    tiktok_arms = arms_from_performance(
         tiktok_ads.campaign_performance(advertiser_id), platform="tiktok_ads"
     )
-    meta_arms = _arms_from_performance(
+    meta_arms = arms_from_performance(
         meta_ads.campaign_performance(ad_account_id), platform="meta_ads"
     )
     arms = google_arms + tiktok_arms + meta_arms

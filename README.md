@@ -551,6 +551,43 @@ dupa campanie pica, campania se sterge (`DELETE`), iar propunerea ramane
 Id-urile create ajung in `execution_result`; o campanie pe care rollback-ul
 n-a putut-o sterge apare acolo ca `orphan_campaign_id`.
 
+#### Brief-ul de lansare: agentii SEO/GEO si PPC, inainte de coada
+
+Inainte ca o lansare sa intre in coada, `propose_launch` ii ataseaza un brief
+(`ppc_agent/services/launch_brief.py`), salvat in `before` — contextul in care
+se ia decizia, langa specificatia din `after`:
+
+| Sectiune | Cine | Ce spune |
+|---|---|---|
+| Pagina de destinatie | agentul SEO/GEO | aceeasi analiza si verificari ca auditul (`page_from_html` + `run_page_reporters`), plus prezenta pixelului in HTML |
+| Faza de invatare | agentul PPC | formula Modulului 3 (~50 evenimente in 7 zile): iese sau nu, CPA maxim pentru iesire, bugetul necesar; capacitatea bugetului (`budget_strategy`) |
+| Pozitia in cont | agentul PPC | Kelly: plafonul pe care il justifica istoricul; Thompson: setul de reclame cel mai probabil bun — tinta de batut |
+| Semnale pentru mesaj | Modulul 1 | interogarile GSC, ideile Keyword Planner, ratingul si sentimentul GBP |
+
+Agentul PPC **interpreteaza** ce raporteaza agentul SEO/GEO: auditul e scris
+pentru motoarele de cautare, iar o pagina de reclama e judecata de vizitator.
+Doar pagina stricata, eroarea de server, raspunsul lent, lipsa H1 si continutul
+subtire devin avertismente; restul (meta description, canonical, `noindex`...)
+apare separat, ca semnal SEO. `noindex` e normal pe paginile de reclama.
+
+**Blocheaza doar ce e obiectiv:** pagina 404/410 sau o adresa care nu e publica
+— raspuns 422, propunerea nu se salveaza. Tot restul e avertisment: Learning
+Limited, pagina lenta, pixel negasit, rating GBP slab. Un site care opreste
+crawler-ul nostru nu dovedeste o pagina moarta, deci nici el nu blocheaza.
+
+Ce NU face brief-ul, deliberat:
+
+- **Campania noua nu intra ca brat in Thompson.** Fara date, priorul Beta(1,1)
+  i-ar da o rata de conversie medie de 50%, deci ar "castiga" aproape mereu —
+  un artefact statistic. Thompson ruleaza pe ce exista si da tinta de batut.
+- **Markov nu intra in decizie.** Atribuie conversii pe parcursuri reale, iar o
+  campanie care nu exista n-are niciunul. Brief-ul o spune explicit.
+- **Fara istoric, Kelly si Thompson tac.** Prima campanie a unui cont e buget de
+  explorare; cele doua intra in calcul dupa primele conversii.
+
+O sursa indisponibila (GSC neconectat, Business Profile neaprobat inca) apare
+ca atare si nu blocheaza.
+
 #### Ce se aplica efectiv la `/approve`
 
 Doar **Meta**, si doar pe obiecte cu id real: `meta_campaign/{id}`,

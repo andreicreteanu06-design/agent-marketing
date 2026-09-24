@@ -211,7 +211,44 @@ async def crawl_page(
     finally:
         await response.aclose()
 
-    analysis = analyze_html(body, url)
+    return page_from_html(
+        url,
+        status_code,
+        body,
+        fetch_class=fetch_class,
+        response_time_ms=response_time_ms,
+        x_robots_tag=x_robots_tag,
+        header_canonical_url=header_canonical_url,
+        html_bytes=html_bytes,
+        crawl_depth=crawl_depth,
+        in_sitemap=in_sitemap,
+    )
+
+
+def page_from_html(
+    url: str,
+    status_code: int,
+    html: str,
+    *,
+    fetch_class: PageFetchClass = "ok",
+    response_time_ms: int = 0,
+    x_robots_tag: str | None = None,
+    header_canonical_url: str | None = None,
+    html_bytes: int | None = None,
+    crawl_depth: int | None = None,
+    in_sitemap: bool = False,
+) -> CrawledPage:
+    """Analiza SEO a unui document HTML deja descarcat.
+
+    Separata de :func:`crawl_page` ca aceeasi analiza sa serveasca si cand
+    descarcarea o face altcineva: brief-ul de lansare al agentului PPC
+    (``ppc_agent/services/launch_brief.py``) verifica pagina de destinatie cu
+    exact regulile auditului, nu cu o a doua copie a lor.
+
+    Args:
+        html_bytes: Octetii cititi; implicit lungimea UTF-8 a lui ``html``.
+    """
+    analysis = analyze_html(html, url)
     directives = ",".join(filter(None, (analysis.robots_meta, x_robots_tag))).lower()
     canonical_url = (
         normalize_url(analysis.canonical, url) or analysis.canonical if analysis.canonical else None
@@ -241,7 +278,7 @@ async def crawl_page(
             else None
         ),
         is_html=True,
-        html_bytes=html_bytes,
+        html_bytes=html_bytes if html_bytes is not None else len(html.encode("utf-8")),
         images_total=len(analysis.images),
         # Doar un atribut alt ABSENT conteaza: alt="" e marcajul corect pentru
         # imaginile pur decorative.

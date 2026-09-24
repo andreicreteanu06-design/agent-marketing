@@ -237,7 +237,7 @@ class BaseMarketingProvider(ABC):
     Distinct, deliberat, de :class:`GoogleAdsProvider`/:class:`MetaMarketingProvider`/
     :class:`TikTokAdsProvider` de mai sus - acelea au un contract STABILIT,
     deja cablat in tot Modulul 2 (``decision/pipeline.py::run_plan`` ->
-    ``_arms_from_performance`` -> Kelly/Thompson/Markov) si testat pe date
+    ``arms_from_performance`` -> Kelly/Thompson/Markov) si testat pe date
     reale. Nu le fac sa mosteneasca aceasta clasa: ar insemna fie sa le adaug
     metode noi (``scale_budget``/``pause_ad``) fara nicio implementare reala in
     spate (azi, scalarea bugetului/pauza se fac prin fluxul
@@ -249,7 +249,7 @@ class BaseMarketingProvider(ABC):
     ``get_campaign_metrics`` intoarce aceeasi forma ca ``campaign_performance()``
     (``arm_id``, ``name``, ``clicks``, ``conversions``, ``cost``, ``revenue``) -
     daca o platforma noua ajunge sa fie cablata in ``run_plan``, bridge-ul
-    existent (``_arms_from_performance``) o poate consuma neschimbat.
+    existent (``arms_from_performance``) o poate consuma neschimbat.
     """
 
     @abstractmethod

@@ -17,12 +17,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
+from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.providers.meta_campaign import (
     DEFAULT_CALL_TO_ACTION,
     MetaLaunchSpec,
     build_meta_campaign_payload,
     normalize_ad_account_id,
 )
+from ppc_agent.services.launch_brief import build_launch_brief
 from ppc_agent_server.db import get_session
 from ppc_agent_server.jobs.tasks import _app_config_for
 from ppc_agent_server.models import (
@@ -34,7 +36,7 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
-from ppc_agent_server.spend_guard import check_spend_limit
+from ppc_agent_server.spend_guard import check_spend_limit, committed_daily_spend
 
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
@@ -92,19 +94,28 @@ def propose_launch(
     """Depune o propunere de lansare. Nu creeaza nimic in Meta.
 
     Raises:
-        HTTPException: 409 cand contul Meta nu e configurat, 422 cand
-            specificatia nu e valida.
+        HTTPException: 409 cand contul Meta nu e configurat; 422 cand
+            specificatia nu e valida sau cand brief-ul gaseste o problema
+            obiectiva (pagina de destinatie care nu exista sau nu e publica).
         SpendLimitExceeded: bugetul ar depasi plafonul zilnic (-> 409).
 
     Plafonul se verifica aici ca sa nu intre in coada o lansare care n-ar
     putea fi aprobata oricum - si se verifica DIN NOU la aprobare, fiindca
     intre timp se pot fi executat alte propuneri.
+
+    Inainte de a intra in coada, propunerea primeste brief-ul de lansare
+    (``services/launch_brief.py``): pagina de destinatie vazuta de agentul
+    SEO/GEO, faza de invatare si pozitia in cont calculate de agentul PPC,
+    semnalele din Search Console, Keyword Planner si Business Profile. Brief-ul
+    sta in ``before`` - contextul in care s-a luat decizia - langa
+    specificatia din ``after``.
     """
     account = session.get(ClientAccount, client_user.client_account_id)
     if account is None:  # pragma: no cover - FK garanteaza existenta
         raise HTTPException(status_code=404, detail="contul clientului nu exista")
 
-    raw_ad_account = _app_config_for(account).settings.meta_ad_account_id
+    config = _app_config_for(account)
+    raw_ad_account = config.settings.meta_ad_account_id
     if not raw_ad_account:
         raise HTTPException(
             status_code=409,
@@ -121,6 +132,23 @@ def propose_launch(
     spec = _build_spec(payload, account)
     check_spend_limit(session, account, spec.daily_budget)
 
+    brief = build_launch_brief(
+        ProviderFactory(config),
+        config,
+        spec,
+        ad_account=ad_account,
+        committed_daily_spend=committed_daily_spend(session, account.id or 0),
+    )
+    if brief.blocking:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "lansarea nu poate intra in coada: " + "; ".join(brief.blocking),
+                "blocking": brief.blocking,
+                "brief": brief.to_payload(),
+            },
+        )
+
     proposal = ProposedChange(
         client_account_id=account.id or 0,
         op=ChangeOp.CREATE_CAMPAIGN,
@@ -129,10 +157,10 @@ def propose_launch(
         # scria cand omul a aprobat, chiar daca setarea clientului se schimba.
         resource=f"meta_ad_account/{ad_account}",
         resource_type="campaign",
-        before={},
+        before=brief.to_payload(),
         after=spec.to_payload(),
         projected_daily_spend=spec.daily_budget,
-        rationale=_rationale(spec, ad_account),
+        rationale=f"{_rationale(spec, ad_account)} {brief.summary()}",
         source_module=SOURCE_MODULE,
         status=ChangeStatus.PENDING,
     )

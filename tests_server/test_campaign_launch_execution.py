@@ -23,7 +23,9 @@ from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.errors import CampaignLaunchError
 from ppc_agent.providers.live.meta import LiveMetaMarketingProvider
 from ppc_agent.providers.meta_campaign import MetaLaunchSpec
+from ppc_agent.services.launch_brief import LaunchBrief
 from ppc_agent_server.models import ChangeStatus, ClientAccount, ProposedChange, Tenant
+from ppc_agent_server.routers import campaigns
 from seo_geo_agent.audit import url_policy
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
@@ -385,6 +387,12 @@ def live(
     monkeypatch.setenv("PPC_PROVIDER_MODE", "live")
     monkeypatch.setenv("PPC_META_ACCESS_TOKEN", "token-de-test")
     monkeypatch.setenv("PPC_META_CURRENCY", "RON")
+    # Testele de aici sunt despre executie. In mod live, brief-ul ar citi pagina
+    # de destinatie si istoricul Meta prin retea - il inlocuim cu unul gol. Brief-ul
+    # are testele lui, in tests/test_launch_brief.py.
+    monkeypatch.setattr(
+        campaigns, "build_launch_brief", lambda *args, **kwargs: LaunchBrief(mode="live")
+    )
     return client, _account(client, session)
 
 

@@ -138,6 +138,9 @@ class ProposedChangeRead(BaseModel):
     created_at: datetime
     decided_at: datetime | None = None
     decided_by: str | None = None
+    #: Contextul deciziei - la o lansare, brief-ul agentilor SEO/GEO si PPC
+    #: (pagina de destinatie, faza de invatare, Kelly/Thompson, semnale GSC/GBP).
+    before: dict[str, Any] = Field(default_factory=dict)
     #: Starea dorita - la o lansare, specificatia completa a campaniei. Omul care
     #: aproba trebuie sa vada EXACT ce se va crea, nu un rezumat.
     after: dict[str, Any] = Field(default_factory=dict)
