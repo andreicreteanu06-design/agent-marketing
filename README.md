@@ -508,6 +508,8 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 |-----------|----------|-------|
 | `DATABASE_URL` | `sqlite:///./ppc_agent_server.db` | Postgres real: `postgresql://user:pass@host/db` |
 | `REDIS_URL` | necompletat -> `InlineJobQueue` | Seteaza pentru `ArqJobQueue` reala: `redis://localhost:6379/0` |
+| `PUBLIC_API_URL` | `http://localhost:8000` | Din ea se construieste `redirect_uri`-ul OAuth Google (vezi Integrari Google) |
+| `SITE_URL` | `http://localhost:3000` | Unde revine clientul dupa ecranul de consimtamant Google |
 
 ### Endpoint-uri
 
@@ -529,6 +531,61 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `GET /api/v1/reports/weekly/latest` | Cel mai recent raport (`WeeklyReportPayload`) |
 | `GET /api/v1/reports/weekly/{week_start}` | Raportul unei saptamani (`YYYY-MM-DD`) |
 | `POST /api/v1/reports/weekly/generate` | Genereaza/regenereaza raportul ultimei saptamani incheiate (`?week_end=` optional) |
+| `PATCH /api/v1/me/site` | Site-ul clientului din Setari: `target_domain` (salvat ca `https://domeniu`) si `brand_name` |
+| `GET /api/v1/integrations` | Starea Search Console si GA4: conectat (doar daca token-ul exista) + proprietatea aleasa |
+| `GET /api/v1/integrations/{gsc\|ga4}/auth-url` | URL-ul ecranului de consimtamant Google, cu o stare semnata; 503 fara client OAuth |
+| `GET /api/v1/integrations/{gsc\|ga4}/callback` | Unde revine Google: schimba codul pe refresh token (criptat) si redirectioneaza spre site |
+| `GET /api/v1/integrations/{gsc\|ga4}/properties` | Proprietatile din contul Google conectat, ca lista de ales |
+| `PATCH /api/v1/integrations/{gsc\|ga4}` | Proprietatea aleasa (`sc-domain:...`/URL, respectiv ID-ul numeric GA4) |
+| `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
+| `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
+
+#### Integrari Google: Search Console si GA4
+
+Clientul isi conecteaza singur conturile din site (`/cont/seo-geo/integrari`),
+prin fluxul OAuth standard: site-ul cere `auth-url`, Google il intoarce pe
+`callback` cu un cod, serverul il schimba pe un refresh token si il cripteaza pe
+`ClientAccount` (`gsc_refresh_token_enc` / `ga4_refresh_token_enc`). Token-ul de
+Search Console e acelasi pe care il citeste deja agentul PPC pentru datele
+organice ale clientului (`_app_config_for`).
+
+- **Callback-ul nu are sesiunea clientului** (e o redirectionare de browser),
+  deci contul vine din starea semnata emisa la `auth-url`: valabila 10 minute,
+  legata de cont si de integrare, semnata cu o cheie DERIVATA din
+  `JWT_SECRET_KEY` - o stare nu poate trece niciodata drept token de sesiune.
+- **Acelasi client OAuth ca agentul** (`PPC_GOOGLE_OAUTH_CLIENT_ID/SECRET`): un
+  refresh token Google merge doar cu clientul care l-a emis.
+- **Scope-uri minime, doar citire:** `webmasters.readonly` si
+  `analytics.readonly`. Fara `business.manage` - acela e drept de administrare.
+- Configurarea in Google Cloud e in `.env.example` (redirect URI-uri si API-urile
+  de activat). Fara client OAuth, pagina de integrari spune exact ce lipseste.
+
+#### Trafic & Pozitii: `GET /api/v1/seo/intelligence`
+
+Triangularea celor trei surse Google, intr-un singur raspuns
+(`SEOIntelligencePayload`): serie de timp zilnica pentru grafic, indicatorii
+perioadei fata de cea anterioara, clasamentul cuvintelor si
+`ai_recommendations`. Logica e pura, in `seo_geo_agent/services/intelligence.py`;
+sursele se aleg in `ppc_agent_server/seo_intelligence.py`:
+
+| Sursa | live cand | altfel |
+|---|---|---|
+| GA4 (`ppc_agent/search_data/analytics.py`, Data API `runReport`) | token GA4 + proprietate + client OAuth | demo |
+| Search Console (`search_console.py`) | token GSC + proprietate + client OAuth | demo |
+| Keyword Planner | GSC live **si** `PPC_PROVIDER_MODE=live` | demo langa GSC demo; altfel lipsa |
+
+- **Demo doar pentru ce nu e conectat** (`intelligence_demo.py`: determinist,
+  aceeasi zi da aceleasi cifre in orice perioada), marcat in raspuns
+  (`is_demo`, `sources[].status`) si in interfata. O sursa conectata care pica
+  ramane goala, cu motivul in `data_gaps` - nu e inlocuita cu cifre inventate.
+- **Recomandarile sunt reguli, nu parerea unui model** (`recommendations_engine:
+  "rules"`), fiecare cu cifrele care au declansat-o in `evidence`: CTR mic la o
+  pozitie buna (rescrie title/meta description), cuvinte pe pozitiile 8-20,
+  pagina care pierde trafic in GA4, cuvant din top 10 care coboara, engagement
+  sub 40%, cerere din Keyword Planner fara nicio afisare, tendinta generala.
+  Pragurile sunt pentru 28 de zile si se scaleaza cu perioada.
+- Fereastra se termina acum 3 zile: Search Console publica datele finale cu
+  intarziere, iar GA4 e aliniat la aceleasi zile.
 
 > **Gap semnalat, nu construit:** niciun endpoint nu creeaza inca `ProposedChange`
 > automat dintr-un plan — echivalentul comenzii `propose` din CLI. O extensie
@@ -781,6 +838,7 @@ incape intr-un request sincron:
 POST /api/v1/seo-geo/audit                  -> 202 {audit_id}
 GET  /api/v1/seo-geo/audit/{id}             -> stare + progres
 GET  /api/v1/seo-geo/audit/{id}/results     -> raportul complet
+GET  /api/v1/seo-geo/audit/latest           -> ultimul raport terminat (pagina de ansamblu)
 ```
 
 Auditul traieste in memoria procesului (`audit/store.py`) — agentul trebuie

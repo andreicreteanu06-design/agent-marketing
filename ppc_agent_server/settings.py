@@ -56,6 +56,14 @@ class ServerSettings(BaseSettings):
     # productie, seteaza domeniul real al site-ului.
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # Conectarea Google (Search Console, Analytics) - vezi routers/integrations.py.
+    # Adresa publica a ACESTUI API: din ea se construieste redirect_uri-ul OAuth
+    # (.../api/v1/integrations/{gsc|ga4}/callback), care trebuie adaugat EXACT
+    # asa la "Authorized redirect URIs" in Google Cloud Console.
+    public_api_url: str = "http://localhost:8000"
+    # Site-ul pe care se intoarce clientul dupa ecranul de consimtamant Google.
+    site_url: str = "http://localhost:3000"
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]

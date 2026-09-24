@@ -120,9 +120,9 @@ export function AccountDashboard() {
               <MagnifyingGlass size={20} weight="duotone" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-foreground">Analiză SEO + GEO</p>
+              <p className="text-sm font-semibold text-foreground">SEO + GEO</p>
               <p className="text-sm text-foreground-muted">
-                Scoruri și sugestii tehnice exacte, pe baza rapoartelor tale.
+                Auditul site-ului, Search Console și Google Analytics, într-un singur loc.
               </p>
             </div>
           </div>

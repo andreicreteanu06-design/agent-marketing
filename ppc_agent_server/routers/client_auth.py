@@ -18,12 +18,14 @@ from sqlmodel import Session, select
 from ppc_agent_server.db import get_session
 from ppc_agent_server.models import ClientAccount, ClientUser, Tenant
 from ppc_agent_server.schemas import (
+    ClientAccountRead,
     ClientCredentialsUpdate,
     ClientCredentialsUpdateResponse,
     ClientLoginRequest,
     ClientMeResponse,
     ClientSignupRequest,
     ClientTokenResponse,
+    SiteSettingsUpdate,
 )
 from ppc_agent_server.security import (
     create_client_token,
@@ -179,3 +181,24 @@ def update_my_credentials(
     session.add(account)
     session.commit()
     return ClientCredentialsUpdateResponse(updated_fields=list(updates.keys()))
+
+
+@router.patch("/me/site", response_model=ClientAccountRead)
+def update_my_site(
+    payload: SiteSettingsUpdate,
+    user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> ClientAccount:
+    """Site-ul clientului, din Setari: domeniul auditat si numele brandului.
+
+    Acelasi ``target_domain`` il foloseste si agentul PPC (``AppConfig``) -
+    un singur loc pentru "care e site-ul meu", nu cate unul per modul.
+    """
+    account = session.get(ClientAccount, user.client_account_id)
+    assert account is not None
+    for field_name, value in payload.model_dump(exclude_unset=True, exclude_none=True).items():
+        setattr(account, field_name, value)
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account

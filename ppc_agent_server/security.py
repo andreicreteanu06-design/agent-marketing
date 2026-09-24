@@ -14,6 +14,9 @@ parola):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,11 +30,16 @@ from ppc_agent_server.settings import get_server_settings
 _password_hasher = PasswordHasher()
 _JWT_ALGORITHM = "HS256"
 _JWT_TTL = timedelta(days=7)
+#: Cat are clientul la dispozitie pe ecranul de consimtamant Google.
+_OAUTH_STATE_TTL = timedelta(minutes=10)
+_OAUTH_STATE_AUDIENCE = "oauth-state"
 
 __all__ = [
     "InvalidToken",
     "create_client_token",
+    "create_oauth_state",
     "decode_client_token",
+    "decode_oauth_state",
     "decrypt_secret",
     "encrypt_secret",
     "hash_password",
@@ -85,6 +93,57 @@ def decode_client_token(token: str) -> int:
         raise RuntimeError("JWT_SECRET_KEY nu e configurat - vezi create_client_token")
     payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[_JWT_ALGORITHM])
     return int(payload["sub"])
+
+
+def _oauth_state_key() -> str:
+    """Cheia de semnare a starii OAuth, DERIVATA din ``JWT_SECRET_KEY``.
+
+    Nu cheia sesiunilor insasi: starea circula in URL-uri (ecranul Google,
+    istoricul browserului), iar ``decode_client_token`` - ca si verificarea din
+    ``seo_geo_agent`` - accepta orice token semnat cu cheia sesiunilor. Cu o
+    cheie derivata, o stare nu poate trece niciodata drept sesiune.
+    """
+    settings = get_server_settings()
+    if not settings.jwt_secret_key:
+        raise RuntimeError("JWT_SECRET_KEY nu e configurat - vezi create_client_token")
+    return hmac.new(
+        settings.jwt_secret_key.encode("utf-8"), b"oauth-state", hashlib.sha256
+    ).hexdigest()
+
+
+def create_oauth_state(client_account_id: int, integration: str) -> str:
+    """Starea semnata trimisa la Google si primita inapoi pe callback.
+
+    Leaga raspunsul Google de contul care a CERUT conectarea si de integrarea
+    ceruta: callback-ul nu are sesiunea clientului (e o redirectionare din
+    browser, fara antetul ``Authorization``), deci contul nu poate veni din
+    alta parte. Valabila 10 minute.
+    """
+    now = datetime.now(tz=UTC)
+    payload: dict[str, Any] = {
+        "acct": client_account_id,
+        "int": integration,
+        "aud": _OAUTH_STATE_AUDIENCE,
+        "nonce": secrets.token_urlsafe(8),
+        "iat": now,
+        "exp": now + _OAUTH_STATE_TTL,
+    }
+    return jwt.encode(payload, _oauth_state_key(), algorithm=_JWT_ALGORITHM)
+
+
+def decode_oauth_state(state: str, integration: str) -> int:
+    """Contul din starea OAuth, doar daca starea e valida pentru ``integration``.
+
+    Raises:
+        RuntimeError: ``JWT_SECRET_KEY`` nu e configurat in mediu.
+        jwt.PyJWTError: stare falsificata, expirata sau emisa pentru alta integrare.
+    """
+    payload = jwt.decode(
+        state, _oauth_state_key(), algorithms=[_JWT_ALGORITHM], audience=_OAUTH_STATE_AUDIENCE
+    )
+    if payload.get("int") != integration:
+        raise jwt.InvalidTokenError("starea a fost emisa pentru alta integrare")
+    return int(payload["acct"])
 
 
 def _fernet() -> Fernet:

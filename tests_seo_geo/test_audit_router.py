@@ -127,6 +127,24 @@ def test_rezultatele_ajung_la_client_dupa_ce_auditul_se_termina(
     assert body["summary"]["completed"] is True
 
 
+def test_ultimul_audit_terminat_se_poate_cere_fara_id(
+    audit_client: tuple[TestClient, AuditStore], auth_headers: dict[str, str]
+) -> None:
+    """Pagina de ansamblu a contului nu stie id-ul - cere direct ultimul raport."""
+    client, _ = audit_client
+    assert client.get("/api/v1/seo-geo/audit/latest", headers=auth_headers).status_code == 404
+
+    audit_id = client.post(
+        "/api/v1/seo-geo/audit", json={"domain": "exemplu.ro"}, headers=auth_headers
+    ).json()["audit_id"]
+    _wait_for_completion(client, audit_id, auth_headers)
+
+    latest = client.get("/api/v1/seo-geo/audit/latest", headers=auth_headers)
+    assert latest.status_code == 200
+    assert latest.json()["audit_id"] == audit_id
+    assert latest.json()["seo"]["score"] == 88
+
+
 def test_rezultatele_cerute_prea_devreme_dau_409(
     audit_client: tuple[TestClient, AuditStore], auth_headers: dict[str, str]
 ) -> None:

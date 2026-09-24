@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { CaretRight } from "@phosphor-icons/react/dist/ssr";
 import type { AffectedPage, IssueGroup, IssuePillar, IssueSeverity } from "@/lib/seoGeoApi";
+import { countLabel } from "./ui";
 
 /**
  * Lista de probleme a unui audit, grupata pe severitate si pe tip.
@@ -20,12 +21,6 @@ const SEVERITY_DOT: Record<IssueSeverity, string> = {
   critical: "bg-red-500",
   warning: "bg-amber-400",
   info: "bg-foreground-muted/40",
-};
-
-const SEVERITY_RULE: Record<IssueSeverity, string> = {
-  critical: "border-l-red-500/60",
-  warning: "border-l-amber-400/60",
-  info: "border-l-border-subtle",
 };
 
 const SEVERITY_LABEL: Record<IssueSeverity, string> = {
@@ -128,28 +123,29 @@ function AffectedList({ pages, total }: { pages: AffectedPage[]; total: number }
 function IssueRow({ group }: { group: IssueGroup }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className={`border-l-2 ${SEVERITY_RULE[group.severity]}`}>
+    <div className="border-t border-border-subtle">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-background-elevated/60"
+        className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/[0.03]"
       >
+        <span className={`h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[group.severity]}`} />
+        <span className="min-w-0 flex-1 text-sm font-medium text-foreground">{group.title}</span>
+        <span className="hidden rounded-full border border-border-subtle px-2 py-0.5 text-[11px] uppercase tracking-wider text-foreground-muted sm:inline">
+          {PILLAR_LABEL[group.pillar]}
+        </span>
+        <span className="w-24 shrink-0 text-right text-sm tabular-nums text-foreground-muted">
+          {countLabel(group.count, "pagină", "pagini")}
+        </span>
         <CaretRight
           size={14}
           className={`shrink-0 text-foreground-muted transition-transform ${open ? "rotate-90" : ""}`}
         />
-        <span className="flex-1 text-sm font-medium text-foreground">{group.title}</span>
-        <span className="rounded-full border border-border-subtle px-2 py-0.5 text-[11px] uppercase tracking-wider text-foreground-muted">
-          {PILLAR_LABEL[group.pillar]}
-        </span>
-        <span className="min-w-8 text-right text-sm tabular-nums text-foreground-muted">
-          {group.count}
-        </span>
       </button>
 
       {open && (
-        <div className="px-4 pb-5 pl-11">
+        <div className="px-4 pb-5 pl-9">
           <p className="text-sm leading-relaxed text-foreground-muted">{group.explanation}</p>
           <div className="mt-3 rounded-xl border border-border-subtle bg-background-elevated p-4">
             <span className="text-xs font-semibold uppercase tracking-widest text-brand-cyan">
@@ -187,14 +183,14 @@ export function AuditIssuesView({ issues }: { issues: IssueGroup[] }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border-subtle">
       {sections.map((section) => (
-        <div key={section.severity}>
-          <div className="flex items-center gap-2 border-y border-border-subtle bg-background-elevated px-4 py-2 first:border-t-0">
-            <span className={`h-2 w-2 rounded-full ${SEVERITY_DOT[section.severity]}`} />
+        <div key={section.severity} className="border-t border-border-subtle first:border-t-0">
+          <div className="flex items-center gap-2 bg-background px-4 py-2">
+            <span className={`h-1.5 w-1.5 rounded-full ${SEVERITY_DOT[section.severity]}`} />
             <span className="text-xs font-semibold uppercase tracking-widest text-foreground-muted">
               {SEVERITY_LABEL[section.severity]}
             </span>
             <span className="text-xs tabular-nums text-foreground-muted">
-              ({section.groups.reduce((total, group) => total + group.count, 0)})
+              {section.groups.reduce((total, group) => total + group.count, 0)}
             </span>
           </div>
           {section.groups.map((group) => (

@@ -60,14 +60,42 @@ class AuditStore:
         self._records: dict[str, AuditRecord] = {}
 
     def _evict_expired(self) -> None:
+        """Sterge rapoartele expirate, dar nu si ultimul audit terminat al unui client.
+
+        Acela ramane pana la repornirea procesului: e raportul aratat pe pagina
+        de ansamblu a contului, care altfel ar disparea la 30 de minute dupa
+        fiecare audit. Memoria ramane marginita - cel mult unul per client.
+        """
         cutoff = datetime.now(tz=UTC) - RESULT_TTL
+        keep: set[str] = set()
+        for client_id in {record.client_id for record in self._records.values()}:
+            latest = self._latest_completed(client_id)
+            if latest is not None:
+                keep.add(latest.audit_id)
         expired = [
             audit_id
             for audit_id, record in self._records.items()
-            if record.finished_at is not None and record.finished_at < cutoff
+            if record.finished_at is not None
+            and record.finished_at < cutoff
+            and audit_id not in keep
         ]
         for audit_id in expired:
             del self._records[audit_id]
+
+    def _latest_completed(self, client_id: int) -> AuditRecord | None:
+        completed = [
+            record
+            for record in self._records.values()
+            if record.client_id == client_id and record.status == "completed"
+        ]
+        return max(
+            completed, key=lambda record: record.finished_at or record.created_at, default=None
+        )
+
+    def latest_completed(self, client_id: int) -> AuditRecord | None:
+        """Cel mai recent audit terminat cu succes al lui ``client_id``, daca exista."""
+        self._evict_expired()
+        return self._latest_completed(client_id)
 
     def create(self, client_id: int, domain: str) -> AuditRecord:
         """Inregistreaza un audit nou pentru ``client_id``.

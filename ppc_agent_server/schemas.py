@@ -7,11 +7,13 @@ audit) si poate evolua independent de schema DB.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent_server.models import KeywordIntent, SerpSource
@@ -74,6 +76,7 @@ class ClientAccountRead(BaseModel):
     google_ads_customer_id: str
     meta_ad_account_id: str
     tiktok_advertiser_id: str
+    brand_name: str
     max_daily_spend: Decimal
     default_lead_value: Decimal
     objective: CampaignObjective
@@ -270,6 +273,84 @@ class ClientCredentialsUpdateResponse(BaseModel):
     """Raspunsul la actualizarea de credentiale - NICIODATA valorile, nici criptate."""
 
     updated_fields: list[str]
+
+
+_HOSTNAME = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+")
+
+
+class SiteSettingsUpdate(BaseModel):
+    """Corpul cererii ``PATCH /api/v1/me/site`` - site-ul clientului, din Setari.
+
+    Doar campurile trimise se schimba; un sir gol sterge valoarea.
+    """
+
+    #: Salvat ca origine (``https://exemplu.ro``): agentul il crawleaza ca URL
+    #: (vezi ``AppConfig.target_domain``), deci nu ramane doar un nume de domeniu.
+    target_domain: str | None = Field(default=None, max_length=300)
+    brand_name: str | None = Field(default=None, max_length=200)
+
+    @field_validator("target_domain")
+    @classmethod
+    def _origin(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None if value is None else ""
+        raw = value.strip()
+        parts = urlsplit(raw if "://" in raw else f"https://{raw}")
+        try:
+            host = (parts.hostname or "").encode("idna").decode("ascii")
+        except UnicodeError:
+            host = ""
+        if parts.scheme not in ("http", "https") or not _HOSTNAME.fullmatch(host):
+            raise ValueError(
+                "Domeniul nu pare valid. Scrie-l ca 'exemplu.ro' sau 'https://exemplu.ro'."
+            )
+        port = f":{parts.port}" if parts.port is not None else ""
+        return f"{parts.scheme}://{host}{port}"
+
+    @field_validator("brand_name")
+    @classmethod
+    def _strip(cls, value: str | None) -> str | None:
+        return None if value is None else value.strip()
+
+
+# --- Integrari Google (Search Console, Analytics) ---
+
+
+class IntegrationState(BaseModel):
+    """Starea unei integrari: DOAR daca token-ul exista, niciodata valoarea lui."""
+
+    connected: bool
+    #: Proprietatea aleasa (``sc-domain:...``/URL la Search Console, ID numeric la GA4).
+    property_id: str
+
+
+class IntegrationsStatus(BaseModel):
+    """Raspunsul ``GET /api/v1/integrations``."""
+
+    #: ``False`` = serverul n-are client OAuth Google configurat, deci butoanele
+    #: de conectare n-ar avea unde sa duca - interfata spune asta, nu esueaza.
+    oauth_configured: bool
+    gsc: IntegrationState
+    ga4: IntegrationState
+
+
+class IntegrationAuthUrl(BaseModel):
+    """URL-ul ecranului de consimtamant Google, pe care il deschide site-ul."""
+
+    auth_url: str
+
+
+class IntegrationPropertyRead(BaseModel):
+    """O proprietate din contul Google conectat, de ales dintr-o lista."""
+
+    id: str
+    label: str
+
+
+class IntegrationUpdate(BaseModel):
+    """Corpul cererii ``PATCH /api/v1/integrations/{gsc|ga4}``."""
+
+    property_id: str = Field(min_length=1, max_length=300)
 
 
 # --- Urmarire conversii ---

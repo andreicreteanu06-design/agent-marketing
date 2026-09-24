@@ -79,6 +79,17 @@ class QueryTotals:
     position: float
 
 
+@dataclass(frozen=True, slots=True)
+class QueryPageTotals:
+    """O interogare pe o pagina, agregata pe tot intervalul cerut."""
+
+    query: str
+    page: str
+    clicks: int
+    impressions: int
+    position: float
+
+
 def normalize_site_url(raw: str) -> str:
     """Aduce identificatorul proprietatii la forma ceruta de API.
 
@@ -270,6 +281,44 @@ class SearchConsoleClient:
                 )
             )
         return totals
+
+
+    def fetch_query_pages(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_rows: int = 1000,
+    ) -> list[QueryPageTotals]:
+        """Interogarile intervalului pe pagina care a aparut pentru ele.
+
+        Agregate de Google pe perechea (interogare, pagina) - asa se afla CE
+        pagina trebuie rescrisa cand un cuvant are CTR mic.
+        """
+        payload = self._post_query(
+            {
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "dimensions": ["query", "page"],
+                "type": "web",
+                "rowLimit": min(_ROWS_PER_REQUEST, max_rows),
+            }
+        )
+        rows: list[QueryPageTotals] = []
+        for raw in payload.get("rows") or []:
+            keys = raw.get("keys") or []
+            if len(keys) != 2:
+                continue
+            rows.append(
+                QueryPageTotals(
+                    query=str(keys[0]),
+                    page=str(keys[1]),
+                    clicks=int(raw.get("clicks", 0)),
+                    impressions=int(raw.get("impressions", 0)),
+                    position=float(raw.get("position", 0.0)),
+                )
+            )
+        return rows
 
 
 def _parse_rows(

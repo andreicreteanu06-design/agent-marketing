@@ -36,7 +36,7 @@ const AVAILABILITY_OPTIONS: ProductAvailability[] = [
 /**
  * Convertor catalog -> feed de produse in formatul ChatGPT Shopping (vezi
  * lib/productFeed.ts pentru sursa specificatiei). Acelasi tipar de protectie
- * ca SeoGeoDashboard/AccountDashboard: fara token, redirectioneaza spre
+ * ca modulul SEO + GEO si AccountDashboard: fara token, redirectioneaza spre
  * /login. Totul client-side - fisierul brut al clientului nu ajunge pe niciun
  * server (nici al nostru, nici al OpenAI - doar conversie + descarcare).
  */

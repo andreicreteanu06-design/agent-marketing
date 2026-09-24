@@ -212,5 +212,29 @@ export function getAuditResults(token: string, auditId: string): Promise<AuditRe
   });
 }
 
+/**
+ * Raportul ultimului audit terminat, sau null daca nu exista inca unul.
+ *
+ * Agentul il tine in memorie pana la repornire (nu are baza de date), deci
+ * null e o stare normala - "niciun audit inca" - nu o eroare.
+ */
+export async function getLatestAudit(token: string): Promise<AuditResults | null> {
+  try {
+    return await seoGeoFetch<AuditResults>("/api/v1/seo-geo/audit/latest", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (err) {
+    if (err instanceof SeoGeoApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/** Timpul mediu de raspuns al paginilor citite efectiv (fara erori de retea). */
+export function averageResponseMs(pages: AuditPageRow[]): number | null {
+  const measured = pages.filter((page) => page.status_code > 0 && page.fetch_class !== "error");
+  if (measured.length === 0) return null;
+  return Math.round(measured.reduce((sum, page) => sum + page.response_time_ms, 0) / measured.length);
+}
+
 /** Cat asteptam intre doua interogari de stare. Crawl-ul avanseaza in secunde, nu in milisecunde. */
 export const AUDIT_POLL_INTERVAL_MS = 1500;

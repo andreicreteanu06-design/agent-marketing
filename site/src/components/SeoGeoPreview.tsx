@@ -15,7 +15,7 @@ function SkeletonIssueRow({ severity, label }: { severity: string; label: string
 }
 
 /**
- * Teaser public pentru unealta reala (SeoGeoDashboard, gated in /cont/seo-geo)
+ * Teaser public pentru unealta reala (seo-geo/SiteAudit, in /cont/seo-geo/audit)
  * - aceeasi forma vizuala ca raportul de audit (cele doua inele CircleProgress,
  * rezumatul si lista de probleme grupate pe severitate), dar dezactivata si
  * "neincarcata". Lacatul de deasupra duce la /creeaza-cont - nimic de aici nu

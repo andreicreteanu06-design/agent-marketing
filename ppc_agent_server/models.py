@@ -218,6 +218,14 @@ class ClientAccount(SQLModel, table=True):
     # Proprietatea din Search Console, exact ca acolo: 'sc-domain:exemplu.ro'
     # (domeniu) sau 'https://exemplu.ro/' (prefix URL). Gol = neconectat.
     gsc_site_url: str = ""
+    # Google Analytics 4 - acelasi tipar ca Search Console: token separat
+    # (scope 'analytics.readonly'), criptat, plus proprietatea aleasa - ID-ul
+    # ei numeric ('123456789'), NU ID-ul de masurare al fluxului ('G-...').
+    ga4_refresh_token_enc: str = ""
+    ga4_property_id: str = ""
+    # Numele brandului, pentru verificarea GEO de entity salience din audit.
+    # Gol = se deduce din domeniu (vezi seo_geo_agent/audit/geo_reporters.py).
+    brand_name: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita

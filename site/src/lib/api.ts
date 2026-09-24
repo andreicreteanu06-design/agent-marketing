@@ -28,8 +28,19 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
     let detail = response.statusText || "A apărut o eroare neașteptată.";
     try {
       const body: unknown = await response.json();
-      if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") {
-        detail = body.detail;
+      if (body && typeof body === "object" && "detail" in body) {
+        const rawDetail = (body as { detail: unknown }).detail;
+        if (typeof rawDetail === "string") {
+          detail = rawDetail;
+        } else if (Array.isArray(rawDetail)) {
+          // Erorile de validare (422) vin ca lista, cate una per camp; mesajul
+          // nostru e precedat de prefixul Pydantic "Value error, ".
+          const messages = rawDetail
+            .map((item) => (item && typeof item === "object" && "msg" in item ? String(item.msg) : null))
+            .filter((msg): msg is string => msg !== null)
+            .map((msg) => msg.replace(/^Value error, /, ""));
+          if (messages.length > 0) detail = messages.join(" ");
+        }
       }
     } catch {
       // raspuns fara corp JSON valid - pastreaza statusText
@@ -37,6 +48,8 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
     throw new ApiError(response.status, detail);
   }
 
+  // 204 (ex. deconectarea unei integrari) nu are corp - response.json() ar arunca.
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -68,6 +81,8 @@ export interface ClientAccountInfo {
   google_ads_customer_id: string;
   meta_ad_account_id: string;
   tiktok_advertiser_id: string;
+  /** Numele brandului, pentru verificarile GEO din audit. Gol = dedus din domeniu. */
+  brand_name: string;
   max_daily_spend: string;
   default_lead_value: string;
   objective: string;
@@ -115,5 +130,174 @@ export function updateCredentials(
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(input),
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Site-ul clientului (Setari)                                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface SiteSettingsInput {
+  /** Salvat de server ca origine: "artingauto.ro" devine "https://artingauto.ro". */
+  target_domain?: string;
+  brand_name?: string;
+}
+
+export function updateSiteSettings(token: string, input: SiteSettingsInput): Promise<ClientAccountInfo> {
+  return apiFetch<ClientAccountInfo>("/api/v1/me/site", {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Integrari Google (Search Console, Analytics 4)                              */
+/* -------------------------------------------------------------------------- */
+
+export type IntegrationName = "gsc" | "ga4";
+
+export interface IntegrationState {
+  connected: boolean;
+  /** "sc-domain:exemplu.ro" / URL la Search Console, ID numeric la GA4. Gol = neales. */
+  property_id: string;
+}
+
+export interface IntegrationsStatus {
+  /** false = serverul n-are client OAuth Google, deci conectarea nu poate porni. */
+  oauth_configured: boolean;
+  gsc: IntegrationState;
+  ga4: IntegrationState;
+}
+
+export interface IntegrationProperty {
+  id: string;
+  label: string;
+}
+
+export function getIntegrations(token: string): Promise<IntegrationsStatus> {
+  return apiFetch<IntegrationsStatus>("/api/v1/integrations", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+/** URL-ul ecranului de consimtamant Google; site-ul navigheaza direct acolo. */
+export function getIntegrationAuthUrl(token: string, name: IntegrationName): Promise<{ auth_url: string }> {
+  return apiFetch<{ auth_url: string }>(`/api/v1/integrations/${name}/auth-url`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getIntegrationProperties(token: string, name: IntegrationName): Promise<IntegrationProperty[]> {
+  return apiFetch<IntegrationProperty[]>(`/api/v1/integrations/${name}/properties`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function updateIntegration(
+  token: string,
+  name: IntegrationName,
+  propertyId: string
+): Promise<IntegrationState> {
+  return apiFetch<IntegrationState>(`/api/v1/integrations/${name}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ property_id: propertyId }),
+  });
+}
+
+export function disconnectIntegration(token: string, name: IntegrationName): Promise<void> {
+  return apiFetch<void>(`/api/v1/integrations/${name}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Trafic & Pozitii (GA4 + Search Console + Keyword Planner)                   */
+/* -------------------------------------------------------------------------- */
+
+export type SeoSourceKey = "ga4" | "gsc" | "keyword_planner";
+/** live = datele clientului; demo = simulate (sursa neconectata); unavailable = conectata, dar picata. */
+export type SeoSourceStatus = "live" | "demo" | "not_connected" | "unavailable";
+export type SeoMetricKey =
+  | "sessions"
+  | "pageviews"
+  | "engagement_rate"
+  | "clicks"
+  | "impressions"
+  | "ctr"
+  | "position";
+
+export interface SeoTimeSeriesPoint {
+  date: string;
+  /** null = sursa nu are date pentru graficul asta, nu "zero". */
+  sessions: number | null;
+  pageviews: number | null;
+  engagement_rate: number | null;
+  clicks: number | null;
+  impressions: number | null;
+  ctr: number | null;
+  position: number | null;
+}
+
+export interface SeoMetricSummary {
+  key: SeoMetricKey;
+  label: string;
+  source: "ga4" | "gsc";
+  value: number | null;
+  previous: number | null;
+  change_pct: number | null;
+  /** Pozitia e mai buna cand SCADE. */
+  better_when: "up" | "down";
+  format: "number" | "percent" | "position";
+}
+
+export interface SeoKeywordRank {
+  keyword: string;
+  position: number;
+  previous_position: number | null;
+  /** Pozitii castigate (pozitiv = a urcat); null la cuvintele noi. */
+  change: number | null;
+  trend: "up" | "down" | "stable" | "new";
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  search_volume: number | null;
+  url: string | null;
+}
+
+export interface SeoInsight {
+  id: string;
+  rule: string;
+  kind: "alert" | "opportunity" | "info";
+  priority: "high" | "medium" | "low";
+  title: string;
+  detail: string;
+  action: string;
+  evidence: Record<string, string>;
+  subject: string | null;
+}
+
+export interface SeoIntelligence {
+  version: 1;
+  domain: string;
+  period: { start: string; end: string; days: number };
+  previous_period: { start: string; end: string; days: number };
+  generated_at: string;
+  /** true daca cel putin o sursa afisata e demonstrativa. */
+  is_demo: boolean;
+  sources: { key: SeoSourceKey; label: string; status: SeoSourceStatus; note: string | null }[];
+  summary: SeoMetricSummary[];
+  timeseries: SeoTimeSeriesPoint[];
+  keywords: SeoKeywordRank[];
+  ai_recommendations: SeoInsight[];
+  recommendations_engine: "rules";
+  data_gaps: string[];
+}
+
+export function getSeoIntelligence(token: string, days: 7 | 28 | 90): Promise<SeoIntelligence> {
+  return apiFetch<SeoIntelligence>(`/api/v1/seo/intelligence?days=${days}`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
 }

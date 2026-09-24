@@ -222,6 +222,21 @@ async def start_audit(
     )
 
 
+@router.get("/audit/latest", response_model=AuditResultsResponse)
+def get_latest_audit_results(
+    client_id: Annotated[int, Depends(get_current_client_id)],
+    store: Annotated[AuditStore, Depends(_get_audit_store)],
+) -> AuditResultsResponse:
+    """Raportul celui mai recent audit terminat - pentru pagina de ansamblu a contului.
+
+    Declarata inaintea ``/audit/{audit_id}``: altfel "latest" ar fi luat drept id.
+    """
+    record = store.latest_completed(client_id)
+    if record is None or record.result is None:
+        raise HTTPException(status_code=404, detail="Nu exista inca niciun audit terminat.")
+    return AuditResultsResponse.from_result(record.audit_id, record.domain, record.result)
+
+
 @router.get("/audit/{audit_id}", response_model=AuditStatusResponse)
 def get_audit_status(
     audit_id: str,
