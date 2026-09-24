@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* Stilurile cerute de Lenis (SmoothScroll.tsx). Cel important: `html.lenis {
+   height: auto }`. Lenis afla ca pagina a crescut doar cand <html> isi schimba
+   marimea; cu `h-full` pe <html> (layout.tsx), inaltimea ramanea cea a
+   ecranului, iar dupa ce aparea continut nou (raportul unui audit) rotita
+   mouse-ului se oprea la lungimea veche a paginii. */
+@import "lenis/dist/lenis.css";
 
 @custom-variant dark (&:is(.dark *));
 
