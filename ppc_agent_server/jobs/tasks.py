@@ -26,6 +26,7 @@ from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
 from ppc_agent.ingestion.pipeline import run_ingestion
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent_server.db import get_engine
+from ppc_agent_server.jobs.brand_alignment import apply_brand_directive
 from ppc_agent_server.models import (
     AdPerformanceRecord,
     AdQueueItem,
@@ -219,11 +220,28 @@ def _to_db_row(client_account_id: int, change: CliProposedChange) -> ProposedCha
     )
 
 
+def _consult_queen(session: Session, client_account_id: int) -> dict[str, Any]:
+    """Directiva Reginei, transformata in rescrieri in asteptare.
+
+    Regina doar sfatuieste: daca pica (ex. Search Console nu raspunde), PPC-ul
+    merge mai departe cu Kelly/Thompson, iar eroarea ramane in rezultat.
+    """
+    try:
+        return apply_brand_directive(session, client_account_id)
+    except Exception as exc:
+        session.rollback()
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
     """Job Modulul 4: genereaza propuneri (buget + negative + lichiditate Meta) si
     le persista ca randuri ``ProposedChange`` ``pending`` — echivalentul
     server-side, DB-backed, al comenzii CLI ``propose`` (acolo: fisier JSON +
     ``ApprovalGate``; aici: randuri DB, acelasi camp cu camp).
+
+    Inainte de Kelly/Thompson, cere directiva Reginei (``jobs/brand_alignment.py``):
+    reclamele care nu vorbesc clientului ideal primesc propuneri de rescriere
+    (``UPDATE``), oricat de stabil ar parea CPA-ul lor.
 
     Nimic nu se executa - propunerile raman ``pending`` pana la o cerere
     explicita ``POST /api/v1/proposals/{id}/execute`` cu ``confirm=true``
@@ -232,12 +250,16 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
     Raises:
         ClientNotFoundError: Clientul nu exista.
         SpendLimitExceeded: Cheltuiala zilnica totala propusa ar depasi
-            limita clientului - NIMIC nu se scrie (ca la ``ApprovalGate.flush()``).
+            limita clientului - nimic din planul de buget nu se scrie (ca la
+            ``ApprovalGate.flush()``). Rescrierile Reginei, care nu muta bani,
+            sunt deja salvate.
     """
     with Session(get_engine()) as session:
         account = _require_client(session, client_account_id)
         config = _app_config_for(account)
         factory = ProviderFactory(config)
+
+        brand_alignment = _consult_queen(session, client_account_id)
 
         ingestion = run_ingestion(factory, account.target_domain, config)
         decision = run_plan(factory, config)
@@ -256,7 +278,11 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
         rows = [_to_db_row(client_account_id, change) for change in changes]
         session.add_all(rows)
         session.commit()
-        return {"created": len(rows), "total_projected_daily_spend": str(total)}
+        return {
+            "created": len(rows),
+            "total_projected_daily_spend": str(total),
+            "brand_alignment": brand_alignment,
+        }
 
 
 def run_fatigue_check_job(*, client_account_id: int) -> dict[str, Any]:
