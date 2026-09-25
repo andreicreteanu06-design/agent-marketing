@@ -1,0 +1,12 @@
+# Contextul de build al Dockerfile.frontend (./site).
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+npm-debug.log*
+.vercel
+.playwright-cli

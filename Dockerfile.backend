@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1.7
+#
+# Imaginea backend-ului: O SINGURA imagine pentru trei procese (vezi
+# docker-compose.yml) - API-ul PPC (ppc_agent_server), worker-ul ARQ si agentul
+# SEO/GEO (seo_geo_agent). Difera doar comanda.
+#
+# Slim, fara Playwright (crawler-ul e httpx, cu scut SSRF), fara compilatoare in
+# imaginea finala, torch doar CPU (build-ul implicit de pe PyPI aduce CUDA - cativa
+# GB pe care un server fara GPU nu-i foloseste), utilizator fara privilegii.
+
+ARG PYTHON_VERSION=3.13
+
+# --- 1. dependintele, intr-un venv ------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS deps
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+WORKDIR /build
+COPY requirements.txt requirements-server.txt requirements-seo-geo.txt ./
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3" \
+ && pip install -r requirements-server.txt -r requirements-seo-geo.txt \
+ && ! pip show playwright >/dev/null 2>&1
+
+# --- 2. imaginea finala -----------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Radacina containerului e read-only (docker-compose.yml): orice cache merge in /tmp.
+    HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache
+
+RUN groupadd --system --gid 10001 app \
+ && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app
+
+WORKDIR /app
+COPY --from=deps /opt/venv /opt/venv
+COPY --chown=root:root ppc_agent ./ppc_agent
+COPY --chown=root:root ppc_agent_server ./ppc_agent_server
+COPY --chown=root:root seo_geo_agent ./seo_geo_agent
+COPY --chown=root:root alembic.ini swipe_file.json ./
+
+# Singurul loc in care aplicatia scrie pe disc (creatiile audio/video ale jobului
+# de creative) - in compose e un volum.
+RUN mkdir -p /app/creative_output && chown app:app /app/creative_output
+
+USER app
+
+EXPOSE 8000 8001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('HEALTH_PORT', '8000') + '/health', timeout=4)"
+
+# --proxy-headers: IP-ul real al clientului (limitarea de login) vine din
+# X-Forwarded-For doar de la proxy-urile din FORWARDED_ALLOW_IPS.
+CMD ["uvicorn", "ppc_agent_server.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

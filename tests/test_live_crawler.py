@@ -215,3 +215,51 @@ def test_motivul_blocarii_ajunge_in_page_context() -> None:
     context = crawl(_provider(handler), _PAGE)
     assert context.ok is False
     assert context.failure_reason == "CrawlBlockedError"
+
+
+# --- scutul SSRF (agentul crawleaza domeniul setat de client, noaptea) -------------
+
+
+def _shielded(handler: object, records: dict[str, list[str]]) -> LiveCrawlerProvider:
+    """Crawler-ul cu scutul real si un DNS fals - ca in productie, fara retea."""
+    from seo_geo_agent.audit.safe_transport import SafeAsyncTransport
+
+    async def resolve(host: str, port: int) -> list[str]:
+        return records.get(host, [])
+
+    return LiveCrawlerProvider(
+        transport=SafeAsyncTransport(
+            resolver=resolve,
+            transport_factory=lambda: httpx.MockTransport(handler),  # type: ignore[arg-type]
+        )
+    )
+
+
+def test_un_redirect_spre_metadata_cloud_e_blocat() -> None:
+    """Domeniul clientului raspunde cu 302 spre 169.254.169.254 - inainte, httpx urma."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["host"])
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"})
+
+    provider = _shielded(handler, {"exemplu.ro": ["93.184.216.34"]})
+    with pytest.raises(CrawlTargetBlockedError, match=r"169.254.169.254"):
+        provider.fetch(_PAGE)
+    assert seen == ["exemplu.ro"]
+
+
+def test_un_domeniu_care_se_rezolva_in_localhost_e_blocat() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("nicio cerere nu are voie sa plece spre 127.0.0.1")
+
+    provider = _shielded(handler, {"localtest.me": ["127.0.0.1"]})
+    with pytest.raises(CrawlTargetBlockedError, match="adresa interna"):
+        provider.fetch("https://localtest.me/")
+
+
+def test_in_productie_crawlerul_foloseste_scutul() -> None:
+    from seo_geo_agent.audit.safe_transport import SafeAsyncTransport
+
+    client = LiveCrawlerProvider()._client(follow_redirects=True)
+    assert isinstance(client._transport, SafeAsyncTransport)

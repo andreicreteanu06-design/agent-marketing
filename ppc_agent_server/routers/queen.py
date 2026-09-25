@@ -24,6 +24,7 @@ from sqlmodel import Session
 
 from ppc_agent_server.db import get_session
 from ppc_agent_server.models import ClientUser
+from ppc_agent_server.rate_limit import CHAT_BURST, CHAT_HOURLY, too_many_requests
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.services.council import (
     MAX_QUESTION_CHARS,
@@ -86,7 +87,18 @@ def chat_with_queen(
     voice: Annotated[TextGenerator | None, Depends(get_cmo_voice)],
     seo_intent: Annotated[SeoIntentSource, Depends(get_seo_intent)],
 ) -> CouncilReply:
-    """Raspunsul Reginei la o intrebare libera, dupa deliberarea consiliului (``reply``)."""
+    """Raspunsul Reginei la o intrebare libera, dupa deliberarea consiliului (``reply``).
+
+    Limitat per client (``rate_limit.py``): fiecare mesaj costa pana la trei
+    apeluri Hugging Face si tine un fir ocupat - 429 peste rafala sau plafonul orar.
+    """
+    key = f"client:{user.client_account_id}"
+    wait = CHAT_BURST.retry_after(key) or CHAT_HOURLY.retry_after(key)
+    if wait is not None:
+        raise too_many_requests(wait, "Ai trimis multe întrebări într-un timp scurt.")
+    CHAT_BURST.hit(key)
+    CHAT_HOURLY.hit(key)
+
     queen = BrandStrategist(DbBrandSignals(session, seo_intent=seo_intent))
     directive = queen.evaluate_brand_alignment(user.client_account_id)
     council = QueenCouncil(DbFinancialSignals(session), voice=voice)

@@ -2,8 +2,9 @@
 # Pe Windows, torch de pe PyPI este build CPU-only (fara CUDA), suficient pentru
 # esantionarea Thompson si algebra liniara din Modulul 2.
 
-# Crawling / ingestie (Modulul 1)
-playwright>=1.47,<2
+# Crawling / ingestie (Modulul 1). Fara Playwright: crawler-ul e httpx (cu scutul
+# SSRF din seo_geo_agent/audit/safe_transport.py) - un browser headless nu era
+# folosit nicaieri si ar fi adus ~300 MB si inca o suprafata de atac in imagine.
 beautifulsoup4>=4.12,<5
 lxml>=5,<7
 httpx>=0.27,<1

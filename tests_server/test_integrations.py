@@ -443,3 +443,18 @@ def test_un_domeniu_invalid_e_refuzat_iar_unul_gol_sterge_valoarea(
     cleared = client.patch("/api/v1/me/site", headers=headers, json={"target_domain": ""})
     assert cleared.status_code == 200
     assert cleared.json()["target_domain"] == ""
+
+
+@pytest.mark.parametrize(
+    "internal",
+    ["127.0.0.1", "10.0.0.5", "169.254.169.254", "100.64.0.1", "intern.localhost",
+     "metadata.google.internal", "nas.local"],
+)
+def test_domeniul_nu_poate_fi_o_adresa_interna(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], internal: str
+) -> None:
+    """Agentul crawleaza domeniul noaptea - o adresa interna ar fi o poarta SSRF."""
+    client, _, headers, _ = signed_in
+    response = client.patch("/api/v1/me/site", headers=headers, json={"target_domain": internal})
+    assert response.status_code == 422
+    assert "nu o adresă internă" in response.text

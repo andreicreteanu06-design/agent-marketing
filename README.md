@@ -506,7 +506,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 
 | Variabila | Implicit | Efect |
 |-----------|----------|-------|
-| `DATABASE_URL` | `sqlite:///./ppc_agent_server.db` | Postgres real: `postgresql://user:pass@host/db` |
+| `DATABASE_URL` | `sqlite:///./ppc_agent_server.db` | Postgres real: `postgresql+psycopg://user:pass@host/db` |
 | `REDIS_URL` | necompletat -> `InlineJobQueue` | Seteaza pentru `ArqJobQueue` reala: `redis://localhost:6379/0` |
 | `PUBLIC_API_URL` | `http://localhost:8000` | Din ea se construieste `redirect_uri`-ul OAuth Google (vezi Integrari Google) |
 | `SITE_URL` | `http://localhost:3000` | Unde revine clientul dupa ecranul de consimtamant Google |
@@ -785,19 +785,74 @@ Mapare eroare -> HTTP (Starlette, pe `__mro__`): `SetupRequiredError`→503,
 
 | | SQLite (implicit) | PostgreSQL |
 |---|---|---|
-| Instalare | niciuna | `docker compose up -d` (vezi `docker-compose.yml`) |
-| `DATABASE_URL` | necompletat | `postgresql://ppc_agent:ppc_agent@localhost:5432/ppc_agent` |
+| Instalare | niciuna | `docker compose -f docker-compose.dev.yml up -d` |
+| `DATABASE_URL` | necompletat | `postgresql+psycopg://ppc_agent:ppc_agent_dev@localhost:5432/ppc_agent` |
 | Migratii | `alembic upgrade head` | identic — acelasi Alembic, alt dialect |
 
 ### De la coada in proces la ARQ+Redis
 
 | | `InlineJobQueue` (implicit) | `ArqJobQueue` |
 |---|---|---|
-| Instalare | niciuna | `docker compose up -d` + `REDIS_URL=redis://localhost:6379/0` |
+| Instalare | niciuna | `docker compose -f docker-compose.dev.yml up -d` + `REDIS_URL=redis://:redis_dev@localhost:6379/0` |
 | Executie | sincron, in procesul serverului | proces worker separat: `arq ppc_agent_server.jobs.worker.WorkerSettings` |
 | Contract API | identic (`POST` -> `task_id`, `GET` -> stare) | identic — comutare fara nicio schimbare in router-e |
 
 Comutarea e automata, dupa `REDIS_URL` — niciun cod de apelat diferit.
+
+Mentenanta de noapte (cron ARQ la 03:00) face fan-out: programeaza cate un job
+`run_client_maintenance_job` per client, fiecare cu timeout-ul lui (10 minute),
+fara reincercari oarbe, cu `_job_id` pe zi - pornit de doua ori, cron-ul nu
+dubleaza nimic. Un client lent nu-i mai intarzie pe ceilalti.
+
+### Productie cu Docker
+
+`docker-compose.yml` porneste toata stiva: `site` (Next.js standalone), `api`
+(ppc_agent_server), `worker` (ARQ), `seo-geo`, `postgres`, `redis`, plus `migrate`
+(`alembic upgrade head`, o data per pornire). Imaginile: `Dockerfile.backend`
+(una singura pentru api/worker/seo-geo; Python slim, torch doar CPU, fara
+Playwright) si `Dockerfile.frontend` (build `output: "standalone"`).
+
+```bash
+cp .env.example .env      # JWT_SECRET_KEY, SECRETS_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD
+docker compose up -d --build
+# o singura data: agentia (tenant-ul), apoi AGENCY_TENANT_ID=<id> in .env si
+# docker compose up -d api
+docker compose run --rm api python -c "from sqlmodel import Session; from ppc_agent_server.db import get_engine; from ppc_agent_server.auth import create_tenant; s = Session(get_engine()); t, k = create_tenant(s, 'Agentia Mea SRL'); print(t.id, k)"
+```
+
+Securitate:
+
+- Postgres si Redis **nu au porturi publicate**; traiesc pe reteaua `data`
+  (`internal: true`, fara iesire in internet), impreuna doar cu `api` si `worker`.
+  Redis cere parola. Parolele lipsa opresc pornirea (`${VAR:?}`).
+- Containerele aplicatiei ruleaza ca utilizator fara privilegii, cu radacina
+  read-only, fara capabilitati Linux si `no-new-privileges`.
+- Porturile 3000/8000/8001 asculta implicit doar pe `127.0.0.1` (`BIND_ADDRESS`):
+  in productie, in fata lor sta un reverse proxy cu TLS. Seteaza atunci
+  `FORWARDED_ALLOW_IPS` la IP-ul proxy-ului, ca limitarea de login sa vada IP-ul
+  real al clientului.
+- `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_SEO_GEO_API_URL` intra in build-ul site-ului
+  (sunt publice, ajung in browser) - adresele API-urilor asa cum le vede clientul.
+
+### Scutul SSRF si limitarea cererilor
+
+- **SSRF.** Orice crawl (auditul SEO si crawler-ul PPC care citeste noaptea
+  domeniul clientului) trece prin `seo_geo_agent/audit/safe_transport.py`: DNS-ul
+  il rezolva transportul, la FIECARE cerere (inclusiv fiecare redirect, sitemap si
+  link); daca DNS-ul pica sau oricare adresa nu e publica (privata, loopback,
+  link-local si metadata cloud `169.254.169.254`, CGNAT `100.64.0.0/10`, rezervata,
+  IPv4 ascuns in IPv6), cererea se refuza; altfel conexiunea merge la IP-ul
+  verificat (antetul `Host` si TLS pastreaza numele), deci nu mai exista o a doua
+  rezolvare de otravit (DNS rebinding). Setarile refuza si un `target_domain` intern.
+- **Aprobari.** `POST /proposals/{id}/approve` rezerva propunerea atomic
+  (`UPDATE ... WHERE status='pending'`) inainte de apelul catre Meta: un dublu
+  click nu mai aplica de doua ori. Plafonul de cheltuiala numara si propunerile
+  aflate in curs de aplicare (`approved`).
+- **Limitari** (`ppc_agent_server/rate_limit.py`, in memorie): login - 30 de
+  incercari/minut pe IP si 5 parole gresite/15 minute pe email (numarate inainte
+  de Argon2); chatul Reginei - 6 mesaje/minut si 60/ora per client. Peste: 429 cu
+  `Retry-After`. Memoria e per proces: cu mai multi workeri uvicorn, limita se
+  inmulteste cu numarul lor.
 
 ### Teste server
 
@@ -956,7 +1011,10 @@ sitemap, linkuri, pagini rupte), zero retea reala. `ruff check` acopera deja
 
 ```
 swipe_file.json        formule Google + tiktok_swipe_library (RAG local, editabil)
-docker-compose.yml      Postgres+Redis optionale (productie-like, niciodata necesar)
+docker-compose.yml      stiva de productie (site, api, worker, seo-geo, Postgres, Redis)
+docker-compose.dev.yml  Postgres+Redis pentru dezvoltare locala (doar pe 127.0.0.1)
+Dockerfile.backend      imaginea api/worker/seo-geo (slim, fara Playwright)
+Dockerfile.frontend     imaginea site-ului (Next.js standalone)
 alembic.ini              configurare Alembic (script_location -> ppc_agent_server/migrations)
 requirements.txt          dependinte CLI
 requirements-server.txt    dependinte server (include requirements.txt)

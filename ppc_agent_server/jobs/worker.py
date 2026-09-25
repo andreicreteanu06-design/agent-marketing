@@ -21,6 +21,7 @@ evenimente a worker-ului (care poate procesa alte job-uri concurent).
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from arq import cron
@@ -30,9 +31,10 @@ from arq.worker import Function, func
 
 from ppc_agent_server.jobs.tasks import (
     AdPlatform,
+    list_client_account_ids,
+    run_client_maintenance_job,
     run_copy_job,
     run_creative_job,
-    run_daily_maintenance_job,
     run_fatigue_check_job,
     run_metrics_sync_job,
     run_plan_job,
@@ -48,6 +50,10 @@ _WEEKLY_REPORT_WEEKDAY = 0
 """Luni (``datetime.weekday()``): raportul acopera saptamana care tocmai s-a incheiat."""
 _WEEKLY_REPORT_HOUR = 6
 """06:00 - dupa mentenanta de noapte, inainte ca clientul sa-si deschida contul."""
+CLIENT_MAINTENANCE_TIMEOUT_SECONDS = 600
+"""Cat are voie sa dureze mentenanta UNUI client (sincronizare + propuneri +
+oboseala, fiecare cu timeout-urile de 30s ale platformelor). Peste, ARQ marcheaza
+jobul esuat - iar ceilalti clienti nu observa nimic."""
 
 
 async def _plan_task(ctx: dict[str, Any], *, client_account_id: int) -> dict[str, Any]:
@@ -106,17 +112,36 @@ async def _sync_metrics_task(ctx: dict[str, Any], *, client_account_id: int) -> 
     return await asyncio.to_thread(run_metrics_sync_job, client_account_id=client_account_id)
 
 
-async def _daily_maintenance_task(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Wrapper pentru cron - sincronizare + propuneri + oboseala, pentru toti clientii.
+async def _client_maintenance_task(
+    ctx: dict[str, Any], *, client_account_id: int
+) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        run_client_maintenance_job, client_account_id=client_account_id
+    )
 
-    Doar genereaza propuneri ``pending`` (vezi ``run_daily_maintenance_job``) -
-    nimic nu se executa automat. Ruleaza doar cand un worker ARQ real e pornit
-    impotriva unui Redis real (``REDIS_URL`` setat) - la fel ca restul cozii
-    ``arq``, netestat impotriva unui Redis real in acest mediu (vezi nota
-    epistemica din ``arq_queue.py``); ``run_daily_maintenance_job`` in sine e
-    testat direct, fara Redis/ARQ, ca toate celelalte functii din ``tasks.py``.
+
+async def _daily_maintenance_task(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Cron-ul de noapte: programeaza cate un micro-job per client (fan-out).
+
+    Nu mai face munca intr-un singur job mare: acela avea UN timeout pentru toti
+    clientii, iar un client lent ii intarzia pe toti ceilalti. Acum fiecare client
+    e un job separat, cu timeout-ul lui (``CLIENT_MAINTENANCE_TIMEOUT_SECONDS``),
+    procesat in paralel de worker (``max_jobs``). ``_job_id`` contine ziua: daca
+    cron-ul porneste de doua ori in aceeasi zi, ARQ nu dubleaza jobul (si deci nici
+    propunerile). Doar genereaza propuneri ``pending`` - nimic nu se executa automat.
     """
-    return await asyncio.to_thread(run_daily_maintenance_job)
+    client_ids = await asyncio.to_thread(list_client_account_ids)
+    day = datetime.now(tz=UTC).date().isoformat()
+    enqueued = 0
+    for client_id in client_ids:
+        job = await ctx["redis"].enqueue_job(
+            run_client_maintenance_job.__name__,
+            client_account_id=client_id,
+            _job_id=f"maintenance:{day}:{client_id}",
+        )
+        if job is not None:  # None = deja programat azi
+            enqueued += 1
+    return {"clients": len(client_ids), "enqueued": enqueued}
 
 
 async def _weekly_reports_task(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +165,14 @@ class WorkerSettings:
         func(_propose_task, name=run_propose_job.__name__),
         func(_fatigue_check_task, name=run_fatigue_check_job.__name__),
         func(_sync_metrics_task, name=run_metrics_sync_job.__name__),
+        func(
+            _client_maintenance_task,
+            name=run_client_maintenance_job.__name__,
+            timeout=CLIENT_MAINTENANCE_TIMEOUT_SECONDS,
+            # O rulare intrerupta nu se reia oarba (ar dubla propunerile) - maine
+            # noaptea clientul intra oricum din nou in lista.
+            max_tries=1,
+        ),
     ]
     cron_jobs: ClassVar[list[CronJob]] = [
         cron(

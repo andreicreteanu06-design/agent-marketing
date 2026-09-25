@@ -7,9 +7,17 @@ de la un client autentificat si face cereri HTTP catre el de pe serverul nostru
 cloud) sau un serviciu intern si ar primi raspunsul inapoi prin raport.
 
 Diferenta fata de original: acolo verificarea intervalelor private e scrisa de
-mana (nu exista ``ipaddress`` in Workers). Aici folosim ``ipaddress`` din
-biblioteca standard, care acopera aceleasi intervale si inca cateva (CGNAT,
-benchmark, rezervate) - mai strict, nu mai permisiv.
+mana (nu exista ``ipaddress`` in Workers). Aici o adresa e acceptata doar daca
+``ipaddress`` o considera globala (``is_global``) - asta exclude privatele,
+loopback, link-local (deci metadata cloud ``169.254.169.254``), CGNAT
+``100.64.0.0/10``, benchmark, rezervatele - plus multicast si IPv4 ascuns in
+IPv6 (mapat ``::ffff:a.b.c.d`` sau NAT64 ``64:ff9b::/96``).
+
+Verificarile de aici sunt filtrul RAPID (fara retea) pentru URL-uri. Garantia
+vine din ``safe_transport.SafeAsyncTransport``: rezolva DNS-ul la fiecare
+cerere, refuza orice adresa interna sau un DNS picat si se conecteaza la IP-ul
+verificat - deci nici redirecturile, nici DNS rebinding, nici ``www.<domeniu>``
+nu o pot ocoli.
 """
 
 from __future__ import annotations
@@ -42,28 +50,41 @@ def _normalize_host(hostname: str) -> str:
     return host.removesuffix(".")
 
 
-def _is_blocked_address(host: str) -> bool:
-    """``True`` pentru orice IP pe care nu avem voie sa-l atingem."""
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def is_public_address(value: str) -> bool:
+    """``True`` doar pentru un IP public, pe care avem voie sa-l atingem.
+
+    Un IPv4 ascuns intr-un IPv6 (mapat sau NAT64) se judeca dupa IPv4-ul lui:
+    ``::ffff:10.0.0.1`` ajunge tot in ``10.0.0.1``.
+    """
     try:
-        address = ipaddress.ip_address(host)
+        address: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(
+            _normalize_host(value)
+        )
     except ValueError:
         return False
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    )
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        elif address in _NAT64:
+            address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return address.is_global and not address.is_multicast
 
 
-def _is_ip_literal(host: str) -> bool:
+def is_ip_literal(host: str) -> bool:
+    """``True`` cand ``host`` e scris ca IP (nu ca nume de domeniu)."""
     try:
-        ipaddress.ip_address(host)
+        ipaddress.ip_address(_normalize_host(host))
     except ValueError:
         return False
     return True
+
+
+def _is_blocked_address(host: str) -> bool:
+    """``True`` pentru un IP scris literal care nu e public."""
+    return is_ip_literal(host) and not is_public_address(host)
 
 
 def is_blocked_host(hostname: str) -> bool:
@@ -104,7 +125,7 @@ async def _resolves_to_blocked_address(hostname: str) -> bool:
     un refuz de securitate.
     """
     host = _normalize_host(hostname)
-    if not host or _is_ip_literal(host):
+    if not host or is_ip_literal(host):
         return False
     loop = asyncio.get_running_loop()
     try:

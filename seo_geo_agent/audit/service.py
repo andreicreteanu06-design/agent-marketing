@@ -38,6 +38,7 @@ from seo_geo_agent.audit.issues import IssuePillar
 from seo_geo_agent.audit.multipage import run_multipage_checks
 from seo_geo_agent.audit.page_reporters import DetectedIssue, run_page_reporters
 from seo_geo_agent.audit.robots import RobotsTxt, parse_robots_txt
+from seo_geo_agent.audit.safe_transport import SafeAsyncTransport
 from seo_geo_agent.audit.scoring import PillarScore, compute_pillar_scores
 from seo_geo_agent.audit.types import CRAWL_USER_AGENT, CrawledPage
 from seo_geo_agent.audit.url_policy import is_crawlable_url
@@ -205,8 +206,13 @@ async def run_audit(
     limits = httpx.Limits(
         max_connections=config.concurrency, max_keepalive_connections=config.concurrency
     )
+    # Scutul SSRF (``safe_transport``) verifica IP-ul la FIECARE cerere - start,
+    # redirecturi, sitemap-uri, linkuri. Testele isi aduc propriul transport.
     async with httpx.AsyncClient(
-        timeout=15.0, limits=limits, follow_redirects=False, transport=transport
+        timeout=15.0,
+        limits=limits,
+        follow_redirects=False,
+        transport=transport or SafeAsyncTransport(limits=limits),
     ) as client:
         # Tot auditul (origine, fisierele site-ului, pagina principala) porneste
         # de unde raspunde site-ul, nu de la forma tastata a domeniului.

@@ -48,6 +48,7 @@ from seo_geo_agent.audit.crawler import (
     classify_fetch,
     read_text_up_to,
 )
+from seo_geo_agent.audit.safe_transport import SafeAsyncTransport, SsrfBlockedError
 from seo_geo_agent.audit.types import CRAWL_USER_AGENT
 from seo_geo_agent.audit.url_policy import is_crawlable_url
 
@@ -68,7 +69,9 @@ class LiveCrawlerProvider(base.CrawlerProvider):
     Args:
         timeout: Secunde pana la abandonarea unei cereri.
         transport: Injectat in teste (``httpx.MockTransport``); ``None`` in
-            productie.
+            productie, unde fiecare cerere - inclusiv fiecare salt de redirect -
+            trece prin scutul SSRF (``SafeAsyncTransport``): DNS rezolvat de noi,
+            nicio adresa interna, conexiune la IP-ul verificat.
     """
 
     def __init__(
@@ -82,7 +85,7 @@ class LiveCrawlerProvider(base.CrawlerProvider):
 
     def _client(self, *, follow_redirects: bool) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            transport=self._transport,
+            transport=self._transport or SafeAsyncTransport(),
             timeout=self._timeout,
             follow_redirects=follow_redirects,
             max_redirects=_MAX_REDIRECTS,
@@ -121,6 +124,10 @@ class LiveCrawlerProvider(base.CrawlerProvider):
             try:
                 request = client.build_request("GET", url, headers=CRAWL_HEADERS)
                 response = await client.send(request, stream=True)
+            except SsrfBlockedError as exc:
+                raise CrawlTargetBlockedError(
+                    f"'{url}' duce la o adresa care nu poate fi accesata: {exc}"
+                ) from exc
             except httpx.TimeoutException as exc:
                 raise CrawlTimeoutError(f"'{url}' nu a raspuns in {self._timeout:.0f}s.") from exc
             except (httpx.HTTPError, UnicodeError, ValueError) as exc:

@@ -1,6 +1,6 @@
 """Crawler de domeniu: transforma o pagina intr-un :class:`PageContext` tipizat.
 
-Mecanismul de descarcare (Playwright / httpx) traieste in furnizorul de crawling.
+Mecanismul de descarcare (httpx, cu scut SSRF) traieste in furnizorul de crawling.
 Acest modul contine logica de *parsare* — partea care merita testata — si o
 functie de orchestrare care aplica politica ``robots.txt``.
 """

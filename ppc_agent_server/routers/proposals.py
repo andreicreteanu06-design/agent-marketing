@@ -19,15 +19,14 @@ separat inclus dupa - o dependenta de ordine intre fisiere e o capcana.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlalchemy import update
+from sqlmodel import Session, col, select
 
 from ppc_agent.config import ProviderMode
-from ppc_agent.errors import ApprovalRequiredError
-from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
+from ppc_agent.errors import ApprovalRequiredError, SpendLimitExceeded
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.services.execution_engine import (
     PLATFORM_META,
@@ -118,6 +117,37 @@ def _check_spend_limit(
     check_spend_limit(session, account, proposal.projected_daily_spend)
 
 
+def _transition(
+    session: Session, proposal: ProposedChange, *, frm: ChangeStatus, to: ChangeStatus
+) -> bool:
+    """Muta propunerea din ``frm`` in ``to`` ATOMIC, printr-un singur UPDATE conditionat.
+
+    ``UPDATE ... SET status=:to WHERE id=:id AND status=:frm`` - baza de date
+    serializeaza scrierile, deci din doua cereri simultane (dublu click pe
+    «Aprobă», aprobare si respingere in acelasi timp) exact una schimba randul.
+    Cealalta vede 0 randuri afectate si primeste ``False`` - nu mai pleaca a
+    doua oara spre platforma.
+    """
+    result = session.exec(
+        update(ProposedChange)
+        .where(col(ProposedChange.id) == proposal.id, col(ProposedChange.status) == frm)
+        .values(status=to)
+    )
+    session.commit()
+    session.refresh(proposal)
+    return result.rowcount == 1
+
+
+def _already_decided(action: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=(
+            f"propunerea tocmai a fost preluata de alta cerere - nu o {action} a doua oara "
+            "(reincarca lista)"
+        ),
+    )
+
+
 def _client_proposal(
     proposal_id: int, client_user: ClientUser, session: Session
 ) -> tuple[ProposedChange, ClientAccount]:
@@ -200,12 +230,36 @@ def approve_proposal(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     provider = _require_mutation_provider(account, target)
 
+    # Rezervarea: PENDING -> APPROVED atomic, INAINTE de primul apel catre Meta.
+    # Din doua cereri simultane, exact una trece de aici.
+    if not _transition(session, proposal, frm=ChangeStatus.PENDING, to=ChangeStatus.APPROVED):
+        raise _already_decided("aplic")
     try:
-        result = run_execution(proposal, provider, current_status=proposal.status.value)
-    except ProposalNotExecutableError as exc:  # pragma: no cover - verificat mai sus
+        # Rezervarea e acum vizibila celorlalte aprobari: plafonul se re-verifica
+        # impreuna cu ele (``spend_guard`` numara si propunerile APPROVED).
+        check_spend_limit(
+            session, account, proposal.projected_daily_spend, exclude_id=proposal.id
+        )
+        result = run_execution(proposal, provider, current_status=ChangeStatus.PENDING.value)
+    except (SpendLimitExceeded, ProposalNotExecutableError, NoExecutorError) as exc:
+        # Nimic n-a plecat spre platforma: rezervarea se elibereaza.
+        _transition(session, proposal, frm=ChangeStatus.APPROVED, to=ChangeStatus.PENDING)
+        if isinstance(exc, SpendLimitExceeded):
+            raise
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except NoExecutorError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        # Nu stim daca platforma a aplicat schimbarea: FAILED, nu PENDING - o
+        # reincercare oarba ar putea-o dubla.
+        proposal.status = ChangeStatus.FAILED
+        proposal.error_message = (
+            f"executia s-a intrerupt ({type(exc).__name__}) - verifica in platforma daca "
+            "schimbarea s-a aplicat"
+        )
+        proposal.decided_at = datetime.now(tz=UTC)
+        proposal.decided_by = client_user.email
+        session.add(proposal)
+        session.commit()
+        raise
 
     decided_at = datetime.now(tz=UTC)
     if result.executed:
@@ -246,7 +300,8 @@ def reject_proposal(
                 f"(aceasta e '{proposal.status.value}')"
             ),
         )
-    proposal.status = ChangeStatus.REJECTED
+    if not _transition(session, proposal, frm=ChangeStatus.PENDING, to=ChangeStatus.REJECTED):
+        raise _already_decided("resping")
     proposal.decided_at = datetime.now(tz=UTC)
     proposal.decided_by = client_user.email
     session.add(proposal)
@@ -303,23 +358,30 @@ def execute_proposal(
         raise ApprovalRequiredError(
             "executarea necesita confirmare umana explicita (confirm=true)"
         )
+    if proposal.status is not ChangeStatus.PENDING:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "doar propunerile in asteptare se pot executa "
+                f"(aceasta e '{proposal.status.value}')"
+            ),
+        )
+    # Aceeasi rezervare atomica ca la aprobarea clientului.
+    if not _transition(session, proposal, frm=ChangeStatus.PENDING, to=ChangeStatus.APPROVED):
+        raise _already_decided("execut")
 
-    # Verifica angajamentul TOTAL (toate propunerile deja 'executed' ale
+    # Verifica angajamentul TOTAL (propunerile executate sau in curs ale
     # clientului + aceasta), nu doar randul curent — altfel N aprobari
     # individuale, fiecare sub plafon, ar putea depasi impreuna plafonul
     # absolut. Echivalentul per-propunere al verificarii pe intregul changeset
     # din ApprovalGate.flush() (CLI).
-    limiter = AbsoluteSpendLimiter(account.max_daily_spend)
-    already_executed = session.exec(
-        select(ProposedChange).where(
-            ProposedChange.client_account_id == account.id,
-            ProposedChange.status == ChangeStatus.EXECUTED,
+    try:
+        check_spend_limit(
+            session, account, proposal.projected_daily_spend, exclude_id=proposal.id
         )
-    ).all()
-    total_committed = sum(
-        (p.projected_daily_spend for p in already_executed), Decimal("0")
-    )
-    limiter.check(total_committed + proposal.projected_daily_spend)
+    except SpendLimitExceeded:
+        _transition(session, proposal, frm=ChangeStatus.APPROVED, to=ChangeStatus.PENDING)
+        raise
 
     proposal.status = ChangeStatus.EXECUTED
     proposal.decided_at = datetime.now(tz=UTC)

@@ -366,32 +366,46 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
         return {"checked": len(records), "updated": updated}
 
 
-def run_daily_maintenance_job() -> dict[str, Any]:
-    """Ruleaza sincronizare + propuneri + verificare oboseala pentru TOTI clientii.
-
-    Punctul de intrare pentru cron-ul ARQ (``jobs/worker.py``) - dar e o functie
-    obisnuita din acest modul, apelabila si testabila direct, fara Redis/ARQ, ca
-    toate celelalte job-uri de mai sus. Un client care esueaza (ex.
-    ``SpendLimitExceeded`` la propose) nu opreste rularea pentru ceilalti -
-    eroarea lui se raporteaza in rezultat, nu se propaga.
-    """
+def list_client_account_ids() -> list[int]:
+    """Id-urile tuturor clientilor - lista pe care o imparte mentenanta de noapte."""
     with Session(get_engine()) as session:
-        client_ids = list(session.exec(select(ClientAccount.id)).all())
+        ids = session.exec(select(ClientAccount.id)).all()
+    return [client_id for client_id in ids if client_id is not None]
 
-    per_client: dict[str, Any] = {}
-    for client_id in client_ids:
-        if client_id is None:  # pragma: no cover - id e mereu setat dupa INSERT
-            continue
-        client_result: dict[str, Any] = {}
-        for step_name, job in (
-            ("sync", run_metrics_sync_job),
-            ("propose", run_propose_job),
-            ("fatigue_check", run_fatigue_check_job),
-        ):
-            try:
-                client_result[step_name] = job(client_account_id=client_id)
-            except Exception as exc:
-                client_result[step_name] = {"error": f"{type(exc).__name__}: {exc}"}
-        per_client[str(client_id)] = client_result
 
+def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
+    """Mentenanta de noapte pentru UN client: sincronizare, propuneri, oboseala.
+
+    Micro-jobul pe care cron-ul ARQ il programeaza pentru fiecare client
+    (``jobs/worker.py``), cu timeout-ul lui: un client lent sau o platforma
+    care nu raspunde nu mai tine pe loc restul conturilor. Pasii raman izolati
+    intre ei - un pas care pica (ex. ``SpendLimitExceeded`` la propose) isi
+    raporteaza eroarea, iar urmatorul ruleaza oricum.
+    """
+    result: dict[str, Any] = {}
+    for step_name, job in (
+        ("sync", run_metrics_sync_job),
+        ("propose", run_propose_job),
+        ("fatigue_check", run_fatigue_check_job),
+    ):
+        try:
+            result[step_name] = job(client_account_id=client_account_id)
+        except Exception as exc:
+            result[step_name] = {"error": f"{type(exc).__name__}: {exc}"}
+    return result
+
+
+def run_daily_maintenance_job() -> dict[str, Any]:
+    """Mentenanta de noapte pentru TOTI clientii, pe rand, in acelasi proces.
+
+    Varianta fara Redis (coada inline, CLI, teste). Cu un worker ARQ real,
+    cron-ul NU o foloseste: face fan-out, cate un :func:`run_client_maintenance_job`
+    per client (vezi ``jobs/worker.py``). Un client care esueaza nu ii opreste
+    pe ceilalti - eroarea lui se raporteaza in rezultat, nu se propaga.
+    """
+    client_ids = list_client_account_ids()
+    per_client = {
+        str(client_id): run_client_maintenance_job(client_account_id=client_id)
+        for client_id in client_ids
+    }
     return {"clients_processed": len(client_ids), "results": per_client}

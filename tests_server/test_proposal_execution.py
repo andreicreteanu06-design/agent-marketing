@@ -560,3 +560,166 @@ def test_asyncio_run_nu_ramane_cu_bucla_pornita() -> None:
         execute_proposal(_proposal(), provider, current_status="pending")
     assert provider.paused_adsets == ["23848"] * 3
     assert asyncio.get_event_loop_policy() is not None
+
+
+# --- rezervarea atomica (dublu click, aprobari simultane) ----------------------
+
+
+def _slow_graph_api(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], Any, Any]:
+    """Graph API care tine prima cerere "in zbor" pana cand testul o elibereaza."""
+    import threading
+
+    calls: list[str] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def slow_post(
+        self: httpx.AsyncClient, url: str, *, data: Any = None, headers: Any = None, **kw: Any
+    ) -> httpx.Response:
+        calls.append(str(url))
+        entered.set()
+        release.wait(timeout=10)
+        return httpx.Response(200, json={"success": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", slow_post)
+    return calls, entered, release
+
+
+def _in_background(
+    client: TestClient, url: str, headers: dict[str, str]
+) -> tuple[Any, dict[str, Any]]:
+    import threading
+
+    box: dict[str, Any] = {}
+    thread = threading.Thread(target=lambda: box.update(response=client.post(url, headers=headers)))
+    thread.start()
+    return thread, box
+
+
+def test_dublu_click_pe_aprobare_aplica_o_singura_data(
+    hitl: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    meta_live: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, headers, account_id = hitl
+    proposal_id = _add_pending(session, account_id)
+    calls, entered, release = _slow_graph_api(monkeypatch)
+    url = f"/api/v1/proposals/{proposal_id}/approve"
+
+    thread, first = _in_background(client, url, headers)
+    assert entered.wait(timeout=10)  # prima cerere a rezervat si e in zbor spre Meta
+    second = client.post(url, headers=headers)
+    release.set()
+    thread.join(timeout=10)
+
+    assert second.status_code == 409
+    assert first["response"].status_code == 200
+    assert first["response"].json()["status"] == ChangeStatus.EXECUTED.value
+    assert len(calls) == 1  # un singur apel catre Meta
+
+
+def test_rezervarea_e_atomica_chiar_daca_ambele_cereri_au_citit_pending(
+    engine: Any, session: Session
+) -> None:
+    """Cursa adevarata: ambele cereri au vazut PENDING; UPDATE-ul conditionat alege una."""
+    from ppc_agent_server.routers.proposals import _transition
+
+    proposal_id = _add_pending(session, 1)
+    with Session(engine) as first, Session(engine) as second:
+        mine = first.get(ProposedChange, proposal_id)
+        theirs = second.get(ProposedChange, proposal_id)
+        assert mine is not None and theirs is not None
+        assert mine.status is theirs.status is ChangeStatus.PENDING
+
+        assert _transition(first, mine, frm=ChangeStatus.PENDING, to=ChangeStatus.APPROVED)
+        assert not _transition(second, theirs, frm=ChangeStatus.PENDING, to=ChangeStatus.APPROVED)
+        assert theirs.status is ChangeStatus.APPROVED  # vede starea reala, nu pe a ei
+
+
+def test_plafonul_numara_si_propunerile_aflate_in_curs_de_aplicare(
+    hitl: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    meta_live: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plafon 50 RON: doua propuneri de 30 aprobate deodata nu trec amandoua."""
+    client, headers, account_id = hitl
+    first_id = _add_pending(session, account_id, spend="30")
+    second_id = _add_pending(session, account_id, resource="meta_ad_set/777", spend="30")
+    calls, entered, release = _slow_graph_api(monkeypatch)
+
+    thread, first = _in_background(client, f"/api/v1/proposals/{first_id}/approve", headers)
+    assert entered.wait(timeout=10)
+    second = client.post(f"/api/v1/proposals/{second_id}/approve", headers=headers)
+    release.set()
+    thread.join(timeout=10)
+
+    assert first["response"].status_code == 200
+    assert second.status_code == 409  # 30 in zbor + 30 > 50
+    assert len(calls) == 1
+    change = session.get(ProposedChange, second_id)
+    assert change is not None
+    session.refresh(change)
+    assert change.status is ChangeStatus.PENDING
+
+
+def test_o_rezervare_refuzata_dupa_preluare_se_elibereaza(
+    hitl: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    meta_live: None,
+    graph_api: _GraphApiStub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plafonul re-verificat DUPA rezervare pica -> propunerea revine PENDING, nimic trimis."""
+    from ppc_agent.errors import SpendLimitExceeded
+    from ppc_agent_server.routers import proposals as proposals_router
+
+    client, headers, account_id = hitl
+    proposal_id = _add_pending(session, account_id)
+    checks: list[int | None] = []
+
+    def flaky_check(*args: Any, exclude_id: int | None = None, **kwargs: Any) -> None:
+        checks.append(exclude_id)
+        if exclude_id is not None:  # a doua verificare, dupa rezervare
+            raise SpendLimitExceeded("alta aprobare a luat plafonul intre timp")
+
+    monkeypatch.setattr(proposals_router, "check_spend_limit", flaky_check)
+
+    response = client.post(f"/api/v1/proposals/{proposal_id}/approve", headers=headers)
+
+    assert response.status_code == 409
+    assert checks == [None, proposal_id]
+    assert graph_api.calls == []
+    change = session.get(ProposedChange, proposal_id)
+    assert change is not None
+    session.refresh(change)
+    assert change.status is ChangeStatus.PENDING
+
+
+def test_o_executie_intrerupta_nu_ramane_rezervata_la_nesfarsit(
+    hitl: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    meta_live: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nu stim daca Meta a aplicat: FAILED (verificare manuala), nu PENDING (reincercare oarba)."""
+    from ppc_agent_server.routers import proposals as proposals_router
+
+    client, headers, account_id = hitl
+    proposal_id = _add_pending(session, account_id)
+
+    def crash(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("conexiune pierduta la mijlocul cererii")
+
+    monkeypatch.setattr(proposals_router, "run_execution", crash)
+
+    with pytest.raises(RuntimeError):
+        client.post(f"/api/v1/proposals/{proposal_id}/approve", headers=headers)
+
+    change = session.get(ProposedChange, proposal_id)
+    assert change is not None
+    session.refresh(change)
+    assert change.status is ChangeStatus.FAILED
+    assert change.error_message is not None
+    assert "verifica in platforma" in change.error_message

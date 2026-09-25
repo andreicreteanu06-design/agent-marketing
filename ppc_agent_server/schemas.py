@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent_server.models import KeywordIntent, SerpSource
+from seo_geo_agent.audit.url_policy import is_blocked_host
 
 AdPlatform = Literal["google", "tiktok"]
 McConnectPlatform = Literal["google_ads", "meta", "tiktok_ads"]
@@ -304,6 +305,10 @@ class SiteSettingsUpdate(BaseModel):
             raise ValueError(
                 "Domeniul nu pare valid. Scrie-l ca 'exemplu.ro' sau 'https://exemplu.ro'."
             )
+        # Agentul crawleaza domeniul: o adresa interna nu are ce cauta aici. (Numele
+        # care se REZOLVA intern le opreste scutul SSRF, la fiecare cerere.)
+        if is_blocked_host(host):
+            raise ValueError("Domeniul trebuie să fie un site public, nu o adresă internă.")
         port = f":{parts.port}" if parts.port is not None else ""
         return f"{parts.scheme}://{host}{port}"
 

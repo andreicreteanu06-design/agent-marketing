@@ -20,6 +20,7 @@ from ppc_agent_server.auth import create_tenant
 from ppc_agent_server.db import init_db, set_engine
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
+from ppc_agent_server.rate_limit import reset_rate_limits
 from ppc_agent_server.settings import get_server_settings
 
 
@@ -46,6 +47,12 @@ def session(engine: Engine) -> Iterator[Session]:
 def _isolated_job_queue() -> None:
     """O coada noua per test — rezultatele unui test nu se scurg in urmatorul."""
     set_job_queue(InlineJobQueue())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits() -> None:
+    """Limitele de frecventa sunt in memoria procesului - fiecare test incepe de la zero."""
+    reset_rate_limits()
 
 
 @pytest.fixture

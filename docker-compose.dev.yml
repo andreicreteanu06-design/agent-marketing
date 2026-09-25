@@ -1,0 +1,37 @@
+# DOAR pentru dezvoltare locala: Postgres + Redis pentru serverele pornite pe host
+# (uvicorn --reload, arq). Productia foloseste docker-compose.yml, unde bazele de
+# date nu au niciun port publicat.
+#
+# Porturile asculta doar pe 127.0.0.1 - nu sunt accesibile din retea - iar Redis
+# cere parola.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   # apoi in .env:
+#   #   DATABASE_URL=postgresql+psycopg://ppc_agent:ppc_agent_dev@localhost:5432/ppc_agent
+#   #   REDIS_URL=redis://:redis_dev@localhost:6379/0
+#   alembic upgrade head
+#   uvicorn ppc_agent_server.app:app --reload
+#   arq ppc_agent_server.jobs.worker.WorkerSettings   # intr-un terminal separat
+
+name: ac-media-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ppc_agent
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-ppc_agent_dev}
+      POSTGRES_DB: ppc_agent
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ppc_agent_postgres_dev:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${DEV_REDIS_PASSWORD:-redis_dev}"]
+    ports:
+      - "127.0.0.1:6379:6379"
+
+volumes:
+  ppc_agent_postgres_dev:

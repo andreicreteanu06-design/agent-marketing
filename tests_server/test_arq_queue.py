@@ -18,7 +18,9 @@ from arq.jobs import JobStatus
 from ppc_agent_server.jobs.arq_queue import ArqJobQueue, _map_result, _map_status
 from ppc_agent_server.jobs.queue import InlineJobQueue, _default_queue
 from ppc_agent_server.jobs.worker import (
+    CLIENT_MAINTENANCE_TIMEOUT_SECONDS,
     WorkerSettings,
+    run_client_maintenance_job,
     run_copy_job,
     run_creative_job,
     run_fatigue_check_job,
@@ -116,7 +118,16 @@ def test_worker_settings_registers_all_functions_with_original_names() -> None:
         run_propose_job.__name__,
         run_fatigue_check_job.__name__,
         run_metrics_sync_job.__name__,
+        run_client_maintenance_job.__name__,
     }
+
+
+def test_client_maintenance_has_its_own_timeout_and_no_blind_retry() -> None:
+    (registered,) = [
+        f for f in WorkerSettings.functions if f.name == run_client_maintenance_job.__name__
+    ]
+    assert registered.timeout_s == CLIENT_MAINTENANCE_TIMEOUT_SECONDS
+    assert registered.max_tries == 1
 
 
 def test_worker_settings_registers_daily_maintenance_cron() -> None:

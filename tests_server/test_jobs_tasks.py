@@ -249,3 +249,74 @@ def test_run_daily_maintenance_job_isolates_per_client_errors(
     assert "error" in client_result["propose"]
     assert "RuntimeError" in client_result["propose"]["error"]
     assert "error" not in client_result["sync"]  # pasul urmator tot a rulat normal
+
+
+# --- fan-out-ul de noapte (cron ARQ) -------------------------------------------
+
+
+class _FakeArqRedis:
+    """``ctx["redis"]`` al unui worker ARQ, fara Redis: tine minte ce s-a programat."""
+
+    def __init__(self, already_queued: set[str] | None = None) -> None:
+        self.jobs: list[tuple[str, dict[str, Any]]] = []
+        self._queued = already_queued or set()
+
+    async def enqueue_job(self, name: str, **kwargs: Any) -> object | None:
+        job_id = kwargs.get("_job_id")
+        if job_id in self._queued:
+            return None  # ARQ: un job cu acelasi id exista deja
+        self._queued.add(str(job_id))
+        self.jobs.append((name, kwargs))
+        return object()
+
+
+def test_cronul_de_noapte_programeaza_cate_un_job_per_client(session: Session) -> None:
+    import asyncio
+
+    from ppc_agent_server.jobs.worker import _daily_maintenance_task
+
+    first = _client_account(session)
+    second = _client_account(session)
+    redis = _FakeArqRedis()
+
+    result = asyncio.run(_daily_maintenance_task({"redis": redis}))
+
+    assert result == {"clients": 2, "enqueued": 2}
+    assert {kwargs["client_account_id"] for _, kwargs in redis.jobs} == {first.id, second.id}
+    assert {name for name, _ in redis.jobs} == {"run_client_maintenance_job"}
+    day = datetime.now(tz=UTC).date().isoformat()
+    assert {kwargs["_job_id"] for _, kwargs in redis.jobs} == {
+        f"maintenance:{day}:{first.id}",
+        f"maintenance:{day}:{second.id}",
+    }
+
+
+def test_cronul_pornit_de_doua_ori_nu_dubleaza_joburile(session: Session) -> None:
+    import asyncio
+
+    from ppc_agent_server.jobs.worker import _daily_maintenance_task
+
+    _client_account(session)
+    redis = _FakeArqRedis()
+    asyncio.run(_daily_maintenance_task({"redis": redis}))
+    again = asyncio.run(_daily_maintenance_task({"redis": redis}))
+
+    assert again["enqueued"] == 0
+    assert len(redis.jobs) == 1
+
+
+def test_jobul_unui_client_izoleaza_pasii(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account = _client_account(session)
+
+    def _boom(*, client_account_id: int) -> dict[str, Any]:
+        raise RuntimeError("platforma nu raspunde")
+
+    monkeypatch.setattr(tasks_module, "run_metrics_sync_job", _boom)
+
+    result = tasks_module.run_client_maintenance_job(client_account_id=account.id or 0)
+
+    assert set(result) == {"sync", "propose", "fatigue_check"}
+    assert "RuntimeError" in result["sync"]["error"]
+    assert "error" not in result["fatigue_check"]

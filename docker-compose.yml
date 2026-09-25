@@ -1,35 +1,196 @@
-# Infrastructura optionala de productie pentru ppc_agent_server: PostgreSQL +
-# Redis reale, pentru testare "productie-like" locala.
+# Stiva completa de productie: site (Next.js), API-ul PPC, worker-ul ARQ,
+# agentul SEO/GEO, PostgreSQL si Redis.
 #
-# NU e necesar pentru dev/teste — implicit, serverul foloseste SQLite
-# (fara nimic de instalat) si InlineJobQueue (sincron, fara Redis). Porneste
-# astea DOAR daca vrei sa incerci calea Postgres/ARQ real:
+#   cp .env.example .env     # completeaza cel putin: JWT_SECRET_KEY, SECRETS_KEY,
+#                            # POSTGRES_PASSWORD, REDIS_PASSWORD (vezi .env.example)
+#   docker compose up -d --build
 #
-#   docker compose up -d
-#   # apoi in .env:
-#   #   DATABASE_URL=postgresql://ppc_agent:ppc_agent@localhost:5432/ppc_agent
-#   #   REDIS_URL=redis://localhost:6379/0
-#   pip install -r requirements-server.txt  # psycopg2-binary daca lipseste
-#   alembic upgrade head
-#   uvicorn ppc_agent_server.app:app --reload
-#   arq ppc_agent_server.jobs.worker.WorkerSettings   # intr-un terminal separat
+# Prima pornire: agentia (tenant-ul) se creeaza o singura data, apoi id-ul ei
+# intra in .env ca AGENCY_TENANT_ID (vezi README, "Docker"):
+#   docker compose run --rm api python -c "..."
+#
+# Securitate:
+# - Postgres si Redis NU au porturi publicate. Traiesc doar pe reteaua "data"
+#   (internal: true - fara iesire in internet), impreuna cu API-ul si worker-ul.
+# - Parolele vin din .env; ${VAR:?} opreste pornirea daca lipsesc. Redis cere parola.
+# - Containerele aplicatiei: utilizator fara privilegii, radacina read-only,
+#   nicio capabilitate Linux, no-new-privileges.
+# - Porturile publicate asculta implicit doar pe 127.0.0.1: in productie, in fata
+#   lor sta un reverse proxy cu TLS (Caddy, nginx). BIND_ADDRESS=0.0.0.0 le
+#   deschide direct - doar daca stii de ce. In spatele proxy-ului, seteaza
+#   FORWARDED_ALLOW_IPS la IP-ul lui, ca limitarea de login sa vada IP-ul real.
+#
+# Pentru dezvoltare locala (serverele pornite pe host), vezi docker-compose.dev.yml.
+
+name: ac-media
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile.backend
+  image: ac-media/backend:latest
+  env_file: .env
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+# Legaturile catre Postgres si Redis - suprascriu orice DATABASE_URL/REDIS_URL de
+# dezvoltare din .env (``environment`` are prioritate fata de ``env_file``).
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://ppc_agent:${POSTGRES_PASSWORD:?seteaza POSTGRES_PASSWORD in .env}@postgres:5432/ppc_agent
+  REDIS_URL: redis://:${REDIS_PASSWORD:?seteaza REDIS_PASSWORD in .env}@redis:6379/0
 
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ppc_agent
-      POSTGRES_PASSWORD: ppc_agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?seteaza POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ppc_agent
-    ports:
-      - "5432:5432"
     volumes:
-      - ppc_agent_postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ppc_agent -d ppc_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?seteaza REDIS_PASSWORD in .env}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Migratiile Alembic, o data per pornire; API-ul si worker-ul asteapta sa termine.
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *backend-env
+    networks:
+      - data
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    command:
+      - uvicorn
+      - ppc_agent_server.app:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --proxy-headers
+    environment:
+      <<: *backend-env
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
-      - "6379:6379"
+      - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    # "data" pentru Postgres/Redis, "edge" pentru port si pentru apelurile catre
+    # platformele de reclame (reteaua "data" nu are iesire in internet).
+    networks:
+      - data
+      - edge
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *backend
+    command: ["arq", "ppc_agent_server.jobs.worker.WorkerSettings"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - creative_output:/app/creative_output
+    networks:
+      - data
+      - edge
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Agentul SEO/GEO nu are baza de date: doar reteaua "edge" (crawl-uri externe,
+  # prin scutul SSRF). Valideaza acelasi JWT ca API-ul (JWT_SECRET_KEY din .env).
+  seo-geo:
+    <<: *backend
+    command:
+      - uvicorn
+      - seo_geo_agent.app:app
+      - --host=0.0.0.0
+      - --port=8001
+      - --proxy-headers
+    environment:
+      HEALTH_PORT: "8001"
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8001:8001"
+    networks:
+      - edge
+
+  site:
+    build:
+      context: ./site
+      dockerfile: ../Dockerfile.frontend
+      args:
+        # Adresele PUBLICE ale API-urilor, asa cum le vede browserul.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_SEO_GEO_API_URL: ${NEXT_PUBLIC_SEO_GEO_API_URL:-http://localhost:8001}
+    image: ac-media/site:latest
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache:uid=10001,gid=10001
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:3000:3000"
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  # Fara iesire in internet si fara porturi publicate: doar baza de date si coada.
+  data:
+    internal: true
+  edge: {}
 
 volumes:
-  ppc_agent_postgres_data:
+  postgres_data:
+  redis_data:
+  creative_output:

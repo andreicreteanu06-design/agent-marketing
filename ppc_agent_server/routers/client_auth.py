@@ -12,11 +12,17 @@ from __future__ import annotations
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlmodel import Session, select
 
 from ppc_agent_server.db import get_session
 from ppc_agent_server.models import ClientAccount, ClientUser, Tenant
+from ppc_agent_server.rate_limit import (
+    LOGIN_BY_IP,
+    LOGIN_FAILURES_BY_EMAIL,
+    client_ip,
+    too_many_requests,
+)
 from ppc_agent_server.schemas import (
     ClientAccountRead,
     ClientCredentialsUpdate,
@@ -125,19 +131,32 @@ def signup(
 
 @router.post("/login", response_model=ClientTokenResponse)
 def login(
-    payload: ClientLoginRequest, session: Annotated[Session, Depends(get_session)]
+    payload: ClientLoginRequest,
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
 ) -> ClientTokenResponse:
     """Autentifica un client existent prin email + parola.
 
     Acelasi mesaj de eroare pentru "email inexistent" si "parola gresita"
     deliberat - nu confirmam catre un apelant neautorizat daca adresa e
     inregistrata (previne enumerarea de conturi).
+
+    Limitat (``rate_limit.py``): 429 dupa prea multe incercari de pe acelasi IP
+    sau prea multe parole gresite pe acelasi email - verificat INAINTE de
+    Argon2, ca forta bruta sa nu consume nici CPU.
     """
     _require_jwt_configured()
+    email_key = payload.email.strip().lower()
+    wait = LOGIN_BY_IP.hit(client_ip(request)) or LOGIN_FAILURES_BY_EMAIL.retry_after(email_key)
+    if wait is not None:
+        raise too_many_requests(wait, "Prea multe încercări de autentificare.")
+
     user = session.exec(select(ClientUser).where(ClientUser.email == payload.email)).first()
     if user is None or not verify_password(payload.password, user.password_hash):
+        LOGIN_FAILURES_BY_EMAIL.hit(email_key)
         raise HTTPException(status_code=401, detail="email sau parola incorecte")
 
+    LOGIN_FAILURES_BY_EMAIL.clear(email_key)
     return ClientTokenResponse(access_token=create_client_token(user.id))  # type: ignore[arg-type]
 
 
