@@ -1,5 +1,6 @@
 # Contextul de build al Dockerfile.backend (radacina proiectului). Imaginea are
-# nevoie doar de pachetele Python, requirements*, alembic.ini si swipe_file.json.
+# nevoie doar de pachetele Python, requirements*, constraints.txt, alembic.ini si
+# swipe_file.json.
 **/__pycache__
 **/*.pyc
 .git

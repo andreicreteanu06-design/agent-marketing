@@ -21,9 +21,14 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
 WORKDIR /build
-COPY requirements.txt requirements-server.txt requirements-seo-geo.txt ./
-RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3" \
- && pip install -r requirements-server.txt -r requirements-seo-geo.txt \
+COPY requirements.txt requirements-server.txt requirements-seo-geo.txt constraints.txt ./
+# constraints.txt = versiunile exacte pe care au rulat testele: imaginea nu ia o
+# versiune mai noua, netestata, doar pentru ca intervalul din requirements o permite.
+# Torch vine de pe indexul CPU, la versiunea testata; indexul acela nu are toate
+# versiunile dependentelor lui (filelock...), deci ele se aliniaza abia la pasul
+# urmator, de pe PyPI, cu aceleasi constrangeri.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "$(grep -E '^torch==' constraints.txt)" \
+ && pip install -c constraints.txt -r requirements-server.txt -r requirements-seo-geo.txt \
  && ! pip show playwright >/dev/null 2>&1
 
 # --- 2. imaginea finala -----------------------------------------------------------
