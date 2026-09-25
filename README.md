@@ -542,7 +542,8 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
 | `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
 | `GET /api/v1/queen/client-message` | Agentul Regina explica clientului, ca un CMO, publicul ideal si ce a propus (vezi mai jos) |
-| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO) |
+| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician) |
+| `GET /api/v1/queen/technician` | Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil, veto si reparatii (vezi mai jos) |
 
 #### Agentul Regina: `GET /api/v1/queen/client-message`
 
@@ -603,6 +604,37 @@ Toate textele LLM au un strat de voce (`services/humanizer.py`, dupa
 `blader/humanizer`): consultant senior, fraze foarte scurte alternate cu fraze lungi,
 diateza activa, fara scuze, fara formule de chatbot si fara cuvinte-tic (crucial,
 esential, dinamic, "in concluzie"...). Stilul nu relaxeaza nicio garda.
+
+#### Tehnicianul (CTO): tracking si viteza, cu drept de veto
+
+Al treilea scaun din consiliu (`services/technician.py`, determinist). Raspunde
+de infrastructura de conversie - daca cifrele pe care le judeca ceilalti sunt
+adevarate si daca site-ul poate converti traficul platit:
+
+| Verificare | Din ce date | Rosu cand |
+|------------|-------------|-----------|
+| Tracking-ul conversiilor | serii zilnice pe 30 de zile: conversiile Google Ads (`SearchTermConversion`, cu click-urile zilei) si comenzile/apelurile din webhook-uri (`ConversionEvent`, pe sursa) | conversiile tac de cel putin 3 zile, desi ritmul de dinainte cerea cel putin 3 (Poisson, ~5%) si click-urile au continuat; sau 300+ click-uri fara nicio conversie |
+| Viteza pe mobil | ultima masuratoare PageSpeed Insights (strategia mobil), facuta noaptea de agentul SEO/GEO si salvata in `SiteSpeedSample` | LCP peste 4 s, CLS peste 0,25, TBT peste 600 ms sau scor sub 50 (pragurile Google); intre praguri: galben |
+
+Cand si click-urile au scazut, vina nu e a tracking-ului (reclamele livreaza mai
+putin) - starea ramane necunoscuta, nu rosie. Fara date, starea e `unknown`, nu
+verde. Pixelul Meta si GA4 nu trimit inca serii zilnice in platforma, deci nu se
+"verifica": raportul o spune intr-o nota.
+
+**Veto-ul** e calculat inaintea oricarui LLM: tracking picat -> nicio idee care
+citeste conversiile (buget, canal nou, teste platite, reclame "care pierd",
+cuvinte negative - ar fi luate pe cifre false); site lent pe mobil -> nicio
+cheltuiala in plus. Rescrierile si excluderile trec. Raspunsul Reginei spune
+veto-ul si prima reparatie, oricare ar fi fost intrebarea.
+
+Vocea lui (`ENGINEER_VOICE` din `humanizer.py`): inginer senior, extrem de scurt -
+diagnosticul, cauza, reparatia - cu aceleasi interdictii anti-AI ca a consultantului.
+Garda consiliului respinge si reparatiile pretinse ("am reparat tag-ul").
+
+Masuratoarea de viteza e un pas al mentenantei de noapte (`speed_check` in
+`run_client_maintenance_job`), doar pentru clientii cu domeniu in Setari.
+`SEOGEO_PAGESPEED_API_KEY` e optionala (fara ea, cota Google e mica, dar ajunge
+pentru o masuratoare pe client pe noapte).
 
 #### Integrari Google: Search Console si GA4
 

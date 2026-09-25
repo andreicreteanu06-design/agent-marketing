@@ -38,8 +38,15 @@ Argumentul de brand poarta si psihologia cumparatorului (``cognitive.py``): cum
 decide publicul (Sistemul 1/2), ce il opreste si ce parghie propunem - tot fapte
 calculate, pe care LLM-urile le explica, nu le inventeaza.
 
-Modulul e pur: fara DB, fara HTTP. Banii vin printr-un :class:`FinancialSignalsSource`
-(implementarea din baza de date: ``queen_signals.py``).
+Al treilea scaun e Tehnicianul (``technician.py``): tracking-ul conversiilor si
+viteza site-ului pe mobil. Are drept de veto peste ceilalti doi: cu tracking-ul
+picat nu trece nicio idee care citeste conversiile (CFO-ul ar judeca cifre
+false), cu site-ul lent pe mobil nu trece nicio cheltuiala in plus. Veto-ul e tot
+determinist - calculat inainte de orice LLM, ca restul deciziei.
+
+Modulul e pur: fara DB, fara HTTP. Banii vin printr-un :class:`FinancialSignalsSource`,
+datele tehnice printr-un :class:`~ppc_agent_server.services.technician.TechnicalSignalsSource`
+(implementarile din baza de date: ``queen_signals.py``).
 """
 
 from __future__ import annotations
@@ -53,7 +60,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.cognitive import CognitiveProfile
@@ -75,13 +82,22 @@ from ppc_agent_server.services.queen_agent import (
 from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
+from ppc_agent_server.services.technician import (
+    TECHNICIAN_SYSTEM_PROMPT,
+    TechnicalSignalsSource,
+    TechnicianDirective,
+    VetoScope,
+    evaluate_technical_health,
+    technician_facts,
+    technician_position,
+)
 
 logger = logging.getLogger("ppc_agent_server.services.council")
 
 CouncilTopic = Literal["budget", "channel", "profitability", "audience", "creative", "general"]
 FinancialStatus = Literal["profitable", "unprofitable", "no_benchmark", "insufficient_data"]
 AdVerdict = Literal["profitable", "unprofitable", "no_benchmark", "too_early"]
-CouncilMember = Literal["strategist", "cfo"]
+CouncilMember = Literal["strategist", "cfo", "technician"]
 
 #: Sub atatea conversii, rentabilitatea e zgomot - acelasi prag ca la clientul ideal.
 MIN_CONVERSIONS_FOR_VERDICT = MIN_CONVERSIONS
@@ -450,6 +466,10 @@ class CouncilRuling(BaseModel):
     approved: list[str]
     #: Ideile creative taiate de CFO, fiecare cu motivul.
     cut: list[str]
+    #: De ce a pus Tehnicianul veto (tracking picat, site lent pe mobil); ``None`` = fara.
+    veto: str | None = None
+    #: Ideile care ar fi trecut de brand si de CFO, oprite de veto-ul Tehnicianului.
+    vetoed: list[str] = Field(default_factory=list)
 
 
 #: De ce nu se cheltuie bani in plus - cate un motiv pe stare financiara.
@@ -514,6 +534,16 @@ _RELEVANCE: dict[CouncilTopic, tuple[IdeaKind, ...]] = {
     "general": (
         "rewrite", "loser", "negatives", "paid_targeting", "free_targeting", "channel", "budget"
     ),
+}
+
+
+#: Ce opreste fiecare veto al Tehnicianului. ``money`` (tracking picat): tot ce
+#: citeste conversiile. ``spend`` (site lent pe mobil): tot ce cheltuie in plus.
+#: Rescrierile si excluderile nu muta bani, deci trec oricum.
+_VETOED_KINDS: dict[VetoScope, frozenset[IdeaKind]] = {
+    "none": frozenset(),
+    "spend": frozenset({"budget", "channel", "paid_targeting"}),
+    "money": frozenset({"budget", "channel", "paid_targeting", "loser", "negatives"}),
 }
 
 
@@ -631,17 +661,24 @@ def _ideas(
 
 
 def rule_on_question(
-    question: QuestionTopic, directive: BrandStrategyDirective, finances: FinancialSnapshot
+    question: QuestionTopic,
+    directive: BrandStrategyDirective,
+    finances: FinancialSnapshot,
+    technical: TechnicianDirective | None = None,
 ) -> CouncilRuling:
     """Decizia consiliului: ce sustine si ce taie, cu motivul fiecarei taieturi.
 
     Regula de conflict: o idee de brand care cere bani trece doar daca CFO-ul
     are un cont rentabil in spate. Rescrierile nu muta bani, deci trec - dar o
     reclama care e rentabila acum se rescrie ca test A/B, nu se inlocuieste.
-    Ideile vin ordonate dupa cat de mult tin de intrebare.
+    Peste amandoi, veto-ul Tehnicianului: ce ar fi trecut, dar sta pe cifre
+    false (tracking picat) sau pe un site lent, se opreste. Ideile vin ordonate
+    dupa cat de mult tin de intrebare.
     """
     order = _RELEVANCE[question.topic]
     ideas = sorted(_ideas(question, directive, finances), key=lambda idea: order.index(idea.kind))
+    scope: VetoScope = technical.veto if technical is not None else "none"
+    blocked = _VETOED_KINDS[scope]
     cut = [idea.text for idea in ideas if not idea.approved]
     channel = PLATFORM_NAMES.get(question.new_channel or "", question.new_channel or "")
     return CouncilRuling(
@@ -649,10 +686,31 @@ def rule_on_question(
         new_channel=question.new_channel,
         financial_status=finances.status,
         brand_status=directive.status,
-        decision=_decision(question, directive, finances, channel, bool(cut)),
-        approved=[idea.text for idea in ideas if idea.approved],
+        decision=_decision(question, directive, finances, channel, bool(cut), technical),
+        approved=[idea.text for idea in ideas if idea.approved and idea.kind not in blocked],
         cut=cut,
+        veto=technical.veto_reason if technical is not None and scope != "none" else None,
+        vetoed=[idea.text for idea in ideas if idea.approved and idea.kind in blocked],
     )
+
+
+def _veto_decision(topic: CouncilTopic, technical: TechnicianDirective) -> str | None:
+    """Decizia cand veto-ul Tehnicianului atinge intrebarea; ``None`` cand n-o atinge."""
+    reason = technical.veto_reason
+    if technical.veto == "money":
+        if topic in ("budget", "channel"):
+            return f"Nu acum. {reason} Întâi se repară tracking-ul, apoi judecăm pe cifre reale."
+        if topic == "profitability":
+            return (
+                f"Cifrele de rentabilitate nu sunt de încredere acum. {reason} Întâi se repară "
+                "tracking-ul, apoi judecăm pe cifre reale."
+            )
+        if topic == "general":
+            return f"Întâi o problemă tehnică. {reason}"
+    if technical.veto == "spend" and topic in ("budget", "channel"):
+        then = "bugetul" if topic == "budget" else "un canal nou"
+        return f"Nu acum. {reason} Întâi viteza pe mobil, apoi {then}."
+    return None
 
 
 def _decision(
@@ -661,7 +719,12 @@ def _decision(
     finances: FinancialSnapshot,
     channel: str,
     anything_cut: bool,
+    technical: TechnicianDirective | None = None,
 ) -> str:
+    if technical is not None and technical.veto != "none":
+        vetoed = _veto_decision(question.topic, technical)
+        if vetoed is not None:
+            return vetoed
     status = finances.status
     brand_ok = directive.status == "ok" and directive.avatar is not None
     if not brand_ok and status == "insufficient_data":
@@ -823,21 +886,33 @@ def cfo_facts(finances: FinancialSnapshot) -> str:
 
 def ruling_facts(ruling: CouncilRuling) -> str:
     lines = [f"Decizia (obligatorie): {ruling.decision}"]
+    if ruling.veto:
+        lines.append(f"Veto-ul Tehnicianului (obligatoriu): {ruling.veto}")
     lines.extend(f"Susținut: {idea}." for idea in ruling.approved)
     lines.extend(f"Tăiat de CFO: {idea}." for idea in ruling.cut)
+    lines.extend(f"Oprit de veto-ul Tehnicianului: {idea}." for idea in ruling.vetoed)
     lines.append("Nimic nu se aplică fără aprobarea clientului.")
     return "\n".join(f"- {line}" for line in lines)
 
 
 def template_council_reply(
-    ruling: CouncilRuling, directive: BrandStrategyDirective, finances: FinancialSnapshot
+    ruling: CouncilRuling,
+    directive: BrandStrategyDirective,
+    finances: FinancialSnapshot,
+    technical: TechnicianDirective | None = None,
 ) -> str:
     """Raspunsul determinist al consiliului: decizia, de ce (psihologia), ce trece, ce se taie.
 
     Ideile de rezerva raman in ``ruling`` (UI-ul le arata in deliberare); raspunsul
-    ia doar prima idee sustinuta si prima taiata, ca sa ramana o conversatie.
+    ia doar prima idee sustinuta si prima taiata, ca sa ramana o conversatie. Un
+    veto al Tehnicianului se spune mereu, cu prima reparatie - si cand intrebarea
+    era despre altceva.
     """
     parts = [ruling.decision]
+    if ruling.veto and ruling.veto not in ruling.decision:
+        parts.append(f"Tehnicianul a pus veto: {_lower_first(ruling.veto)}")
+    if ruling.veto and technical is not None and technical.recommendations:
+        parts.append(f"Reparația de făcut întâi: {_lower_first(technical.recommendations[0])}")
     insight = psychology_insight(directive)
     if insight is not None:
         parts.append(insight)
@@ -862,7 +937,8 @@ def template_council_reply(
 #: "Am mărit bugetul" - o actiune pe care nimeni n-a aprobat-o.
 _CLAIMED_ACTION = re.compile(
     r"\bam (?:marit|crescut|redus|scazut|dublat|triplat|setat|modificat|schimbat|aplicat|"
-    r"oprit|pornit|lansat|activat|dezactivat|alocat|mutat|suspendat|investit)\b"
+    r"oprit|pornit|lansat|activat|dezactivat|alocat|mutat|suspendat|investit|"
+    r"reparat|instalat|configurat|corectat|remediat)\b"
 )
 #: "Vom crește bugetul" - bani promisi; bugetul il propune PPC-ul si il aproba clientul.
 _PROMISED_SPEND = re.compile(
@@ -944,11 +1020,14 @@ CFO_SYSTEM_PROMPT = (
 CHAIR_SYSTEM_PROMPT = (
     "Ești Regina, Senior AI Chief Marketing Officer al agenției AC Media. Clientul "
     "(proprietarul afacerii) ți-a pus o întrebare; înainte să răspunzi ți-ai consultat "
-    "consiliul: propria analiză de brand și CFO-ul. Acum scrii răspunsul final, în română.\n"
+    "consiliul: propria analiză de brand, CFO-ul și, când există, Tehnicianul (tracking-ul "
+    "conversiilor și viteza site-ului pe mobil). Acum scrii răspunsul final, în română.\n"
     "Reguli stricte:\n"
     "1. DECIZIA CONSILIULUI e obligatorie: o comunici și o argumentezi, nu o schimbi.\n"
     "2. Când brandul și CFO-ul nu sunt de acord, câștigă CFO-ul: o idee creativă care nu se "
-    "susține financiar se taie, iar clientul află de ce.\n"
+    "susține financiar se taie, iar clientul află de ce. Peste amândoi, Tehnicianul are drept "
+    "de veto: dacă a pus veto, îl spui în primele două fraze, cu reparația din fapte, și nu "
+    "recomanzi nimic din ce a oprit.\n"
     "3. Folosești DOAR faptele și părerile primite. Orice cifră din răspuns trebuie să apară "
     "în ele; nu inventa cifre, procente, prețuri sau rezultate. Dacă datele lipsesc, spui asta.\n"
     "4. Prima frază răspunde direct la întrebare. Apoi argumentul de brand, cu motivația "
@@ -972,12 +1051,16 @@ def _question_block(question: str) -> str:
     )
 
 
+_MEMBER_PROMPTS: dict[CouncilMember, tuple[str, str]] = {
+    "strategist": (STRATEGIST_SYSTEM_PROMPT, "FAPTE DE BRAND"),
+    "cfo": (CFO_SYSTEM_PROMPT, "FAPTE FINANCIARE"),
+    "technician": (TECHNICIAN_SYSTEM_PROMPT, "FAPTE TEHNICE"),
+}
+
+
 def build_member_prompt(member: CouncilMember, question: str, facts: str) -> tuple[str, str]:
     """Promptul unui membru: aceeasi intrebare, doar faptele rolului lui."""
-    if member == "strategist":
-        system, heading = STRATEGIST_SYSTEM_PROMPT, "FAPTE DE BRAND"
-    else:
-        system, heading = CFO_SYSTEM_PROMPT, "FAPTE FINANCIARE"
+    system, heading = _MEMBER_PROMPTS[member]
     user = (
         f"{_question_block(question)}\n\n{heading}:\n{facts}\n\n"
         "Spune-ți părerea pentru consiliu."
@@ -992,15 +1075,23 @@ def build_chair_prompt(
     brand_facts: str,
     money_facts: str,
     ruling: CouncilRuling,
+    tech_facts: str | None = None,
 ) -> tuple[str, str]:
     """Promptul Reginei ca presedinte: parerile, toate faptele si decizia."""
     by_member = {opinion.member: opinion.opinion for opinion in opinions}
+    technician = (
+        f"PĂREREA TEHNICIANULUI:\n{by_member.get('technician', '')}\n\n"
+        f"FAPTE TEHNICE:\n{tech_facts}\n\n"
+        if tech_facts is not None
+        else ""
+    )
     user = (
         f"{_question_block(question)}\n\n"
         f"PĂREREA TA DE BRAND:\n{by_member.get('strategist', '')}\n\n"
         f"PĂREREA CFO-ULUI:\n{by_member.get('cfo', '')}\n\n"
         f"FAPTE DE BRAND:\n{brand_facts}\n\n"
         f"FAPTE FINANCIARE:\n{money_facts}\n\n"
+        f"{technician}"
         f"DECIZIA CONSILIULUI:\n{ruling_facts(ruling)}\n\n"
         "Scrie răspunsul tău final către client."
     )
@@ -1012,6 +1103,7 @@ def build_chair_prompt(
 MEMBER_TITLES: dict[CouncilMember, str] = {
     "strategist": "Regina · strategia de brand",
     "cfo": "CFO · rentabilitate",
+    "technician": "Tehnicianul · tracking și viteză",
 }
 
 
@@ -1044,6 +1136,8 @@ class CouncilReply(BaseModel):
     financial_status: FinancialStatus
     directive_status: DirectiveStatus
     generated_at: datetime
+    #: Raportul Tehnicianului (tracking, viteza pe mobil, veto); ``None`` fara Tehnician.
+    technical: TechnicianDirective | None = None
 
 
 def clean_question(query: str) -> str:
@@ -1069,31 +1163,34 @@ def _active_platforms(directive: BrandStrategyDirective, finances: FinancialSnap
 
 
 class QueenCouncil:
-    """Consiliul Reginei: Strategul si CFO-ul delibereaza, Regina raspunde.
+    """Consiliul Reginei: Strategul, CFO-ul si Tehnicianul delibereaza, Regina raspunde.
 
     ``voice`` e LLM-ul (Hugging Face) care da glas membrilor; fara el, sau cand
     pica, raspunde consiliul determinist. Nimic din ce scrie un LLM nu se
-    citeste inapoi intr-o decizie.
+    citeste inapoi intr-o decizie. Fara ``technical``, consiliul are doar doua
+    scaune (brand si bani) si niciun veto.
     """
 
     def __init__(
         self,
         finances: FinancialSignalsSource,
         *,
+        technical: TechnicalSignalsSource | None = None,
         voice: TextGenerator | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._finances = finances
+        self._technical = technical
         self._voice = voice
         self._clock = clock
 
     def evaluate_client_query(self, query: str, context: BrandStrategyDirective) -> CouncilReply:
         """Intrebarea clientului, trecuta prin consiliu.
 
-        Pasi: faptele (brand + bani) -> decizia determinista -> parerile celor doi
-        membri, in paralel -> sinteza Reginei. Orice pas LLM care pica sau scrie
-        ceva ce nu e in date e inlocuit cu varianta determinista, deci metoda nu
-        pica din cauza modelului.
+        Pasi: faptele (brand + bani + tehnic) -> decizia determinista, cu veto-ul
+        Tehnicianului -> parerile membrilor, in paralel -> sinteza Reginei. Orice
+        pas LLM care pica sau scrie ceva ce nu e in date e inlocuit cu varianta
+        determinista, deci metoda nu pica din cauza modelului.
 
         Raises:
             ValueError: intrebarea e goala sau prea lunga.
@@ -1102,13 +1199,18 @@ class QueenCouncil:
         client_account_id = context.client_account_id
         finances = build_financial_snapshot(self._finances.load(client_account_id))
         topic = classify_question(question, active_platforms=_active_platforms(context, finances))
-        ruling = rule_on_question(topic, context, finances)
+        technical = self._technical_report(client_account_id)
+        ruling = rule_on_question(topic, context, finances, technical)
         brand_facts = cmo_facts(context)
         money_facts = cfo_facts(finances)
+        tech_facts = technician_facts(technical) if technical is not None else None
         has_brand = context.status == "ok"
         has_money = finances.status != "insufficient_data"
+        has_tech = technical is not None and (
+            technical.tracking_status != "unknown" or technical.speed_status != "unknown"
+        )
 
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="consiliu") as pool:
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="consiliu") as pool:
             strategist = pool.submit(
                 self._opinion,
                 "strategist",
@@ -1125,7 +1227,19 @@ class QueenCouncil:
                 has_data=has_money,
                 fallback=cfo_position(finances),
             )
-            opinions = [strategist.result(), cfo.result()]
+            members = [strategist, cfo]
+            if technical is not None:
+                members.append(
+                    pool.submit(
+                        self._opinion,
+                        "technician",
+                        question,
+                        facts=tech_facts or "",
+                        has_data=has_tech,
+                        fallback=technician_position(technical),
+                    )
+                )
+            opinions = [member.result() for member in members]
 
         def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilReply:
             return CouncilReply(
@@ -1141,22 +1255,29 @@ class QueenCouncil:
                 financial_status=finances.status,
                 directive_status=context.status,
                 generated_at=self._clock(),
+                technical=technical,
             )
 
         def _deterministic(reason: str) -> CouncilReply:
-            return _reply(template_council_reply(ruling, context, finances), "template", reason)
+            text = template_council_reply(ruling, context, finances, technical)
+            return _reply(text, "template", reason)
 
         if self._voice is None:
             return _deterministic(
                 "Vocea LLM nu e configurată - răspunsul determinist al consiliului."
             )
-        if not (has_brand or has_money):
+        if not (has_brand or has_money or has_tech):
             return _deterministic(
                 "Consiliul nu are încă date pe care să delibereze - răspunsul standard, fără "
                 "sfaturi generice."
             )
         system, user = build_chair_prompt(
-            question, opinions, brand_facts=brand_facts, money_facts=money_facts, ruling=ruling
+            question,
+            opinions,
+            brand_facts=brand_facts,
+            money_facts=money_facts,
+            ruling=ruling,
+            tech_facts=tech_facts,
         )
         text, problem = self._ask(system=system, user=user, max_chars=MAX_REPLY_CHARS)
         if text is None:
@@ -1165,6 +1286,12 @@ class QueenCouncil:
             )
             return _deterministic(f"{problem} - răspunsul determinist al consiliului.")
         return _reply(text, "llm", None)
+
+    def _technical_report(self, client_account_id: int) -> TechnicianDirective | None:
+        if self._technical is None:
+            return None
+        signals = self._technical.load(client_account_id)
+        return evaluate_technical_health(client_account_id, signals, generated_at=self._clock())
 
     def _opinion(
         self, member: CouncilMember, question: str, *, facts: str, has_data: bool, fallback: str

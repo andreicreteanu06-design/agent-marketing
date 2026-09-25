@@ -9,9 +9,13 @@ mereu 200 cu un mesaj utilizabil. Nu creeaza propuneri si nu schimba nimic:
 propunerile le face jobul de noapte (``jobs/brand_alignment.py``).
 
 ``POST /api/v1/queen/chat`` - o intrebare libera a clientului. Regina nu raspunde
-direct: isi consulta consiliul (strategia de brand + CFO-ul, vezi
-``services/council.py``), iar decizia - ce trece, ce se taie - e determinista.
-Tot doar citeste; raspunde 200 si fara Hugging Face.
+direct: isi consulta consiliul (strategia de brand, CFO-ul si Tehnicianul, vezi
+``services/council.py``), iar decizia - ce trece, ce se taie, ce opreste veto-ul
+Tehnicianului - e determinista. Tot doar citeste; raspunde 200 si fara Hugging Face.
+
+``GET /api/v1/queen/technician`` - raportul Tehnicianului (``services/technician.py``):
+tracking-ul conversiilor si viteza pe mobil, verde/rosu, cu reparatiile. Determinist,
+fara LLM, doar citeste.
 """
 
 from __future__ import annotations
@@ -33,13 +37,20 @@ from ppc_agent_server.services.council import (
     clean_question,
 )
 from ppc_agent_server.services.hf_client import hf_client_from_settings
-from ppc_agent_server.services.queen_agent import BrandStrategist, CmoMessage, TextGenerator
+from ppc_agent_server.services.queen_agent import (
+    BrandStrategist,
+    CmoMessage,
+    TextGenerator,
+    _utc_now,
+)
 from ppc_agent_server.services.queen_signals import (
     DbBrandSignals,
     DbFinancialSignals,
+    DbTechnicalSignals,
     SearchConsoleIntent,
     SeoIntentSource,
 )
+from ppc_agent_server.services.technician import TechnicianDirective, evaluate_technical_health
 from ppc_agent_server.settings import get_server_settings
 
 router = APIRouter(prefix="/api/v1/queen", tags=["queen-agent"])
@@ -89,7 +100,7 @@ def chat_with_queen(
 ) -> CouncilReply:
     """Raspunsul Reginei la o intrebare libera, dupa deliberarea consiliului (``reply``).
 
-    Limitat per client (``rate_limit.py``): fiecare mesaj costa pana la trei
+    Limitat per client (``rate_limit.py``): fiecare mesaj costa pana la patru
     apeluri Hugging Face si tine un fir ocupat - 429 peste rafala sau plafonul orar.
     """
     key = f"client:{user.client_account_id}"
@@ -101,5 +112,17 @@ def chat_with_queen(
 
     queen = BrandStrategist(DbBrandSignals(session, seo_intent=seo_intent))
     directive = queen.evaluate_brand_alignment(user.client_account_id)
-    council = QueenCouncil(DbFinancialSignals(session), voice=voice)
+    council = QueenCouncil(
+        DbFinancialSignals(session), technical=DbTechnicalSignals(session), voice=voice
+    )
     return council.evaluate_client_query(body.message, directive)
+
+
+@router.get("/technician", response_model=TechnicianDirective)
+def read_technician_report(
+    user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> TechnicianDirective:
+    """Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil, veto si reparatii."""
+    signals = DbTechnicalSignals(session).load(user.client_account_id)
+    return evaluate_technical_health(user.client_account_id, signals, generated_at=_utc_now())

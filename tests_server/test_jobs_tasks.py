@@ -230,7 +230,7 @@ def test_run_daily_maintenance_job_processes_all_clients(session: Session) -> No
     assert str(first.id) in result["results"]
     assert str(second.id) in result["results"]
     for client_result in result["results"].values():
-        assert set(client_result) == {"sync", "propose", "fatigue_check"}
+        assert set(client_result) == {"sync", "propose", "fatigue_check", "speed_check"}
 
 
 def test_run_daily_maintenance_job_isolates_per_client_errors(
@@ -317,6 +317,6 @@ def test_jobul_unui_client_izoleaza_pasii(
 
     result = tasks_module.run_client_maintenance_job(client_account_id=account.id or 0)
 
-    assert set(result) == {"sync", "propose", "fatigue_check"}
+    assert set(result) == {"sync", "propose", "fatigue_check", "speed_check"}
     assert "RuntimeError" in result["sync"]["error"]
     assert "error" not in result["fatigue_check"]

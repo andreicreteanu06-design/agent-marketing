@@ -8,6 +8,8 @@ inline (``InlineJobQueue``, Faza E), fie intr-un proces worker ARQ separat
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -35,9 +37,12 @@ from ppc_agent_server.models import (
     CreativeArtifact,
     Platform,
     ProposedChange,
+    SiteSpeedSample,
 )
 from ppc_agent_server.security import decrypt_secret
 from ppc_agent_server.tracking.pipeline import to_ad_performance_state
+from seo_geo_agent.external_data import fetch_pagespeed_insights
+from seo_geo_agent.settings import get_seo_geo_settings
 
 AdPlatform = Literal["google", "tiktok"]
 _MOCK_CUSTOMER_ID = "mock-customer"
@@ -373,8 +378,85 @@ def list_client_account_ids() -> list[int]:
     return [client_id for client_id in ids if client_id is not None]
 
 
+#: PageSpeed ruleaza Lighthouse pe pagina reala: pe mobil, de obicei 10-30 s.
+PAGESPEED_TIMEOUT_SECONDS = 60.0
+
+PageSpeedMeasure = Callable[[str], dict[str, Any] | None]
+
+
+def measure_mobile_speed(url: str) -> dict[str, Any] | None:
+    """Masuratoarea agentului SEO/GEO: PageSpeed Insights, strategia mobil.
+
+    ``None`` la orice esec (cota, timeout, site cazut) - vezi
+    ``seo_geo_agent/external_data.py``. Cheia API e optionala
+    (``SEOGEO_PAGESPEED_API_KEY``); fara ea, cota Google e mica, dar ajunge
+    pentru o masuratoare pe client pe noapte.
+    """
+    return asyncio.run(
+        fetch_pagespeed_insights(
+            url,
+            api_key=get_seo_geo_settings().pagespeed_api_key,
+            strategy="mobile",
+            timeout=PAGESPEED_TIMEOUT_SECONDS,
+        )
+    )
+
+
+def _site_url(target_domain: str) -> str:
+    """``https://exemplu.ro/`` din domeniul din Setari (salvat ca origine sau, vechi, ca nume)."""
+    origin = target_domain.strip().rstrip("/")
+    return f"{origin if '://' in origin else f'https://{origin}'}/"
+
+
+def _optional_int(value: object) -> int | None:
+    return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _optional_float(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def run_speed_check_job(
+    *, client_account_id: int, measure: PageSpeedMeasure | None = None
+) -> dict[str, Any]:
+    """Viteza pe mobil a site-ului clientului, salvata pentru Tehnician.
+
+    Un rand nou ``SiteSpeedSample`` la fiecare masuratoare reusita (istoric, nu
+    suprascriere). Fara domeniu in Setari nu are ce masura; o masuratoare
+    esuata nu scrie nimic - Tehnicianul ramane pe ultima buna, cat timp nu e
+    prea veche, si nu inventeaza o stare.
+    """
+    with Session(get_engine()) as session:
+        account = _require_client(session, client_account_id)
+        if not account.target_domain.strip():
+            return {"measured": False, "reason": "fara domeniu in Setari"}
+        url = _site_url(account.target_domain)
+        # ``measure_mobile_speed`` citit la apel, nu legat la import: testele il
+        # inlocuiesc (``tests_server/conftest.py``), ca sa nu iasa spre Google.
+        result = (measure or measure_mobile_speed)(url)
+        if result is None:
+            return {"measured": False, "url": url, "reason": "PageSpeed nu a raspuns"}
+        layout_shift = result.get("cls")
+        sample = SiteSpeedSample(
+            client_account_id=client_account_id,
+            url=url,
+            performance_score=_optional_int(result.get("performance_score")),
+            lcp_ms=_optional_int(result.get("lcp_ms")),
+            layout_shift=_optional_float(layout_shift),
+            tbt_ms=_optional_int(result.get("tbt_ms")),
+        )
+        session.add(sample)
+        session.commit()
+        return {
+            "measured": True,
+            "url": url,
+            "performance_score": sample.performance_score,
+            "lcp_ms": sample.lcp_ms,
+        }
+
+
 def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
-    """Mentenanta de noapte pentru UN client: sincronizare, propuneri, oboseala.
+    """Mentenanta de noapte pentru UN client: sincronizare, propuneri, oboseala, viteza.
 
     Micro-jobul pe care cron-ul ARQ il programeaza pentru fiecare client
     (``jobs/worker.py``), cu timeout-ul lui: un client lent sau o platforma
@@ -387,6 +469,7 @@ def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
         ("sync", run_metrics_sync_job),
         ("propose", run_propose_job),
         ("fatigue_check", run_fatigue_check_job),
+        ("speed_check", run_speed_check_job),
     ):
         try:
             result[step_name] = job(client_account_id=client_account_id)

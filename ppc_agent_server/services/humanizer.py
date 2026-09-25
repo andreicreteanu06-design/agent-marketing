@@ -27,6 +27,10 @@ humanizer e aici dublata de garzile deterministe (``check_cmo_message``,
 ``check_council_text``), care raman ultimul cuvant: stilul nu relaxeaza nimic.
 :func:`ai_tells` doar MASOARA cat de bine tine modelul vocea (jurnal, teste) -
 nu respinge nimic, un tic de stil nu e o halucinatie.
+
+Doua voci, aceleasi interdictii: :data:`CONSULTANT_VOICE` (Regina, Strategul,
+CFO-ul - directorul de marketing la o cafea) si :data:`ENGINEER_VOICE`
+(Tehnicianul - inginerul care raporteaza un diagnostic, scurt si precis).
 """
 
 from __future__ import annotations
@@ -91,18 +95,12 @@ def _quoted(values: tuple[str, ...]) -> str:
     return ", ".join(f"«{value}»" for value in values)
 
 
-CONSULTANT_VOICE = (
+_VOICE_HEADER = (
     "VOCEA (regulile de mai sus au prioritate; stilul nu schimbă și nu adaugă niciun fapt):\n"
-    "Scrii ca un consultant senior pentru firme, un director de marketing care îi vorbește unui "
-    "antreprenor la o cafea: profesionist, direct, asertiv și empatic. Spui lucrurilor pe nume. "
-    "Fără scuze și fără politețuri de umplutură: prezinți faptele și soluția direct. Empatia "
-    "vine din faptul că îi înțelegi situația din date, nu din complimente sau consolări.\n"
-    "- Ritm: alternează propoziții foarte scurte, percutante, de două până la cinci cuvinte, "
-    "cu fraze lungi, care explică de ce. Evită structurile simetrice: fraze paralele, perechi "
-    "echilibrate, aceeași lungime de mai multe ori la rând. Nu începe două fraze la rând cu "
-    "același cuvânt.\n"
-    "- Diateza activă: spune cine face ce («am văzut», «CFO-ul a tăiat», «reclama aduce»), "
-    "nu «s-a constatat» sau «este de menționat».\n"
+)
+
+#: Regulile anti-"AI-speak" comune tuturor vocilor: structura, conectorii, cuvintele.
+_PLAIN_TEXT_RULES = (
     "- Intri direct în subiect și te oprești după ultimul fapt util. Fără "
     f"{_quoted(CHATBOT_RESIDUE)} sau alte formule de chatbot, anunțuri și scuze.\n"
     "- Nu folosi «nu doar X, ci și Y» sau «nu e vorba de X, ci de Y» când nimeni n-a spus X: "
@@ -113,6 +111,42 @@ CONSULTANT_VOICE = (
     "- Cuvinte interzise, tipice textelor generate: "
     f"{', '.join(word for word, _ in AI_SPEAK_WORDS)}.\n"
     "- Fără limbaj de vânzări și fără superlative («extraordinar», «uimitor», «fantastic»)."
+)
+
+CONSULTANT_VOICE = (
+    f"{_VOICE_HEADER}"
+    "Scrii ca un consultant senior pentru firme, un director de marketing care îi vorbește unui "
+    "antreprenor la o cafea: profesionist, direct, asertiv și empatic. Spui lucrurilor pe nume. "
+    "Fără scuze și fără politețuri de umplutură: prezinți faptele și soluția direct. Empatia "
+    "vine din faptul că îi înțelegi situația din date, nu din complimente sau consolări.\n"
+    "- Ritm: alternează propoziții foarte scurte, percutante, de două până la cinci cuvinte, "
+    "cu fraze lungi, care explică de ce. Evită structurile simetrice: fraze paralele, perechi "
+    "echilibrate, aceeași lungime de mai multe ori la rând. Nu începe două fraze la rând cu "
+    "același cuvânt.\n"
+    "- Diateza activă: spune cine face ce («am văzut», «CFO-ul a tăiat», «reclama aduce»), "
+    "nu «s-a constatat» sau «este de menționat».\n"
+    f"{_PLAIN_TEXT_RULES}"
+)
+
+#: Vocea Tehnicianului (``technician.py``): inginerul care a depanat multe site-uri.
+#: Aceleasi interdictii anti-AI ca la consultant, alt registru: diagnosticul, cauza,
+#: reparatia - fara empatie de umplutura. Tot fara cifre si fara fraze-exemplu: un
+#: model mic ar repeta "tag-ul e picat" si cand nu e.
+ENGINEER_VOICE = (
+    f"{_VOICE_HEADER}"
+    "Scrii ca un inginer senior de performanță web și tracking, care a depanat multe site-uri "
+    "și îi raportează proprietarului afacerii: extrem de scurt, precis, analitic. Diagnosticul, "
+    "cauza, reparația. Fără introduceri, fără empatie de umplutură, fără adjective de "
+    "decor.\n"
+    "- Ritm: aproape numai propoziții scurte, de două până la cinci cuvinte, care numesc "
+    "diagnosticul. O frază lungă doar când explică o cauză tehnică. Fără structuri simetrice.\n"
+    "- Precizie: numești exact componenta (tag-ul de conversie, webhook-ul, imaginea "
+    "principală, scripturile terțe), metrica și pragul ei, exact cum apar în fapte. Nu "
+    "atenuezi verdictul din fapte cu «probabil» sau «s-ar putea»; unde faptele spun că datele "
+    "lipsesc, spui ce lipsește.\n"
+    "- Diateza activă: spune ce face fiecare componentă și ce trebuie verificat întâi, nu "
+    "«s-a constatat» sau «este de menționat».\n"
+    f"{_PLAIN_TEXT_RULES}"
 )
 
 _AI_SPEAK = tuple((word, re.compile(rf"\b{stem}")) for word, stem in AI_SPEAK_WORDS)

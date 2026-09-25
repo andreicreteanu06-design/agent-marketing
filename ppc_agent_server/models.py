@@ -520,6 +520,33 @@ class SearchTermConversion(SQLModel, table=True):
     client_account: ClientAccount = Relationship(back_populates="search_term_conversions")
 
 
+class SiteSpeedSample(SQLModel, table=True):
+    """O masuratoare PageSpeed Insights a site-ului unui client (strategia mobil).
+
+    Scrisa noaptea de ``jobs/tasks.py::run_speed_check_job``, cu masuratoarea
+    agentului SEO/GEO (``seo_geo_agent.external_data.fetch_pagespeed_insights``);
+    citita de Tehnician (``services/technician.py``), care judeca viteza pe
+    mobil dupa pragurile Core Web Vitals. Istoric, nu suprascriere: se vede si
+    de cand a inceput site-ul sa se incarce greu. Un camp ``None`` = PageSpeed
+    nu a raportat metrica - nu se completeaza cu nimic.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    url: str
+    strategy: str = "mobile"
+    #: Scorul de performanta Lighthouse, 0-100.
+    performance_score: int | None = None
+    #: Largest Contentful Paint, in milisecunde.
+    lcp_ms: int | None = None
+    #: Cumulative Layout Shift (CLS, fara unitate). Nu ``cls``: numele e rezervat
+    #: de constructorul SQLModel (``__new__(cls, ...)``).
+    layout_shift: float | None = None
+    #: Total Blocking Time, in milisecunde (proxy-ul de laborator pentru INP).
+    tbt_ms: int | None = None
+    measured_at: datetime = Field(default_factory=_now, index=True)
+
+
 class WeeklyReport(SQLModel, table=True):
     """Raportul saptamanal al unui client, salvat exact cum l-a servit API-ul.
 

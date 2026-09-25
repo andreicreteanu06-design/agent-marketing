@@ -33,6 +33,11 @@ from ppc_agent_server.services.queen_agent import (
     SearchSignal,
     build_directive,
 )
+from ppc_agent_server.services.technician import (
+    TECHNICIAN_SYSTEM_PROMPT,
+    TechnicalSignals,
+    TechnicalSignalsSource,
+)
 from tests_server.test_queen_agent import NOW, _signals
 
 TECHNICAL_HEADLINE = "Schimb ulei ATF cutie automata"
@@ -108,6 +113,7 @@ _ROLE_BY_PROMPT = {
     STRATEGIST_SYSTEM_PROMPT: "strategist",
     CFO_SYSTEM_PROMPT: "cfo",
     CHAIR_SYSTEM_PROMPT: "chair",
+    TECHNICIAN_SYSTEM_PROMPT: "technician",
 }
 STRATEGIST_SAYS = (
     "Clientul tău ideal e «Ocupatul pragmatic»: vrea să rezolve totul din telefon. Reclama "
@@ -117,6 +123,7 @@ CFO_SAYS = (
     "Contul e rentabil: CPA-ul e 39,23 RON, sub ținta de 80 RON. Merită crescut doar ce aduce "
     "deja clienți, în plafonul de 50 RON pe zi."
 )
+TECHNICIAN_SAYS = "Tracking: roșu. Conversiile Google Ads tac. Nu e marketing, e tag-ul."
 CHAIR_SAYS = (
     "Da, dar controlat. Contul e rentabil - CPA 39,23 RON, sub ținta de 80 RON - deci "
     "cheltuiala poate crește treptat, doar pe ce aduce deja clienți, în plafonul de 50 RON pe zi. "
@@ -136,7 +143,12 @@ class _CouncilVoice:
         *,
         errors: dict[str, Exception] | None = None,
     ) -> None:
-        self.answers = {"strategist": STRATEGIST_SAYS, "cfo": CFO_SAYS, "chair": CHAIR_SAYS}
+        self.answers = {
+            "strategist": STRATEGIST_SAYS,
+            "cfo": CFO_SAYS,
+            "technician": TECHNICIAN_SAYS,
+            "chair": CHAIR_SAYS,
+        }
         self.answers.update(answers or {})
         self.errors = errors or {}
         self.calls: list[tuple[str, str]] = []
@@ -165,10 +177,26 @@ def _directive(**overrides: object) -> BrandStrategyDirective:
 THIN_DIRECTIVE_SIGNALS = {"searches": [SearchSignal("service cutie automata pret", "paid", 40, 3)]}
 
 
+class _StaticTechnical:
+    def __init__(self, signals: TechnicalSignals) -> None:
+        self._signals = signals
+
+    def load(self, client_account_id: int) -> TechnicalSignals:
+        return self._signals
+
+
 def _council(
-    finances: FinancialSignals | None = None, voice: _CouncilVoice | None = None
+    finances: FinancialSignals | None = None,
+    voice: _CouncilVoice | None = None,
+    *,
+    technical: TechnicalSignals | None = None,
 ) -> QueenCouncil:
-    return QueenCouncil(_Static(finances or _finances()), voice=voice, clock=lambda: NOW)
+    source: TechnicalSignalsSource | None = (
+        _StaticTechnical(technical) if technical is not None else None
+    )
+    return QueenCouncil(
+        _Static(finances or _finances()), technical=source, voice=voice, clock=lambda: NOW
+    )
 
 
 # --- verdictul CFO-ului (determinist) --------------------------------------------

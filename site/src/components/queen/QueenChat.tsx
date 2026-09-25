@@ -18,7 +18,10 @@ import {
   Check,
   Crown,
   PaperPlaneRight,
+  Prohibit,
   Scissors,
+  ShieldWarning,
+  Wrench,
 } from "@phosphor-icons/react/dist/ssr";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -28,7 +31,9 @@ import {
   type CognitiveProfile,
   type CouncilTopic,
   type FinancialStatus,
+  type HealthStatus,
   type QueenChatReply,
+  type TechnicianDirective,
 } from "@/lib/api";
 import { clearToken, getToken } from "@/lib/auth";
 import { EASE_OUT } from "@/lib/motion";
@@ -80,7 +85,7 @@ const CHANNEL_NAME: Record<string, string> = {
 
 /**
  * Pasii deliberarii, in ordinea in care ii face serverul: datele, apoi
- * strategia de brand si CFO-ul IN PARALEL, apoi sinteza Reginei. Durata reala
+ * strategia de brand, CFO-ul si Tehnicianul IN PARALEL, apoi sinteza Reginei. Durata reala
  * nu se stie dinainte (un apel HTTP), deci fazele avanseaza pe un ceas si
  * ultima ramane activa pana vine raspunsul.
  */
@@ -88,6 +93,7 @@ const DELIBERATION_STEPS: { label: string; phase: number }[] = [
   { label: "Datele contului: căutări, reclame, cheltuieli", phase: 0 },
   { label: "Regina citește psihologia clientului ideal", phase: 1 },
   { label: "Agentul CFO analizează rentabilitatea", phase: 1 },
+  { label: "Tehnicianul verifică tracking-ul și viteza pe mobil", phase: 1 },
   { label: "Sinteza: ce trece, ce se taie", phase: 2 },
 ];
 const DELIBERATION_HEADLINES = [
@@ -231,6 +237,126 @@ function Psychology({ profile }: { profile: CognitiveProfile }) {
   );
 }
 
+const HEALTH_LABEL: Record<HealthStatus, string> = {
+  green: "Verde",
+  amber: "La limită",
+  red: "Roșu",
+  unknown: "Fără date",
+};
+
+const HEALTH_DOT: Record<HealthStatus, string> = {
+  green: "bg-emerald-400",
+  amber: "bg-amber-300",
+  red: "bg-red-400",
+  unknown: "bg-foreground-muted/50",
+};
+
+const FINDING_LABEL: Record<TechnicianDirective["tracking"][number]["finding"], string> = {
+  ok: "conversiile ajung",
+  conversions_stopped: "conversiile s-au oprit",
+  traffic_stopped: "reclamele livrează mai puțin",
+  never_converted: "nicio conversie înregistrată",
+  too_little_data: "prea puține conversii",
+};
+
+/** Ce arata badge-ul tehnic de sub raspuns - doar cand e ceva de spus. */
+function technicalBadge(
+  report: TechnicianDirective | null
+): { label: string; variant: "success" | "danger" | "warning" } | null {
+  if (!report) return null;
+  if (report.tracking_status === "red") return { label: "Tehnic: tracking picat", variant: "danger" };
+  if (report.speed_status === "red") return { label: "Tehnic: site lent pe mobil", variant: "danger" };
+  if (report.speed_status === "amber") return { label: "Tehnic: viteză la limită", variant: "warning" };
+  if (report.tracking_status === "green" && report.speed_status === "green") {
+    return { label: "Tehnic: în regulă", variant: "success" };
+  }
+  return null;
+}
+
+function trackingDetail(report: TechnicianDirective): string {
+  const broken = report.tracking.find((check) => check.status === "red");
+  const first = broken ?? report.tracking[0];
+  if (!first) return "Nicio sursă de conversii conectată";
+  if (!broken && report.tracking_status === "green") {
+    return report.tracking.length === 1
+      ? capitalize(first.label)
+      : `${report.tracking.length} surse de conversii`;
+  }
+  return `${capitalize(first.label)}: ${FINDING_LABEL[first.finding]}`;
+}
+
+function speedDetail(report: TechnicianDirective): string {
+  const readings = report.mobile_speed.metrics
+    .filter((metric) => metric.key !== "performance_score")
+    .map((metric) => `${metric.key.toUpperCase()} ${metric.value}`);
+  const score = report.mobile_speed.metrics.find((metric) => metric.key === "performance_score");
+  if (score) readings.push(`scor ${score.value}`);
+  return readings.length > 0 ? readings.join(" · ") : "Nemăsurată încă";
+}
+
+/** Infrastructura de conversie: tracking-ul si viteza pe mobil, cu veto-ul Tehnicianului. */
+function Technical({ report, vetoed }: { report: TechnicianDirective; vetoed: string[] }) {
+  const cells = [
+    { title: "Tracking conversii", status: report.tracking_status, detail: trackingDetail(report) },
+    { title: "Viteză pe mobil", status: report.speed_status, detail: speedDetail(report) },
+  ];
+  return (
+    <div>
+      <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+        Infrastructura de conversie
+      </p>
+      <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+        {cells.map((cell) => (
+          <div key={cell.title} className="rounded-xl border border-border-subtle bg-background/60 px-3 py-2.5">
+            <dt className="text-[11px] text-foreground-muted">{cell.title}</dt>
+            <dd className="mt-0.5 flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+              <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", HEALTH_DOT[cell.status])} />
+              {HEALTH_LABEL[cell.status]}
+            </dd>
+            <dd className="mt-0.5 text-[12px] text-foreground-muted">{cell.detail}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {report.veto_reason && (
+        <div className="mt-2 rounded-xl border border-red-400/25 bg-red-400/[0.06] px-3 py-2.5">
+          <p className="flex items-center gap-1.5 text-[12px] font-medium text-red-300">
+            <ShieldWarning size={14} weight="bold" aria-hidden />
+            Veto-ul Tehnicianului
+          </p>
+          <p className="mt-1 text-[13px] leading-relaxed text-foreground/90">{report.veto_reason}</p>
+          {vetoed.length > 0 && (
+            <ul className="mt-2 space-y-1.5" aria-label="Oprit de Tehnician">
+              {vetoed.map((idea) => (
+                <li key={idea} className="flex gap-2 text-[13px] leading-relaxed text-foreground/80">
+                  <Prohibit size={14} weight="bold" className="mt-0.5 shrink-0 text-red-300" />
+                  <span>{idea}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {report.recommendations.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+            De reparat
+          </p>
+          <ul className="mt-2 space-y-1.5">
+            {report.recommendations.slice(0, 3).map((fix) => (
+              <li key={fix} className="flex gap-2 text-[13px] leading-relaxed text-foreground/90">
+                <Wrench size={14} weight="bold" className="mt-0.5 shrink-0 text-brand-cyan" />
+                <span>{fix}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
   const { ruling } = reply;
   const ref = useRef<HTMLDivElement>(null);
@@ -245,11 +371,16 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
     <div ref={ref} id={id} className="mt-3 space-y-4 border-t border-border-subtle pt-4">
       {reply.psychology && <Psychology profile={reply.psychology} />}
 
+      {reply.technical && <Technical report={reply.technical} vetoed={ruling.vetoed ?? []} />}
+
       <div className="grid gap-3 md:grid-cols-2">
         {reply.opinions.map((opinion) => (
           <div
             key={opinion.member}
-            className="rounded-xl border border-border-subtle bg-background/60 p-3.5"
+            className={cn(
+              "rounded-xl border border-border-subtle bg-background/60 p-3.5",
+              opinion.member === "technician" && "md:col-span-2"
+            )}
           >
             <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
               {opinion.title}
@@ -274,7 +405,7 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
       {ruling.approved.length > 0 && (
         <div>
           <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
-            Susținut de ambele scaune
+            Susținut de consiliu
           </p>
           <ul className="mt-2 space-y-1.5">
             {ruling.approved.map((idea) => (
@@ -310,6 +441,7 @@ function QueenMessage({ reply }: { reply: QueenChatReply }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const financial = FINANCIAL_BADGE[reply.financial_status];
+  const technical = technicalBadge(reply.technical ?? null);
   const channel = reply.ruling.new_channel;
   const topic = channel
     ? `${TOPIC_LABEL.channel}: ${CHANNEL_NAME[channel] ?? channel}`
@@ -328,6 +460,7 @@ function QueenMessage({ reply }: { reply: QueenChatReply }) {
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Badge variant={financial.variant}>{financial.label}</Badge>
+            {technical && <Badge variant={technical.variant}>{technical.label}</Badge>}
             <Badge>{topic}</Badge>
             {reply.directive_status !== "ok" && <Badge>Client ideal: date insuficiente</Badge>}
           </div>
@@ -383,12 +516,13 @@ function QueenIntro() {
         <div className="mt-1.5 rounded-2xl rounded-tl-md border border-border-subtle bg-white/[0.03] px-4 py-3.5 text-[15px] leading-relaxed text-foreground">
           <p>
             Sunt Regina, CMO-ul tău. Nu îți dau sfaturi generice: fiecare întrebare trece prin
-            consiliul meu - propria analiză de brand, pe clientul tău ideal, și CFO-ul, pe cifrele
-            campaniilor tale.
+            consiliul meu - propria analiză de brand, pe clientul tău ideal, CFO-ul, pe cifrele
+            campaniilor tale, și Tehnicianul, pe tracking și viteza site-ului pe mobil.
           </p>
           <p className="mt-2 text-foreground-muted">
-            Ideile care nu se susțin financiar se taie înainte să ajungă la tine, iar nimic nu se
-            aplică fără aprobarea ta.
+            Ideile care nu se susțin financiar se taie înainte să ajungă la tine. Dacă tracking-ul
+            e picat, nu se decide nimic pe bani până nu se repară. Nimic nu se aplică fără
+            aprobarea ta.
           </p>
         </div>
       </div>

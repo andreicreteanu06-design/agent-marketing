@@ -313,7 +313,7 @@ export type FinancialStatus = "profitable" | "unprofitable" | "no_benchmark" | "
 export type MessageSource = "llm" | "template";
 
 export interface CouncilOpinion {
-  member: "strategist" | "cfo";
+  member: "strategist" | "cfo" | "technician";
   title: string;
   opinion: string;
   source: MessageSource;
@@ -332,6 +332,52 @@ export interface CouncilRuling {
   approved: string[];
   /** Ideile creative taiate de CFO, fiecare cu motivul. */
   cut: string[];
+  /** De ce a pus Tehnicianul veto (tracking picat, site lent pe mobil); null = fara veto. */
+  veto: string | null;
+  /** Ideile care ar fi trecut de brand si de CFO, oprite de veto-ul Tehnicianului. */
+  vetoed: string[];
+}
+
+/** green = verde, amber = la limita, red = rosu, unknown = fara date (nu se ghiceste). */
+export type HealthStatus = "green" | "amber" | "red" | "unknown";
+
+/** Raportul Tehnicianului (ppc_agent_server/services/technician.py), calculat determinist. */
+export interface TechnicianDirective {
+  client_account_id: number;
+  status: HealthStatus;
+  tracking_status: HealthStatus;
+  speed_status: HealthStatus;
+  tracking: {
+    key: string;
+    label: string;
+    status: HealthStatus;
+    finding: "ok" | "conversions_stopped" | "traffic_stopped" | "never_converted" | "too_little_data";
+    evidence: string;
+    last_conversion: string | null;
+    silent_days: number;
+    fix: string | null;
+  }[];
+  mobile_speed: {
+    status: HealthStatus;
+    url: string | null;
+    measured_at: string | null;
+    metrics: {
+      key: "lcp" | "cls" | "tbt" | "performance_score";
+      label: string;
+      value: string;
+      threshold: string;
+      rating: "good" | "needs_improvement" | "poor";
+    }[];
+    evidence: string;
+    fixes: string[];
+  };
+  /** money = nicio decizie pe bani (tracking picat); spend = nicio cheltuiala in plus (site lent). */
+  veto: "none" | "spend" | "money";
+  veto_reason: string | null;
+  summary: string;
+  recommendations: string[];
+  notes: string[];
+  generated_at: string;
 }
 
 /** Psihologia cumparatorului (ppc_agent_server/services/cognitive.py), calculata determinist. */
@@ -371,14 +417,16 @@ export interface QueenChatReply {
   financial_status: FinancialStatus;
   directive_status: "ok" | "insufficient_data";
   generated_at: string;
+  /** Raportul Tehnicianului; null cand consiliul a deliberat fara el. */
+  technical: TechnicianDirective | null;
 }
 
 /** Limita serverului (ppc_agent_server/services/council.py, MAX_QUESTION_CHARS). */
 export const QUEEN_MAX_QUESTION_CHARS = 1000;
 
 /**
- * O intrebare pentru Regina. Serverul isi consulta consiliul (strategia de brand
- * + CFO-ul) inainte sa raspunda - cateva secunde cand vocea LLM e configurata.
+ * O intrebare pentru Regina. Serverul isi consulta consiliul (strategia de brand,
+ * CFO-ul si Tehnicianul) inainte sa raspunda - cateva secunde cand vocea LLM e configurata.
  */
 export function askQueen(token: string, message: string): Promise<QueenChatReply> {
   return apiFetch<QueenChatReply>("/api/v1/queen/chat", {

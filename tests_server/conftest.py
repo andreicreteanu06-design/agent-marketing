@@ -18,6 +18,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from ppc_agent_server.app import create_app
 from ppc_agent_server.auth import create_tenant
 from ppc_agent_server.db import init_db, set_engine
+from ppc_agent_server.jobs import tasks
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
@@ -53,6 +54,15 @@ def _isolated_job_queue() -> None:
 def _fresh_rate_limits() -> None:
     """Limitele de frecventa sunt in memoria procesului - fiecare test incepe de la zero."""
     reset_rate_limits()
+
+
+@pytest.fixture(autouse=True)
+def _no_pagespeed_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mentenanta de noapte masoara viteza prin Google PageSpeed - niciodata din teste.
+
+    Testele care verifica masuratoarea isi dau propriul ``measure``.
+    """
+    monkeypatch.setattr(tasks, "measure_mobile_speed", lambda url: None)
 
 
 @pytest.fixture

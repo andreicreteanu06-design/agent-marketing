@@ -14,14 +14,19 @@ pur si le primeste gata adunate (:class:`~ppc_agent_server.services.queen_agent.
   si copy-urile aprobate din coada (``AdQueueItem``), fara performanta legata;
 - **banii** (pentru CFO-ul din consiliul de chat, ``council.py``) vin din
   ``AdPerformanceRecord`` (Meta/TikTok, de la lansare), termenii Google Ads pe
-  fereastra, plafonul zilnic al contului si propunerile in asteptare.
+  fereastra, plafonul zilnic al contului si propunerile in asteptare;
+- **datele tehnice** (pentru Tehnician, ``technician.py``): conversiile zi de zi
+  - Google Ads din ``SearchTermConversion`` (cu click-urile zilei), comenzile si
+  apelurile din ``ConversionEvent`` (pe sursa webhook-ului) - si ultima
+  masuratoare PageSpeed pe mobil (``SiteSpeedSample``).
 """
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 
 import httpx
@@ -36,11 +41,19 @@ from ppc_agent_server.models import (
     ChangeOp,
     ChangeStatus,
     ClientAccount,
+    ConversionEvent,
     ProposedChange,
     SearchTermConversion,
+    SiteSpeedSample,
 )
 from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
+from ppc_agent_server.services.technician import (
+    DailyConversions,
+    MobileSpeed,
+    TechnicalSignals,
+    TrackingStream,
+)
 from seo_geo_agent.audit.geo_reporters import brand_token_from_url
 from seo_geo_agent.services.intelligence import Window
 
@@ -337,5 +350,113 @@ class DbFinancialSignals:
             daily_spend_cap=account.max_daily_spend,
             pending_proposals=len(pending),
             window_days=self._days,
+            notes=notes,
+        )
+
+
+def _utc_today() -> date:
+    return datetime.now(tz=UTC).date()
+
+
+class DbTechnicalSignals:
+    """:class:`~ppc_agent_server.services.technician.TechnicalSignalsSource` peste DB.
+
+    Fereastra: ultimele ``days`` zile COMPLETE, fiecare zi prezenta (si cele fara
+    niciun rand, cu zero) - o oprire se vede tocmai in zilele fara date.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        today: Callable[[], date] = _utc_today,
+        days: int = DEFAULT_WINDOW_DAYS,
+    ) -> None:
+        self._session = session
+        self._today = today
+        self._days = days
+
+    def load(self, client_account_id: int) -> TechnicalSignals:
+        account = self._session.get(ClientAccount, client_account_id)
+        if account is None:
+            raise LookupError(f"clientul {client_account_id} nu exista")
+        today = self._today()
+        first = today - timedelta(days=self._days)
+        grid = [first + timedelta(days=offset) for offset in range(self._days)]
+        since = datetime.combine(first, time.min, tzinfo=UTC)
+
+        streams: list[TrackingStream] = []
+        google = self._session.exec(
+            select(SearchTermConversion)
+            .where(SearchTermConversion.client_account_id == client_account_id)
+            .where(SearchTermConversion.day >= since)
+        ).all()
+        if google or account.google_ads_customer_id:
+            clicks: Counter[date] = Counter()
+            conversions: defaultdict[date, float] = defaultdict(float)
+            for row in google:
+                clicks[row.day.date()] += row.clicks
+                conversions[row.day.date()] += row.conversions
+            streams.append(
+                TrackingStream(
+                    key="google_ads",
+                    days=[
+                        DailyConversions(day, round(conversions[day], 2), clicks[day])
+                        for day in grid
+                    ],
+                )
+            )
+
+        # Toate sursele care au trimis vreodata ceva, nu doar cele din fereastra:
+        # o sursa tacuta de o luna e exact ce trebuie vazut.
+        sources = self._session.exec(
+            select(ConversionEvent.source_platform)
+            .where(ConversionEvent.client_account_id == client_account_id)
+            .distinct()
+        ).all()
+        events = self._session.exec(
+            select(ConversionEvent.source_platform, ConversionEvent.created_at)
+            .where(ConversionEvent.client_account_id == client_account_id)
+            .where(ConversionEvent.created_at >= since)
+        ).all()
+        per_source: defaultdict[str, Counter[date]] = defaultdict(Counter)
+        for source, created_at in events:
+            per_source[source][created_at.date()] += 1
+        for source in sorted(sources):
+            counts = per_source[source]
+            streams.append(
+                TrackingStream(
+                    key=source,
+                    days=[DailyConversions(day, float(counts[day])) for day in grid],
+                )
+            )
+
+        sample = self._session.exec(
+            select(SiteSpeedSample)
+            .where(SiteSpeedSample.client_account_id == client_account_id)
+            .order_by(SiteSpeedSample.measured_at.desc())  # type: ignore[attr-defined]
+        ).first()
+        notes: list[str] = []
+        if account.meta_ad_account_id:
+            notes.append(
+                "Pixelul Meta nu trimite încă o serie zilnică de conversii în platformă: nu îl "
+                "pot verifica direct, doar prin comenzile și apelurile atribuite reclamelor."
+            )
+        return TechnicalSignals(
+            domain=account.target_domain.strip(),
+            today=today,
+            streams=streams,
+            mobile_speed=(
+                MobileSpeed(
+                    url=sample.url,
+                    measured_at=sample.measured_at,
+                    performance_score=sample.performance_score,
+                    lcp_ms=sample.lcp_ms,
+                    cls=sample.layout_shift,
+                    tbt_ms=sample.tbt_ms,
+                )
+                if sample is not None
+                else None
+            ),
             notes=notes,
         )

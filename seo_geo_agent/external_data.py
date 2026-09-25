@@ -77,6 +77,14 @@ async def fetch_page_content(
     }
 
 
+def _rounded(audits: dict[str, Any], key: str, *, digits: int = 0) -> float | None:
+    """``numericValue`` al unui audit Lighthouse, rotunjit; ``None`` cand lipseste."""
+    value = audits.get(key, {}).get("numericValue")
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return round(float(value), digits) if digits else float(round(value))
+
+
 async def fetch_pagespeed_insights(
     url: str,
     *,
@@ -91,6 +99,11 @@ async def fetch_pagespeed_insights(
     (suficient pentru analize ocazionale, unul-câte-unul). Cu
     ``SEOGEO_PAGESPEED_API_KEY`` setat, cota crește. Întoarce ``None`` la orice
     eșec (timeout, 429, domeniu inexistent, etc.).
+
+    Cheile ``largest_contentful_paint``/``cumulative_layout_shift``/
+    ``total_blocking_time`` sunt textul afișat de Google ("2,9 s"); ``lcp_ms``,
+    ``cls`` și ``tbt_ms`` sunt aceleași metrici ca numere (``None`` când
+    lipsesc) - le folosește Tehnicianul serverului PPC pentru praguri.
     """
     params: dict[str, str] = {"url": url, "strategy": strategy, "category": "performance"}
     if api_key:
@@ -121,6 +134,11 @@ async def fetch_pagespeed_insights(
                 "displayValue"
             ),
             "total_blocking_time": audits.get("total-blocking-time", {}).get("displayValue"),
+            # Aceleasi metrici ca numere (``numericValue``), pentru praguri: textul de
+            # mai sus e pentru oameni ("2,9 s"), nu pentru comparatii.
+            "lcp_ms": _rounded(audits, "largest-contentful-paint"),
+            "cls": _rounded(audits, "cumulative-layout-shift", digits=3),
+            "tbt_ms": _rounded(audits, "total-blocking-time"),
         }
     except (KeyError, TypeError) as exc:
         logger.warning("fetch_pagespeed_insights: răspuns neașteptat pentru %s: %s", url, exc)

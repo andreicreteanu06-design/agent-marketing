@@ -1264,6 +1264,9 @@ def check_cmo_message(message: str, *, facts: str) -> str | None:
 
 
 def _lower_first(text: str) -> str:
+    """Prima litera mica, pentru continuarea unei fraze - dar nu intr-un acronim ("LCP", "CPA")."""
+    if text[1:2].isupper():
+        return text
     return text[:1].lower() + text[1:]
 
 

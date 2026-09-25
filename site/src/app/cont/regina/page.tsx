@@ -9,7 +9,12 @@ export const metadata: Metadata = {
     "Întreab-o pe Regina orice despre campaniile tale - răspunde după ce își consultă consiliul.",
 };
 
-const COUNCIL = ["Regina · strategie de brand", "CFO · rentabilitate", "Decizie deterministă"];
+const COUNCIL = [
+  "Regina · strategie de brand",
+  "CFO · rentabilitate",
+  "Tehnician · tracking și viteză",
+  "Decizie deterministă",
+];
 
 /**
  * Chatul cu Regina (agentul CMO). O interfata de lucru, ca modulul SEO + GEO:
