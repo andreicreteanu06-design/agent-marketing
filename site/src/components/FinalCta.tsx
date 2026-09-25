@@ -1,11 +1,27 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import { ArrowUpRight } from "@phosphor-icons/react/dist/ssr";
 import { AnimatedHeading } from "./AnimatedHeading";
+import { NearViewport } from "./NearViewport";
 import { RevealSection } from "./RevealSection";
-import { CalEmbed } from "./CalEmbed";
+import { Spinner } from "./ui/spinner";
 import { CAL_LINK } from "@/lib/config";
+
+const calendarPlaceholder = (
+  <div className="flex h-full w-full items-center justify-center">
+    <Spinner label="Se încarcă calendarul…" />
+  </div>
+);
+
+// Calendarul e ultima sectiune a homepage-ului: @calcom/embed-react, embed.js
+// de la cal.com si iframe-ul lor se incarca abia cand utilizatorul ajunge
+// aproape (NearViewport, mai jos), nu odata cu primul ecran.
+const CalEmbed = dynamic(() => import("./CalEmbed").then((m) => m.CalEmbed), {
+  ssr: false,
+  loading: () => calendarPlaceholder,
+});
 
 export function FinalCta() {
   return (
@@ -41,9 +57,9 @@ export function FinalCta() {
         delay={0.1}
         className="relative mt-12 overflow-hidden rounded-3xl border border-border-subtle bg-background-elevated"
       >
-        <div className="h-[600px] w-full md:h-[700px]">
+        <NearViewport className="h-[600px] w-full md:h-[700px]" fallback={calendarPlaceholder}>
           <CalEmbed />
-        </div>
+        </NearViewport>
       </RevealSection>
     </section>
   );

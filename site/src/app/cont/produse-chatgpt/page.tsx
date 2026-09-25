@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft } from "@phosphor-icons/react/dist/ssr";
-import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { ProductFeedConverter } from "@/components/ProductFeedConverter";
 
@@ -13,7 +12,6 @@ export const metadata: Metadata = {
 export default function ProductFeedPage() {
   return (
     <>
-      <Navbar />
       <main className="mx-auto max-w-3xl px-6 pb-28 pt-32 lg:px-8">
         <Link
           href="/cont"

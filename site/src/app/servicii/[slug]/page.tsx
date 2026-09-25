@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, ArrowRight } from "@phosphor-icons/react/dist/ssr";
-import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { AnimatedHeading } from "@/components/AnimatedHeading";
 import { RevealSection } from "@/components/RevealSection";
@@ -36,7 +35,6 @@ export default async function ServiceDetailPage(props: PageProps<"/servicii/[slu
 
   return (
     <>
-      <Navbar />
       <main>
         <section className="mx-auto max-w-7xl px-6 pb-16 pt-32 lg:px-8">
           <Link

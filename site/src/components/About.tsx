@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AnimatedHeading } from "./AnimatedHeading";
+import { NearViewport } from "./NearViewport";
 import { RevealSection } from "./RevealSection";
 import { AsciiArt } from "./ui/robot-human";
 
@@ -11,8 +12,12 @@ export function About() {
           {/* Robot + om, animatie ASCII (21st.dev) - potrivita tematic cu
               "nu vinzi unei agentii, vorbesti cu cine scrie codul": omul care
               scrie codul si agentul AI pe care il construieste, unul langa
-              altul, nu unul in locul celuilalt. */}
-          <AsciiArt className="absolute inset-0 h-full w-full opacity-90" />
+              altul, nu unul in locul celuilalt. Video-ul (autoplay, de pe
+              un CDN extern) se monteaza abia langa ecran - nu mai concureaza
+              la incarcare cu clipurile scroll-world din primul ecran. */}
+          <NearViewport className="absolute inset-0">
+            <AsciiArt className="h-full w-full opacity-90" />
+          </NearViewport>
           <div
             className="pointer-events-none absolute inset-0"
             style={{

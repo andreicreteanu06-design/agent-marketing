@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { ArrowLeft } from "@phosphor-icons/react/dist/ssr";
-import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { AuroraBackground } from "@/components/AuroraBackground";
 import { AnimatedTitleFM } from "@/components/ui/glow-horizon-utils/animated-title-fm";
@@ -13,7 +12,6 @@ export const metadata: Metadata = {
 export default function NotFound() {
   return (
     <>
-      <Navbar />
       <main className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-6">
         <AuroraBackground />
         <div className="relative text-center">

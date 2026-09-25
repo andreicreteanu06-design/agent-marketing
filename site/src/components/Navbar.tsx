@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useMotionValueEvent, useScroll } from "motion/react";
 import { List, X } from "@phosphor-icons/react/dist/ssr";
@@ -24,16 +25,19 @@ export function Navbar() {
     setScrolled(latest > 24);
   });
 
-  // Citit doar la montare - suficient pentru navigare in site (nu urmarim
-  // schimbari intre tab-uri); pagina /cont oricum reverifica token-ul cu
-  // serverul (GET /me), aici e doar despre ce arata navbar-ul. localStorage
-  // nu exista pe server, deci nu poate porni ca stare initiala (ar rupe
-  // hidratarea) - setat corect dupa montare e patternul corect aici, nu o
-  // "cascada" (react-hooks/set-state-in-effect e prea stricta pentru asta).
+  // Navbar-ul sta in layout-ul radacina si NU se remonteaza la navigare, deci
+  // token-ul se reciteste la fiecare schimbare de ruta - altfel dupa login
+  // (/login -> /cont) sau logout ar ramane butoanele vechi pana la un refresh.
+  // Nu urmarim schimbari intre tab-uri; pagina /cont oricum reverifica
+  // token-ul cu serverul (GET /me), aici e doar despre ce arata navbar-ul.
+  // localStorage nu exista pe server, deci nu poate porni ca stare initiala
+  // (ar rupe hidratarea) - setat corect dupa montare e patternul corect aici,
+  // nu o "cascada" (react-hooks/set-state-in-effect e prea stricta pentru asta).
+  const pathname = usePathname();
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAuthenticated(Boolean(getToken()));
-  }, []);
+  }, [pathname]);
 
   return (
     <motion.header

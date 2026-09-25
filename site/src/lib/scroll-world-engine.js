@@ -27,6 +27,10 @@
        ],
        connectors: [clipUrl, …],          // length = sections.length - 1 (nulls allowed)
        connectorsMobile: [clipUrl, …],    // optional lighter connectors for phones (same length)
+     });
+   It returns destroy(): call it when the container goes away without a page load
+   (SPA route change, React effect cleanup) to stop the loop, the listeners and
+   pending clip downloads, and to free the loaded clips.
 
    MOBILE (the clipMobile/connectorsMobile variants are the opt-in mobile version;
    the rest of the phone handling below is always on)
@@ -78,10 +82,15 @@ function mountScrollWorld(container, config) {
   const CONN_W = config.connScroll || 0.9;
   const CROSSFADE = (config.crossfade != null) ? config.crossfade : 0.12;  // seam dissolve width (vh)
   const N = SECTIONS.length;
-  if (!N) return;
+  if (!N) return () => {};
 
   injectCSS();
   container.classList.add('sw-root');
+
+  // ---- lifecycle (see destroy() at the end of this function) ----
+  let destroyed = false, rafId = 0;
+  const aborter = new AbortController();
+  const objectUrls = [];
 
   // ---- build the interleaved segment chain: dive0, conn0, dive1, … diveN-1 ----
   const SEGMENTS = [];
@@ -202,13 +211,16 @@ function mountScrollWorld(container, config) {
     s.loading = true;
     // Serve the lighter mobile encode on phones when one was provided.
     const url = (isMobile() && s.clipM) ? s.clipM : s.clip;
-    fetch(url).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
+    fetch(url, { signal: aborter.signal }).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
       .then(blob => {
+        if (destroyed) return;
         const v = document.createElement('video');
         v.className = 'sw-scene__video';
         v.muted = true; v.playsInline = true; v.preload = 'auto';
         v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
-        v.src = URL.createObjectURL(blob);
+        const objectUrl = URL.createObjectURL(blob);
+        objectUrls.push(objectUrl);
+        v.src = objectUrl;
         v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
         // Reveal the video (hide the still poster) only once a real frame has
         // painted — on iOS a seeked-but-never-played muted video stays blank, so
@@ -220,6 +232,7 @@ function mountScrollWorld(container, config) {
   }
 
   function read() {
+    if (destroyed) return;
     const y = window.scrollY || window.pageYOffset;
     const fade = CROSSFADE * vh;
     let ci = 0;
@@ -271,6 +284,7 @@ function mountScrollWorld(container, config) {
   }
 
   function raf() {
+    if (destroyed) return;
     const eps = isMobile() ? 0.02 : 0.008;   // coarser seek step on phones = fewer decodes
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
@@ -285,7 +299,7 @@ function mountScrollWorld(container, config) {
       const t = clamp(s.cur, 0, 0.999) * dur;
       if (Math.abs(s.video.currentTime - t) > eps) { try { s.video.currentTime = t; } catch {} }
     }
-    requestAnimationFrame(raf);
+    rafId = requestAnimationFrame(raf);
   }
 
   // iOS needs a user gesture before a muted video will decode/paint reliably. On the
@@ -308,7 +322,8 @@ function mountScrollWorld(container, config) {
 
   // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
   seedParticles(particles, reduce || coarse);
-  window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
+  function onScroll() { if (!ticking) { ticking = true; requestAnimationFrame(read); } }
+  window.addEventListener('scroll', onScroll, { passive: true });
   // Mobile browsers fire `resize` every time the URL bar slides in/out. Re-running
   // layout() there rebuilds the track height and yanks the scroll position, so on
   // touch we ignore height-only changes and only relayout when the width actually
@@ -322,7 +337,35 @@ function mountScrollWorld(container, config) {
   window.addEventListener('orientationchange', layout);
   window.addEventListener('load', layout);
   layout();
-  requestAnimationFrame(raf);
+  rafId = requestAnimationFrame(raf);
+
+  // ---- teardown ----
+  // In an SPA (e.g. Next.js client navigation) the container unmounts while the
+  // document lives on. Without this, every mount would leave behind a rAF loop
+  // that never ends, window listeners that keep reading scroll on other pages
+  // (and fetching clips for a scene nobody sees) and blobs of video in memory.
+  return function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    cancelAnimationFrame(rafId);
+    aborter.abort();
+    window.removeEventListener('pointerdown', onFirstGesture);
+    window.removeEventListener('touchstart', onFirstGesture);
+    window.removeEventListener('scroll', onScroll);
+    window.removeEventListener('resize', onResize);
+    window.removeEventListener('orientationchange', layout);
+    window.removeEventListener('load', layout);
+    SEGMENTS.forEach(s => {
+      if (!s.video) return;
+      try { s.video.pause(); } catch {}
+      s.video.removeAttribute('src');
+      s.video.load();   // drops the decoder and its frame buffers
+    });
+    objectUrls.forEach(u => URL.revokeObjectURL(u));
+    container.replaceChildren();
+    container.classList.remove('sw-root');
+    container.style.removeProperty('--sw-accent');
+  };
 
   // ---- helpers ----
   function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft } from "@phosphor-icons/react/dist/ssr";
-import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { SignupForm } from "@/components/SignupForm";
 import { RevealSection } from "@/components/RevealSection";
@@ -14,7 +13,6 @@ export const metadata: Metadata = {
 export default function CreeazaContPage() {
   return (
     <>
-      <Navbar />
       <main className="mx-auto max-w-lg px-6 pb-28 pt-32 lg:px-8">
         <Link
           href="/"

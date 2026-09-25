@@ -11,7 +11,6 @@
  */
 
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
 
 export type ProductAvailability =
   | "in_stock"
@@ -344,7 +343,10 @@ export function convertRows(
 
 /** Prima foaie dintr-un XLSX/XLS/ODS (SheetJS) -> aceleasi randuri ca CSV-ul (antet + date). */
 export async function parseSpreadsheetFile(file: File): Promise<ParsedSource> {
-  const buffer = await file.arrayBuffer();
+  // SheetJS e cea mai mare librarie din site (~1 MB necomprimat): importata
+  // static, ar intra in bundle-ul paginii pentru oricine deschide convertorul,
+  // desi e nevoie de ea doar cand clientul chiar incarca un XLSX/XLS/ODS.
+  const [XLSX, buffer] = await Promise.all([import("xlsx"), file.arrayBuffer()]);
   const workbook = XLSX.read(buffer, { type: "array" });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error("Fișierul nu are nicio foaie de calcul.");

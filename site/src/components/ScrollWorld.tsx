@@ -8,22 +8,18 @@ const BLUE = "#1450d8";
 
 /**
  * Engine-ul isi construieste singur DOM-ul (vezi scroll-world-engine.js) si
- * porneste event listeners globale la montare, fara cleanup expus - in
- * StrictMode (dev) efectul ruleaza de doua ori, deci verificam childElementCount
- * ca a doua rulare sa fie no-op, nu o dubla montare.
+ * porneste o bucla requestAnimationFrame + listeners pe window. Cleanup-ul
+ * efectului apeleaza destroy()-ul intors de mountScrollWorld: fara el, fiecare
+ * intoarcere pe homepage (navigare client-side, documentul ramane acelasi)
+ * lasa in urma o bucla care nu se opreste niciodata si listeners care citesc
+ * scroll-ul si pe alte pagini - si descarca acolo clipuri de 12-22 MB pentru o
+ * scena pe care nu o mai vede nimeni. In StrictMode (dev) efectul ruleaza,
+ * face cleanup si ruleaza din nou: montare -> destroy (goleste containerul,
+ * anuleaza descarcarile) -> montare curata.
  */
 export function ScrollWorld() {
   const ref = useRef<HTMLDivElement>(null);
 
-  // Efect separat de cel de mai jos, in mod deliberat: in StrictMode (dev)
-  // React ruleaza efectul, cleanup-ul, apoi efectul din nou la orice montare
-  // (nu doar la HMR). Daca observer-ul ar fi in ACELASI efect ca mountScrollWorld,
-  // a doua rulare s-ar opri la guard-ul childElementCount de mai jos (motorul
-  // deja a construit DOM-ul) inainte sa recreeze observer-ul disconectat de
-  // cleanup - ramanand fara niciun observer activ. Aici nu exista niciun
-  // guard de idempotenta: fiecare rulare isi disconecteaza propriul observer,
-  // e sigur sa ruleze de doua ori.
-  //
   // Titlurile din scroll-world au glow + gradient animate continuu (vezi
   // .sw-copy__title in globals.css) - text-shadow si background-position
   // sunt proprietati de paint, nu de compositor, deci browserul le repicteaza
@@ -46,9 +42,9 @@ export function ScrollWorld() {
 
   useEffect(() => {
     const container = ref.current;
-    if (!container || container.childElementCount > 0) return;
+    if (!container) return;
 
-    mountScrollWorld(container, {
+    return mountScrollWorld(container, {
       diveScroll: 1.5,
       connScroll: 0.9,
       hint: "scrolează",
@@ -137,5 +133,9 @@ export function ScrollWorld() {
     });
   }, []);
 
-  return <div ref={ref} className="sw-container" />;
+  // `isolate`: straturile fixed ale motorului (z-index 0-60) raman intr-un
+  // stacking context propriu, sub Navbar (z-50) - altfel .sw-topbar (gol, dar
+  // cu pointer-events) statea peste meniu si inghitea click-urile pe linkuri,
+  // iar continutul de dupa trebuia ridicat la z-[100], peste Navbar si grain.
+  return <div ref={ref} className="sw-container isolate" />;
 }

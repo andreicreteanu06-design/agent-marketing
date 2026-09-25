@@ -1,4 +1,3 @@
-import { Navbar } from "@/components/Navbar";
 import { ScrollWorld } from "@/components/ScrollWorld";
 import { Services } from "@/components/Services";
 import { SeoGeoPreview } from "@/components/SeoGeoPreview";
@@ -9,22 +8,20 @@ import { Footer } from "@/components/Footer";
 
 export default function Home() {
   return (
-    <>
-      <Navbar />
-      <main>
-        <ScrollWorld />
-        {/* Fundal opac + z-index peste straturile position:fixed ale
-            scroll-world (topbar/stage/copylayer/route, toate z<=60) - altfel
-            ultima sectiune ramane suprapusa peste tot ce urmeaza in flux. */}
-        <div className="relative z-[100] bg-background">
-          <Services />
-          <SeoGeoPreview />
-          <Portfolio />
-          <About />
-          <FinalCta />
-          <Footer />
-        </div>
-      </main>
-    </>
+    <main>
+      <ScrollWorld />
+      {/* Fundal opac + z-index peste straturile position:fixed ale
+          scroll-world (izolate in containerul lor, vezi ScrollWorld) - altfel
+          ultima scena ramane suprapusa peste tot ce urmeaza in flux. z-10, nu
+          mai mult: Navbar-ul (z-50) si grain-ul (z-60) trebuie sa ramana deasupra. */}
+      <div className="relative z-10 bg-background">
+        <Services />
+        <SeoGeoPreview />
+        <Portfolio />
+        <About />
+        <FinalCta />
+        <Footer />
+      </div>
+    </main>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, Info, WarningCircle } from "@phosphor-icons/react/dist/ssr";
 import {
@@ -16,8 +17,17 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { InsightsPanel } from "./InsightsPanel";
 import { RankTable } from "./RankTable";
 import { useSeoGeoSession } from "./SeoGeoSession";
-import { TrafficChart } from "./TrafficChart";
 import { formatDecimal, formatMetric, shortDate } from "./ui";
+
+// Recharts (+ modulele d3 pe care le trage) e cel mai greu pachet din modul si
+// graficul apare oricum abia dupa ce vin datele: sta intr-un chunk separat, nu
+// in bundle-ul paginii. Cererea chunk-ului porneste la montare (efectul din
+// TrafficPositions), in paralel cu cea catre API - nu dupa ea.
+const loadTrafficChart = () => import("./TrafficChart").then((m) => m.TrafficChart);
+const TrafficChart = dynamic(loadTrafficChart, {
+  ssr: false,
+  loading: () => <div className="h-72 w-full animate-pulse rounded-2xl bg-white/[0.03]" />,
+});
 
 type Period = 7 | 28 | 90;
 
@@ -95,6 +105,10 @@ export function TrafficPositions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [metric, setMetric] = useState<SeoMetricKey>("sessions");
+
+  useEffect(() => {
+    void loadTrafficChart();
+  }, []);
 
   useEffect(() => {
     let active = true;

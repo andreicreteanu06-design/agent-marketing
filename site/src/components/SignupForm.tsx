@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+// Varianta din nextjs-toploader: router.push porneste si bara de incarcare de sus
+// (click-urile pe <Link> o pornesc singure; navigarile din cod, nu).
+import { useRouter } from "nextjs-toploader/app";
 import Link from "next/link";
 import { Field } from "./FormField";
 import { ApiError, signup } from "@/lib/api";
