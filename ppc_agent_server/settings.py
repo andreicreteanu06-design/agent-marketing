@@ -64,6 +64,14 @@ class ServerSettings(BaseSettings):
     # Site-ul pe care se intoarce clientul dupa ecranul de consimtamant Google.
     site_url: str = "http://localhost:3000"
 
+    # Vocea Reginei (GET /api/v1/queen/client-message) - vezi services/hf_client.py.
+    # Necompletat => mesajul catre client vine dintr-un template intern (fara
+    # niciun apel extern). Token de pe huggingface.co/settings/tokens, cu
+    # permisiunea "Make calls to Inference Providers".
+    huggingface_api_key: str = ""
+    # Necompletat => DEFAULT_HF_MODEL din services/hf_client.py.
+    huggingface_model: str = ""
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]

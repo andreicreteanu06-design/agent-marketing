@@ -44,8 +44,10 @@ Doua abateri deliberate de la MiroFish:
 - **Fara aleator.** MiroFish trage la sorti varsta si genul cand nu le stie. Aici
   aceleasi date dau mereu aceeasi directiva, iar demografia NU se inventeaza:
   din cautari nu se poate deduce varsta sau genul cuiva (vezi ``notes``).
-- **Fara LLM in bucla.** Profilurile sunt o ontologie explicita, verificabila
+- **Fara LLM in decizie.** Profilurile sunt o ontologie explicita, verificabila
   rand cu rand - un om care aproba o rescriere trebuie sa poata vedea DE CE.
+  Un LLM apare doar DUPA decizie, ca "voce": explica directiva clientului
+  (:meth:`BrandStrategist.generate_cmo_message`), fara sa o poata schimba.
 
 Modulul e pur: fara DB, fara HTTP. Datele vin printr-un :class:`BrandSignalsSource`
 (implementarea din baza de date: ``queen_signals.py``).
@@ -53,6 +55,7 @@ Modulul e pur: fara DB, fara HTTP. Datele vin printr-un :class:`BrandSignalsSour
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -64,7 +67,9 @@ from pydantic import BaseModel
 
 from ppc_agent.texttools import tokenize
 
-ArchetypeKey = Literal["price", "urgency", "trust", "convenience", "research"]
+logger = logging.getLogger("ppc_agent_server.services.queen_agent")
+
+ArchetypeKey =Literal["price", "urgency", "trust", "convenience", "research"]
 #: Pozitia unui profil fata de o reclama - aceleasi patru valori ca in MiroFish.
 Stance = Literal["supportive", "neutral", "observer", "opposing"]
 SearchOrigin = Literal["organic", "paid"]
@@ -765,18 +770,25 @@ def _count(value: float, plural: str, singular: str = "") -> str:
     return f"{value:g} {'de ' if needs_de else ''}{plural}"
 
 
+def _ron(value: Decimal) -> str:
+    """Suma in forma romaneasca: "68,89", "80"."""
+    if value == value.to_integral_value():
+        return str(int(value))
+    return f"{value:.2f}".replace(".", ",")
+
+
 def _cpa_sentence(ad: LiveAd) -> str:
     cpa = ad.cpa
     if cpa is None:
         return " Nu există performanță legată de acest text, deci nici un CPA de apărat."
     if ad.target_cpa is not None and cpa <= ad.target_cpa:
         return (
-            f" CPA-ul ({cpa} RON) e sub ținta de {ad.target_cpa} RON - matematic reclama pare "
-            "stabilă, dar vorbește altui profil decât clientului ideal."
+            f" CPA-ul ({_ron(cpa)} RON) e sub ținta de {_ron(ad.target_cpa)} RON - matematic "
+            "reclama pare stabilă, dar vorbește altui profil decât clientului ideal."
         )
     if ad.target_cpa is not None:
-        return f" CPA-ul ({cpa} RON) e și peste ținta de {ad.target_cpa} RON."
-    return f" CPA actual: {cpa} RON."
+        return f" CPA-ul ({_ron(cpa)} RON) e și peste ținta de {_ron(ad.target_cpa)} RON."
+    return f" CPA actual: {_ron(cpa)} RON."
 
 
 def _evaluate_ad(
@@ -1090,6 +1102,193 @@ def build_directive(
     )
 
 
+# --- vocea CMO: directiva explicata clientului --------------------------------
+#
+# Un LLM (Hugging Face, vezi ``hf_client.py``) doar TRADUCE directiva in limbaj
+# de consultant. Nu decide nimic: primeste faptele deja calculate, iar textul
+# lui trece prin ``check_cmo_message`` inainte sa ajunga la client. Orice cifra
+# pe care n-a primit-o, orice vorba despre buget sau licitari, orice link ->
+# se foloseste mesajul din template, determinist. Nimic din raspunsul LLM nu se
+# citeste inapoi in vreo decizie.
+
+
+class TextGenerator(Protocol):
+    """Un LLM: prompt de sistem + prompt de utilizator -> text."""
+
+    @property
+    def model(self) -> str: ...
+
+    def complete(self, *, system: str, user: str) -> str: ...
+
+
+MessageSource = Literal["llm", "template"]
+
+
+class CmoMessage(BaseModel):
+    """Mesajul Reginei catre client, cu sursa lui (LLM sau template)."""
+
+    client_account_id: int
+    message: str
+    source: MessageSource
+    #: Modelul care a formulat mesajul; ``None`` pentru template.
+    model: str | None
+    #: De ce s-a folosit template-ul (fara cheie, eroare, mesaj respins).
+    fallback_reason: str | None
+    directive_status: DirectiveStatus
+    generated_at: datetime
+
+
+#: Cate reclame deviate ajung in mesaj - restul se numara, nu se enumera.
+MAX_ADS_IN_MESSAGE = 2
+MAX_MESSAGE_CHARS = 1600
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+#: Subiectele pe care directiva nu le atinge niciodata - daca LLM-ul le aduce
+#: in discutie fara sa fi aparut in fapte, inventeaza decizii.
+_OFF_LIMITS = ("buget", "licit", "bid")
+
+CMO_SYSTEM_PROMPT = (
+    "Ești Senior AI Chief Marketing Officer al agenției AC Media. Scrii clientului "
+    "(proprietarul afacerii) un mesaj scurt, B2B, în limba română, care explică DE CE "
+    "sistemul a propus deciziile din secțiunea FAPTE.\n"
+    "Reguli stricte:\n"
+    "1. Folosești DOAR faptele primite. Nu inventa cifre, procente, prețuri, date sau "
+    "rezultate promise. Orice număr din mesaj trebuie să apară în FAPTE.\n"
+    "2. Nu anunța și nu propune nimic în afara FAPTELOR - în special nimic despre "
+    "bugete sau licitări. Deciziile sunt deja calculate și așteaptă aprobarea "
+    "clientului; tu doar le explici.\n"
+    "3. Structură: cine e publicul ideal și pe ce se bazează concluzia; ce reclamă nu "
+    "rezonează cu el și de ce; ce am propus și că totul așteaptă aprobarea lui.\n"
+    "4. Maximum 150 de cuvinte, ton profesionist și cald, la persoana I plural "
+    "(«am observat»), adresare cu «tu». Fără markdown, fără liste, fără linkuri."
+)
+
+
+def cmo_facts(directive: BrandStrategyDirective) -> str:
+    """Faptele pe care le primeste LLM-ul - singura lui sursa de adevar."""
+    lines = [directive.ideal_avatar_profile]
+    misaligned = directive.misaligned_ads
+    for ad in misaligned[:MAX_ADS_IN_MESSAGE]:
+        lines.append(f"Reclamă care nu rezonează ({ad.platform}): «{ad.headline}». {ad.reason}")
+    if len(misaligned) > MAX_ADS_IN_MESSAGE:
+        extra = len(misaligned) - MAX_ADS_IN_MESSAGE
+        lines.append(f"Încă {_count(extra, 'reclame', 'reclamă')} în aceeași situație.")
+    aligned = len(directive.ad_alignment) - len(misaligned)
+    if aligned:
+        lines.append(f"Reclame deja aliniate cu clientul ideal: {aligned}.")
+    angle = directive.copywriting_angle
+    if angle is not None:
+        lines.append(
+            f"Unghiul de copy propus: {angle.summary} De inclus: {'; '.join(angle.must_include)}. "
+            f"De evitat: {'; '.join(angle.avoid)}."
+        )
+    for adjustment in directive.targeting_adjustments:
+        lines.append(f"Ajustare Meta Ads: {adjustment.suggestion} Motiv: {adjustment.reason}")
+    lines.append(
+        "Starea deciziilor: toate sunt propuneri care așteaptă aprobarea clientului; "
+        "nimic nu s-a aplicat încă."
+    )
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def build_cmo_prompt(directive: BrandStrategyDirective) -> tuple[str, str]:
+    """Promptul de sistem si cel de utilizator pentru vocea CMO."""
+    return CMO_SYSTEM_PROMPT, f"FAPTE:\n{cmo_facts(directive)}\n\nScrie mesajul către client."
+
+
+def _numbers(text: str) -> set[str]:
+    found: set[str] = set()
+    for raw in _NUMBER.findall(text):
+        value = Decimal(raw.replace(",", ".")).normalize()
+        found.add(format(value, "f"))
+    return found
+
+
+def check_cmo_message(message: str, *, facts: str) -> str | None:
+    """De ce NU se poate trimite mesajul LLM-ului clientului, sau ``None`` daca se poate.
+
+    Garda care tine LLM-ul in rolul de traducator: nu are voie sa aduca cifre,
+    subiecte (bugete, licitari) sau linkuri pe care nu le-a primit.
+    """
+    text = message.strip()
+    if not text:
+        return "Modelul a întors un mesaj gol - mesaj din template."
+    if len(text) > MAX_MESSAGE_CHARS:
+        return "Mesajul modelului era prea lung - mesaj din template."
+    if "http" in text.lower() or "www." in text.lower():
+        return "Mesajul modelului conținea linkuri - mesaj din template."
+    invented = sorted(_numbers(text) - _numbers(facts))
+    if invented:
+        return (
+            f"Mesajul modelului conținea cifre care nu sunt în date ({', '.join(invented)}) "
+            "- mesaj din template."
+        )
+    message_tokens = tokenize(text)
+    fact_tokens = tokenize(facts)
+    for topic in _OFF_LIMITS:
+        mentioned = any(token.startswith(topic) for token in message_tokens)
+        if mentioned and not any(token.startswith(topic) for token in fact_tokens):
+            return (
+                f"Mesajul modelului vorbea despre «{topic}...», subiect pe care Regina nu îl "
+                "atinge - mesaj din template."
+            )
+    return None
+
+
+def _lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:]
+
+
+def _why_not(ad: AdAlignment, avatar: AvatarProfile) -> str:
+    """De ce nu rezoneaza reclama cu clientul ideal, pe scurt."""
+    reaction = next((r for r in ad.reactions if r.key == avatar.key), None)
+    if reaction is not None and reaction.repellers_found:
+        return f"conține {_quote(reaction.repellers_found)}, exact ce îl îndepărtează"
+    why = f"nu îi spune nimic despre {_BY_KEY[avatar.key].voice}"
+    if ad.speaks_to is not None and ad.speaks_to != avatar.key:
+        why += f", ci vorbește despre {_BY_KEY[ad.speaks_to].voice}"
+    return why
+
+
+def template_cmo_message(directive: BrandStrategyDirective) -> str:
+    """Mesajul determinist - fallback-ul vocii CMO, cu aceleasi fapte."""
+    avatar = directive.avatar
+    angle = directive.copywriting_angle
+    if directive.status != "ok" or avatar is None or angle is None or not directive.segments:
+        return f"Încă nu pot contura clientul tău ideal. {directive.ideal_avatar_profile}"
+
+    top = directive.segments[0]
+    detail = f"{_percent(top.demand_share)} din căutări"
+    if top.buyer_share is not None:
+        detail += f" și {_percent(top.buyer_share)} din conversii"
+    parts = [
+        "Am analizat căutările și reclamele contului tău. Publicul tău ideal este "
+        f"«{avatar.name}» ({detail}): vrea {_BY_KEY[avatar.key].desires[0]}."
+    ]
+    misaligned = directive.misaligned_ads
+    if misaligned:
+        ad = misaligned[0]
+        parts.append(f"Reclama «{ad.headline}» nu rezonează cu el: {_why_not(ad, avatar)}.")
+        if ad.cpa is not None and ad.target_cpa is not None and ad.cpa <= ad.target_cpa:
+            parts.append(
+                f"Chiar dacă CPA-ul ei ({_ron(ad.cpa)} RON) e sub țintă, aduce alt public decât "
+                "cel care contează."
+            )
+        if len(misaligned) > 1:
+            others = _count(len(misaligned) - 1, "reclame", "reclamă")
+            parts.append(f"La fel și încă {others}.")
+        parts.append(f"Ce am propus: {_lower_first(angle.summary)}")
+    else:
+        parts.append(angle.summary)
+    delivery = next((t for t in directive.targeting_adjustments if t.kind == "delivery"), None)
+    if delivery is not None:
+        parts.append(f"Pe Meta Ads recomandăm: {_lower_first(delivery.suggestion)}")
+    exclusion = next((t for t in directive.targeting_adjustments if t.kind == "exclusion"), None)
+    if exclusion is not None:
+        parts.append(f"Tot acolo: {_lower_first(exclusion.suggestion)} {exclusion.reason}")
+    parts.append("Toate sunt propuneri: nimic nu se aplică până nu le aprobi tu.")
+    return " ".join(parts)
+
+
 def _utc_now() -> datetime:
     return datetime.now(tz=UTC)
 
@@ -1098,15 +1297,77 @@ class BrandStrategist:
     """Regina: evalueaza alinierea brandului unui client si intoarce directiva.
 
     Nu scrie nimic si nu apeleaza nicio platforma de reclame - doar citeste
-    semnalele prin ``signals`` si decide.
+    semnalele prin ``signals`` si decide. ``voice`` (optional) e LLM-ul care
+    explica directiva clientului - vezi :meth:`generate_cmo_message`.
     """
 
     def __init__(
-        self, signals: BrandSignalsSource, *, clock: Callable[[], datetime] = _utc_now
+        self,
+        signals: BrandSignalsSource,
+        *,
+        voice: TextGenerator | None = None,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._signals = signals
+        self._voice = voice
         self._clock = clock
 
     def evaluate_brand_alignment(self, client_account_id: int) -> BrandStrategyDirective:
         signals = self._signals.load(client_account_id)
         return build_directive(client_account_id, signals, generated_at=self._clock())
+
+    def generate_cmo_message(
+        self, client_account_id: int, directive: BrandStrategyDirective
+    ) -> CmoMessage:
+        """Directiva, explicata clientului ca de un CMO.
+
+        LLM-ul primeste doar faptele directivei si doar formuleaza. Fara voce,
+        cand pica sau cand raspunsul lui nu trece :func:`check_cmo_message`,
+        mesajul vine din :func:`template_cmo_message` - deci ruta nu pica niciodata.
+
+        Raises:
+            ValueError: directiva e a altui client decat ``client_account_id``.
+        """
+        if directive.client_account_id != client_account_id:
+            raise ValueError("directiva apartine altui client - nu o comunic")
+
+        def _template(reason: str) -> CmoMessage:
+            return CmoMessage(
+                client_account_id=client_account_id,
+                message=template_cmo_message(directive),
+                source="template",
+                model=None,
+                fallback_reason=reason,
+                directive_status=directive.status,
+                generated_at=self._clock(),
+            )
+
+        if directive.status != "ok":
+            return _template("Nu există încă un client ideal de explicat - mesajul standard.")
+        if self._voice is None:
+            return _template("Vocea LLM nu e configurată - mesaj din template.")
+
+        system, user = build_cmo_prompt(directive)
+        try:
+            text = self._voice.complete(system=system, user=user)
+        except Exception as exc:  # vocea e optionala: orice eroare -> template
+            logger.warning(
+                "[Regina] vocea CMO a picat pentru clientul %s: %s", client_account_id, exc
+            )
+            return _template(f"Modelul nu a răspuns ({type(exc).__name__}) - mesaj din template.")
+
+        problem = check_cmo_message(text, facts=user)
+        if problem is not None:
+            logger.warning(
+                "[Regina] mesaj LLM respins pentru clientul %s: %s", client_account_id, problem
+            )
+            return _template(problem)
+        return CmoMessage(
+            client_account_id=client_account_id,
+            message=text.strip(),
+            source="llm",
+            model=self._voice.model,
+            fallback_reason=None,
+            directive_status=directive.status,
+            generated_at=self._clock(),
+        )

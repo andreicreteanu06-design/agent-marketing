@@ -510,6 +510,8 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `REDIS_URL` | necompletat -> `InlineJobQueue` | Seteaza pentru `ArqJobQueue` reala: `redis://localhost:6379/0` |
 | `PUBLIC_API_URL` | `http://localhost:8000` | Din ea se construieste `redirect_uri`-ul OAuth Google (vezi Integrari Google) |
 | `SITE_URL` | `http://localhost:3000` | Unde revine clientul dupa ecranul de consimtamant Google |
+| `HUGGINGFACE_API_KEY` | necompletat -> mesaj din template | Vocea CMO a Reginei, prin Hugging Face Inference Providers (datele directivei parasesc masina) |
+| `HUGGINGFACE_MODEL` | `meta-llama/Meta-Llama-3-8B-Instruct` | Modelul vocii CMO; trebuie servit de un furnizor Inference Providers |
 
 ### Endpoint-uri
 
@@ -539,6 +541,26 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `PATCH /api/v1/integrations/{gsc\|ga4}` | Proprietatea aleasa (`sc-domain:...`/URL, respectiv ID-ul numeric GA4) |
 | `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
 | `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
+| `GET /api/v1/queen/client-message` | Agentul Regina explica clientului, ca un CMO, publicul ideal si ce a propus (vezi mai jos) |
+
+#### Agentul Regina: `GET /api/v1/queen/client-message`
+
+Regina (`ppc_agent_server/services/queen_agent.py`) calculeaza determinist
+directiva de brand - clientul ideal, reclamele care nu ii vorbesc, unghiul de copy
+si targetarea Meta - iar jobul de noapte o transforma in propuneri `UPDATE`
+(`jobs/brand_alignment.py`), inainte de Kelly/Thompson. Ruta asta doar o
+EXPLICA clientului:
+
+- **LLM-ul doar formuleaza.** Primeste faptele directivei (niciodata acces la
+  decizii) si un rol de "Senior AI Chief Marketing Officer". Raspunsul lui e
+  respins daca aduce o cifra care nu e in fapte, vorbeste despre bugete sau
+  licitari, contine linkuri ori e gol/prea lung.
+- **Nu pica niciodata:** fara `HUGGINGFACE_API_KEY`, cand modelul nu raspunde
+  sau cand raspunsul e respins, mesajul vine din template-ul intern
+  (`source: "template"` + `fallback_reason`).
+- Apelul merge prin `router.huggingface.co/v1/chat/completions` (compatibil
+  OpenAI, `services/hf_client.py`, doar `httpx`); vechiul
+  `api-inference.huggingface.co` nu mai functioneaza.
 
 #### Integrari Google: Search Console si GA4
 

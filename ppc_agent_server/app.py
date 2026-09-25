@@ -30,6 +30,7 @@ from ppc_agent_server.routers import (
     integrations,
     jobs,
     proposals,
+    queen,
     reports,
     seo_intelligence,
     tracking,
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(integrations.router)
     app.include_router(jobs.router)
     app.include_router(proposals.router)
+    app.include_router(queen.router)
     app.include_router(reports.router)
     app.include_router(seo_intelligence.router)
     app.include_router(tracking.router)
