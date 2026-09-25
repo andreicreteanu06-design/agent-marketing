@@ -301,3 +301,65 @@ export function getSeoIntelligence(token: string, days: 7 | 28 | 90): Promise<Se
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Regina (CMO) - chatul deliberat de consiliu                                 */
+/* -------------------------------------------------------------------------- */
+
+export type CouncilTopic = "budget" | "channel" | "profitability" | "audience" | "creative" | "general";
+/** Verdictul CFO-ului, calculat determinist din cifrele contului. */
+export type FinancialStatus = "profitable" | "unprofitable" | "no_benchmark" | "insufficient_data";
+/** llm = formulat de model; template = raspunsul determinist (fara cheie, eroare, text respins). */
+export type MessageSource = "llm" | "template";
+
+export interface CouncilOpinion {
+  member: "strategist" | "cfo";
+  title: string;
+  opinion: string;
+  source: MessageSource;
+  model: string | null;
+  fallback_reason: string | null;
+}
+
+export interface CouncilRuling {
+  topic: CouncilTopic;
+  /** Platforma pe care clientul NU are inca reclame si despre care a intrebat. */
+  new_channel: string | null;
+  financial_status: FinancialStatus;
+  brand_status: "ok" | "insufficient_data";
+  decision: string;
+  /** Ideile care trec de ambele scaune (brand + CFO). */
+  approved: string[];
+  /** Ideile creative taiate de CFO, fiecare cu motivul. */
+  cut: string[];
+}
+
+export interface QueenChatReply {
+  client_account_id: number;
+  /** Raspunsul sintetizat de Regina, de aratat clientului. */
+  reply: string;
+  source: MessageSource;
+  model: string | null;
+  fallback_reason: string | null;
+  topic: CouncilTopic;
+  ruling: CouncilRuling;
+  opinions: CouncilOpinion[];
+  financial_status: FinancialStatus;
+  directive_status: "ok" | "insufficient_data";
+  generated_at: string;
+}
+
+/** Limita serverului (ppc_agent_server/services/council.py, MAX_QUESTION_CHARS). */
+export const QUEEN_MAX_QUESTION_CHARS = 1000;
+
+/**
+ * O intrebare pentru Regina. Serverul isi consulta consiliul (strategia de brand
+ * + CFO-ul) inainte sa raspunda - cateva secunde cand vocea LLM e configurata.
+ */
+export function askQueen(token: string, message: string): Promise<QueenChatReply> {
+  return apiFetch<QueenChatReply>("/api/v1/queen/chat", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ message }),
+  });
+}

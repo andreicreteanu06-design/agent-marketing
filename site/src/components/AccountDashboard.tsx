@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowUpRight,
+  Crown,
   MagnifyingGlass,
   ShoppingBagOpen,
   SignOut,
@@ -96,6 +97,34 @@ export function AccountDashboard() {
           <SignOut size={16} />
           Deconectare
         </button>
+      </RevealSection>
+
+      <RevealSection delay={0.05}>
+        <Link
+          href="/cont/regina"
+          className="group relative flex items-center justify-between overflow-hidden rounded-3xl border border-brand-blue/30 bg-background-elevated p-6 transition-colors hover:border-brand-cyan/50"
+        >
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_120%_at_0%_0%,rgba(20,80,216,0.18),transparent)]"
+          />
+          <div className="relative flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-blue/15 text-brand-cyan">
+              <Crown size={20} weight="duotone" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">Regina, CMO-ul tău</p>
+              <p className="text-sm text-foreground-muted">
+                Întreab-o orice despre campanii - răspunde după ce își consultă consiliul (brand + CFO).
+              </p>
+            </div>
+          </div>
+          <ArrowUpRight
+            size={18}
+            weight="bold"
+            className="relative shrink-0 text-foreground-muted transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-brand-cyan"
+          />
+        </Link>
       </RevealSection>
 
       <RevealSection delay={0.1}>

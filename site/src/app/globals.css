@@ -388,6 +388,17 @@ h3 {
   }
 }
 
+/* Linia care "scaneaza" in starea de deliberare a consiliului Reginei
+   (components/queen/QueenChat.tsx): o treime din latime, de la stanga la dreapta. */
+@keyframes council-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
 /* Grain overlay lives on a fixed, pointer-events-none layer only - never on a
    scrolling container (continuous GPU repaint kills mobile FPS). */
 .grain-overlay {

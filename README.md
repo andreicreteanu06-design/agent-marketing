@@ -510,7 +510,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `REDIS_URL` | necompletat -> `InlineJobQueue` | Seteaza pentru `ArqJobQueue` reala: `redis://localhost:6379/0` |
 | `PUBLIC_API_URL` | `http://localhost:8000` | Din ea se construieste `redirect_uri`-ul OAuth Google (vezi Integrari Google) |
 | `SITE_URL` | `http://localhost:3000` | Unde revine clientul dupa ecranul de consimtamant Google |
-| `HUGGINGFACE_API_KEY` | necompletat -> mesaj din template | Vocea CMO a Reginei, prin Hugging Face Inference Providers (datele directivei parasesc masina) |
+| `HUGGINGFACE_API_KEY` | necompletat -> mesaj din template | Vocea CMO a Reginei si a consiliului din chat, prin Hugging Face Inference Providers (faptele directivei si cifrele PPC parasesc masina) |
 | `HUGGINGFACE_MODEL` | `meta-llama/Meta-Llama-3-8B-Instruct` | Modelul vocii CMO; trebuie servit de un furnizor Inference Providers |
 
 ### Endpoint-uri
@@ -542,6 +542,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
 | `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
 | `GET /api/v1/queen/client-message` | Agentul Regina explica clientului, ca un CMO, publicul ideal si ce a propus (vezi mai jos) |
+| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO) |
 
 #### Agentul Regina: `GET /api/v1/queen/client-message`
 
@@ -561,6 +562,28 @@ EXPLICA clientului:
 - Apelul merge prin `router.huggingface.co/v1/chat/completions` (compatibil
   OpenAI, `services/hf_client.py`, doar `httpx`); vechiul
   `api-inference.huggingface.co` nu mai functioneaza.
+
+#### Chatul cu Regina: `POST /api/v1/queen/chat`
+
+Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliul
+(`services/council.py`, dupa fluxul din `gcpdev/llm-council-skill`, reimplementat):
+
+1. **Faptele** - directiva de brand (clientul ideal) si instantaneul CFO-ului
+   (`AdPerformanceRecord` + termenii Google Ads pe 30 de zile: cheltuieli,
+   conversii, CPA fata de tinta sau ROAS, plafonul zilnic, propunerile in asteptare).
+2. **Decizia, determinista** (`rule_on_question`): ce sustine consiliul si ce taie
+   CFO-ul, cu motivul. O idee de brand care costa bani (interese noi, lookalike,
+   un canal nou, buget in plus) trece doar pe un cont rentabil; o reclama rentabila
+   pe care Regina vrea s-o rescrie devine test A/B, nu se inlocuieste.
+3. **Parerile** - strategia de brand si CFO-ul, cerute in paralel, fiecare doar cu
+   faptele rolului sau; apoi **sinteza Reginei**, care comunica decizia.
+
+Fiecare text LLM trece prin `check_council_text`: nicio cifra in afara datelor (ale
+clientului pot fi repetate, nu "calculate mai departe"), niciun link, nicio actiune
+pretinsa ("am marit bugetul"), nicio cheltuiala promisa, nicio garantie. Un membru
+respins sau picat e inlocuit cu pozitia lui determinista; fara `HUGGINGFACE_API_KEY`
+raspunde consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
+niciun LLM nu e apelat - raspunsul spune ce lipseste, nu da sfaturi generice.
 
 #### Integrari Google: Search Console si GA4
 

@@ -11,7 +11,10 @@ pur si le primeste gata adunate (:class:`~ppc_agent_server.services.queen_agent.
 - **reclamele live** sunt cele pe care agentul le-a pus in cont si inca
   ruleaza: campaniile Meta lansate prin aprobare (textul e in propunerea
   executata, iar ``ad_id``-ul creat leaga textul de ``AdPerformanceRecord``)
-  si copy-urile aprobate din coada (``AdQueueItem``), fara performanta legata.
+  si copy-urile aprobate din coada (``AdQueueItem``), fara performanta legata;
+- **banii** (pentru CFO-ul din consiliul de chat, ``council.py``) vin din
+  ``AdPerformanceRecord`` (Meta/TikTok, de la lansare), termenii Google Ads pe
+  fereastra, plafonul zilnic al contului si propunerile in asteptare.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import httpx
 from sqlmodel import Session, select
 
 from ppc_agent.errors import PpcAgentError
-from ppc_agent_server.hybrid_queries import DEFAULT_WINDOW_DAYS, window_start
+from ppc_agent_server.hybrid_queries import DEFAULT_WINDOW_DAYS, load_paid_terms, window_start
 from ppc_agent_server.models import (
     AdPerformanceRecord,
     AdQueueItem,
@@ -36,6 +39,7 @@ from ppc_agent_server.models import (
     ProposedChange,
     SearchTermConversion,
 )
+from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
 from seo_geo_agent.audit.geo_reporters import brand_token_from_url
 from seo_geo_agent.services.intelligence import Window
@@ -256,5 +260,82 @@ class DbBrandSignals:
             brand=_brand(account),
             searches=[*organic, *paid],
             ads=load_live_ads(self._session, client_account_id),
+            notes=notes,
+        )
+
+
+def _launched_headlines(session: Session, client_account_id: int) -> dict[str, str]:
+    """``ad_id`` -> titlul cu care a fost lansat, din campaniile Meta aprobate."""
+    launches = session.exec(
+        select(ProposedChange)
+        .where(ProposedChange.client_account_id == client_account_id)
+        .where(ProposedChange.op == ChangeOp.CREATE_CAMPAIGN)
+        .where(ProposedChange.status == ChangeStatus.EXECUTED)
+    ).all()
+    headlines: dict[str, str] = {}
+    for launch in launches:
+        ad_id = str((launch.execution_result or {}).get("ad_id", "")).strip()
+        headline = str(launch.after.get("headline", "")).strip()
+        if ad_id and headline:
+            headlines[ad_id] = headline
+    return headlines
+
+
+class DbFinancialSignals:
+    """:class:`~ppc_agent_server.services.council.FinancialSignalsSource` peste DB-ul serverului."""
+
+    def __init__(self, session: Session, *, days: int = DEFAULT_WINDOW_DAYS) -> None:
+        self._session = session
+        self._days = days
+
+    def load(self, client_account_id: int) -> FinancialSignals:
+        account = self._session.get(ClientAccount, client_account_id)
+        if account is None:
+            raise LookupError(f"clientul {client_account_id} nu exista")
+        headlines = _launched_headlines(self._session, client_account_id)
+        records = self._session.exec(
+            select(AdPerformanceRecord).where(
+                AdPerformanceRecord.client_account_id == client_account_id
+            )
+        ).all()
+        terms = load_paid_terms(self._session, client_account_id, days=self._days)
+        pending = self._session.exec(
+            select(ProposedChange.id)
+            .where(ProposedChange.client_account_id == client_account_id)
+            .where(ProposedChange.status == ChangeStatus.PENDING)
+        ).all()
+        notes: list[str] = []
+        if not records and not terms:
+            notes.append(
+                "Nicio cheltuială înregistrată: nici reclame Meta/TikTok cu performanță, nici "
+                f"termeni Google Ads în ultimele {self._days} de zile."
+            )
+        return FinancialSignals(
+            objective=account.objective.value,
+            ads=[
+                AdSpend(
+                    ad_id=record.ad_id,
+                    platform=record.platform.value,
+                    label=headlines.get(record.ad_id, ""),
+                    spend=record.spend,
+                    conversions=record.conversions,
+                    revenue=record.revenue,
+                    target_cpa=record.target_cpa,
+                )
+                for record in records
+            ],
+            search_terms=[
+                TermSpend(
+                    term=term.term,
+                    clicks=term.clicks,
+                    cost=term.cost,
+                    conversions=term.conversions,
+                    value=term.conversions_value,
+                )
+                for term in sorted(terms, key=lambda item: item.term)
+            ],
+            daily_spend_cap=account.max_daily_spend,
+            pending_proposals=len(pending),
+            window_days=self._days,
             notes=notes,
         )
