@@ -334,6 +334,28 @@ export interface CouncilRuling {
   cut: string[];
 }
 
+/** Psihologia cumparatorului (ppc_agent_server/services/cognitive.py), calculata determinist. */
+export interface CognitiveProfile {
+  /** Kahneman: Sistemul 1 (rapid, intuitiv) sau 2 (cantarit). */
+  decision_mode: {
+    system: "system_1" | "system_2" | "mixed";
+    deliberative_share: number;
+    label: string;
+    evidence: string;
+    needs: string[];
+  };
+  barrier: {
+    kind: "friction" | "trust" | "perceived_value" | "none" | "unknown";
+    label: string;
+    evidence: string;
+    remedy: string;
+  };
+  /** Elaboration Likelihood Model: argumente (centrala) sau semnale rapide (periferica). */
+  persuasion_route: { route: "central" | "peripheral" | "dual"; label: string; cues: string[] };
+  lever: string;
+  summary: string;
+}
+
 export interface QueenChatReply {
   client_account_id: number;
   /** Raspunsul sintetizat de Regina, de aratat clientului. */
@@ -344,6 +366,8 @@ export interface QueenChatReply {
   topic: CouncilTopic;
   ruling: CouncilRuling;
   opinions: CouncilOpinion[];
+  /** null cand nu exista inca un client ideal (date insuficiente). */
+  psychology: CognitiveProfile | null;
   financial_status: FinancialStatus;
   directive_status: "ok" | "insufficient_data";
   generated_at: string;

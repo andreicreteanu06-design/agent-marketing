@@ -68,6 +68,27 @@ def to_rewrite_proposal(
     angle = directive.copywriting_angle
     if avatar is None or angle is None:
         raise ValueError("o directiva fara client ideal nu poate cere rescrieri")
+    brief: dict[str, Any] = {
+        "avatar": avatar.name,
+        "avatar_key": avatar.key,
+        "copy_brief": angle.summary,
+        "emotion_trigger": angle.emotion_trigger,
+        "tone": angle.tone,
+        "hooks": angle.hooks,
+        "must_include": angle.must_include,
+        "avoid": angle.avoid,
+    }
+    psychology = directive.cognitive_profile
+    if psychology is not None:
+        # Copywriterul primeste si DE CE: cum decide publicul si ce parghie folosim.
+        brief["psychology"] = {
+            "decision_mode": psychology.decision_mode.system,
+            "conversion_barrier": psychology.barrier.kind,
+            "persuasion_route": psychology.persuasion_route.route,
+            "persuasion_lever": psychology.lever,
+            "needs": psychology.decision_mode.needs,
+            "cognitive_note": ad.cognitive_note,
+        }
     return ProposedChange(
         client_account_id=client_account_id,
         op=ChangeOp.UPDATE,
@@ -83,16 +104,7 @@ def to_rewrite_proposal(
             "cpa": None if ad.cpa is None else str(ad.cpa),
             "target_cpa": None if ad.target_cpa is None else str(ad.target_cpa),
         },
-        after={
-            "avatar": avatar.name,
-            "avatar_key": avatar.key,
-            "copy_brief": angle.summary,
-            "emotion_trigger": angle.emotion_trigger,
-            "tone": angle.tone,
-            "hooks": angle.hooks,
-            "must_include": angle.must_include,
-            "avoid": angle.avoid,
-        },
+        after=brief,
         # Textul nu muta bugetul - vezi punctul 3 din docstring-ul modulului.
         projected_daily_spend=Decimal("0"),
         rationale=(

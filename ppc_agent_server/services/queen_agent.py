@@ -49,6 +49,12 @@ Doua abateri deliberate de la MiroFish:
   Un LLM apare doar DUPA decizie, ca "voce": explica directiva clientului
   (:meth:`BrandStrategist.generate_cmo_message`), fara sa o poata schimba.
 
+Peste profiluri sta stratul de neuromarketing (``cognitive.py``): cum decide
+publicul (Kahneman, Sistemul 1/2), unde se rupe conversia (frictiune, incredere,
+valoare perceputa) si pe ce ruta se convinge (ELM) - in
+:attr:`BrandStrategyDirective.cognitive_profile` si, per reclama, in
+:attr:`AdAlignment.cognitive_note`. Tot determinist.
+
 Modulul e pur: fara DB, fara HTTP. Datele vin printr-un :class:`BrandSignalsSource`
 (implementarea din baza de date: ``queen_signals.py``).
 """
@@ -66,6 +72,18 @@ from typing import Literal, Protocol
 from pydantic import BaseModel
 
 from ppc_agent.texttools import tokenize
+from ppc_agent_server.services.cognitive import (
+    AdDemand,
+    CognitiveProfile,
+    DecisionMode,
+    ad_demand,
+    ad_fit_note,
+    cognitive_profile,
+)
+from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
+from ppc_agent_server.services.ro_format import count as _count
+from ppc_agent_server.services.ro_format import percent as _percent
+from ppc_agent_server.services.ro_format import ron as _ron
 
 logger = logging.getLogger("ppc_agent_server.services.queen_agent")
 
@@ -540,6 +558,10 @@ class AdAlignment(BaseModel):
     deviates: bool
     reason: str
     reactions: list[PersonaReaction]
+    #: Ce sistem de decizie ii cere reclama cititorului (Kahneman).
+    cognitive_demand: AdDemand
+    #: Nepotrivirea cu felul in care decide publicul, explicata; ``None`` = se potriveste.
+    cognitive_note: str | None
 
 
 class TargetingAdjustment(BaseModel):
@@ -580,7 +602,7 @@ class DataBasis(BaseModel):
 class BrandStrategyDirective(BaseModel):
     """Directiva Reginei pentru un client: cine e clientul ideal si cum i se vorbeste."""
 
-    version: Literal["1.0"] = "1.0"
+    version: Literal["1.1"] = "1.1"
     client_account_id: int
     generated_at: datetime
     status: DirectiveStatus
@@ -593,6 +615,9 @@ class BrandStrategyDirective(BaseModel):
     #: Tonul vocii si unghiul recomandat.
     copywriting_angle: CopywritingAngle | None
     ad_alignment: list[AdAlignment]
+    #: Psihologia cumparatorului: modul de decizie, bariera, ruta de persuasiune.
+    #: ``None`` cand nu exista client ideal (date insuficiente).
+    cognitive_profile: CognitiveProfile | None
     data_basis: DataBasis
     notes: list[str]
 
@@ -758,25 +783,6 @@ def _quote(values: Sequence[str]) -> str:
     return ", ".join(f"«{value}»" for value in values)
 
 
-def _count(value: float, plural: str, singular: str = "") -> str:
-    """Numeral + substantiv, acordat ca in romana.
-
-    "o conversie", "19 conversii", "35 de click-uri", "100 de afisari".
-    """
-    if value == 1 and singular:
-        return f"o {singular}"
-    whole = int(value)
-    needs_de = whole == value and whole > 0 and (whole % 100 >= 20 or whole % 100 == 0)
-    return f"{value:g} {'de ' if needs_de else ''}{plural}"
-
-
-def _ron(value: Decimal) -> str:
-    """Suma in forma romaneasca: "68,89", "80"."""
-    if value == value.to_integral_value():
-        return str(int(value))
-    return f"{value:.2f}".replace(".", ",")
-
-
 def _cpa_sentence(ad: LiveAd) -> str:
     cpa = ad.cpa
     if cpa is None:
@@ -792,9 +798,13 @@ def _cpa_sentence(ad: LiveAd) -> str:
 
 
 def _evaluate_ad(
-    ad: LiveAd, avatar: AvatarProfile | None, shares: dict[ArchetypeKey, float]
+    ad: LiveAd,
+    avatar: AvatarProfile | None,
+    shares: dict[ArchetypeKey, float],
+    mode: DecisionMode | None = None,
 ) -> AdAlignment:
     reactions, technical = simulate_reactions(ad)
+    demand, why = ad_demand(ad.text, technical=technical)
     speaks_to = _speaks_to(reactions)
     score = _alignment_score(reactions, shares)
     avatar_reaction = next((r for r in reactions if avatar and r.key == avatar.key), None)
@@ -849,6 +859,8 @@ def _evaluate_ad(
         deviates=deviates,
         reason=reason,
         reactions=reactions,
+        cognitive_demand=demand,
+        cognitive_note=ad_fit_note(mode, ad.headline, demand, why) if mode else None,
     )
 
 
@@ -892,10 +904,6 @@ def _topics(tally: _Tally, brand: str, limit: int = 3) -> list[str]:
             bucket[token] = bucket.get(token, 0.0) + weight
     top = sorted(weights, key=lambda stem: (-weights[stem], stem))[:limit]
     return [max(forms[stem], key=lambda form: (forms[stem][form], form)) for stem in top]
-
-
-def _percent(value: float) -> str:
-    return f"{value * 100:.0f}%"
 
 
 def _targeting(
@@ -1068,6 +1076,7 @@ def build_directive(
             targeting_adjustments=[],
             copywriting_angle=None,
             ad_alignment=[_evaluate_ad(ad, None, {}) for ad in signals.ads],
+            cognitive_profile=None,
             data_basis=basis,
             notes=notes,
         )
@@ -1086,7 +1095,10 @@ def build_directive(
         sample_queries=top.sample_queries,
     )
     shares = {segment.key: segment.share for segment in segments}
-    alignments = [_evaluate_ad(ad, avatar, shares) for ad in signals.ads]
+    psychology = cognitive_profile(segments)
+    alignments = [
+        _evaluate_ad(ad, avatar, shares, psychology.decision_mode) for ad in signals.ads
+    ]
     return BrandStrategyDirective(
         client_account_id=client_account_id,
         generated_at=generated_at,
@@ -1097,6 +1109,7 @@ def build_directive(
         targeting_adjustments=_targeting(avatar, attribution, segments, signals.brand),
         copywriting_angle=_angle(avatar, alignments),
         ad_alignment=alignments,
+        cognitive_profile=psychology,
         data_basis=basis,
         notes=notes,
     )
@@ -1153,22 +1166,38 @@ CMO_SYSTEM_PROMPT = (
     "Reguli stricte:\n"
     "1. Folosești DOAR faptele primite. Nu inventa cifre, procente, prețuri, date sau "
     "rezultate promise. Orice număr din mesaj trebuie să apară în FAPTE.\n"
-    "2. Nu anunța și nu propune nimic în afara FAPTELOR - în special nimic despre "
+    "2. Nu anunța și nu propune nimic în afara FAPTELOR, în special nimic despre "
     "bugete sau licitări. Deciziile sunt deja calculate și așteaptă aprobarea "
     "clientului; tu doar le explici.\n"
-    "3. Structură: cine e publicul ideal și pe ce se bazează concluzia; ce reclamă nu "
-    "rezonează cu el și de ce; ce am propus și că totul așteaptă aprobarea lui.\n"
-    "4. Maximum 150 de cuvinte, ton profesionist și cald, la persoana I plural "
-    "(«am observat»), adresare cu «tu». Fără markdown, fără liste, fără linkuri."
+    "3. Structură: cine e publicul ideal și pe ce se bazează concluzia; cum decide și ce îl "
+    "oprește să cumpere (psihologia din FAPTE); ce reclamă nu îi vorbește și de ce; ce am "
+    "propus și că totul așteaptă aprobarea lui.\n"
+    "4. Maximum 150 de cuvinte, la persoana I plural («am observat»), adresându-te cu «tu». "
+    "Fără markdown, fără liste, fără linkuri.\n\n"
+    f"{CONSULTANT_VOICE}"
 )
 
 
 def cmo_facts(directive: BrandStrategyDirective) -> str:
     """Faptele pe care le primeste LLM-ul - singura lui sursa de adevar."""
     lines = [directive.ideal_avatar_profile]
+    psychology = directive.cognitive_profile
+    if psychology is not None:
+        lines.append(
+            f"Psihologia cumpărătorului (calculată determinist): {psychology.summary} "
+            f"{psychology.decision_mode.evidence} {psychology.barrier.evidence}"
+        )
+        lines.append(
+            "Legendă Kahneman: Sistemul 1 = decizie rapidă, pe intuiție; Sistemul 2 = decizie "
+            "cântărită, cu efort."
+        )
     misaligned = directive.misaligned_ads
     for ad in misaligned[:MAX_ADS_IN_MESSAGE]:
-        lines.append(f"Reclamă care nu rezonează ({ad.platform}): «{ad.headline}». {ad.reason}")
+        line = f"Reclamă care nu îi vorbește clientului ideal ({ad.platform}): «{ad.headline}». "
+        line += ad.reason
+        if ad.cognitive_note:
+            line += f" {ad.cognitive_note}"
+        lines.append(line)
     if len(misaligned) > MAX_ADS_IN_MESSAGE:
         extra = len(misaligned) - MAX_ADS_IN_MESSAGE
         lines.append(f"Încă {_count(extra, 'reclame', 'reclamă')} în aceeași situație.")
@@ -1239,7 +1268,7 @@ def _lower_first(text: str) -> str:
 
 
 def _why_not(ad: AdAlignment, avatar: AvatarProfile) -> str:
-    """De ce nu rezoneaza reclama cu clientul ideal, pe scurt."""
+    """De ce nu ii vorbeste reclama clientului ideal, pe scurt."""
     reaction = next((r for r in ad.reactions if r.key == avatar.key), None)
     if reaction is not None and reaction.repellers_found:
         return f"conține {_quote(reaction.repellers_found)}, exact ce îl îndepărtează"
@@ -1267,7 +1296,7 @@ def template_cmo_message(directive: BrandStrategyDirective) -> str:
     misaligned = directive.misaligned_ads
     if misaligned:
         ad = misaligned[0]
-        parts.append(f"Reclama «{ad.headline}» nu rezonează cu el: {_why_not(ad, avatar)}.")
+        parts.append(f"Reclama «{ad.headline}» nu îi vorbește: {_why_not(ad, avatar)}.")
         if ad.cpa is not None and ad.target_cpa is not None and ad.cpa <= ad.target_cpa:
             parts.append(
                 f"Chiar dacă CPA-ul ei ({_ron(ad.cpa)} RON) e sub țintă, aduce alt public decât "
@@ -1362,6 +1391,9 @@ class BrandStrategist:
                 "[Regina] mesaj LLM respins pentru clientul %s: %s", client_account_id, problem
             )
             return _template(problem)
+        tells = ai_tells(text)
+        if tells:  # stil, nu halucinatie: mesajul pleaca, dar se vede cat tine vocea
+            logger.info("[Regina] tic-uri de text generat: %s", ", ".join(tells))
         return CmoMessage(
             client_account_id=client_account_id,
             message=text.strip(),

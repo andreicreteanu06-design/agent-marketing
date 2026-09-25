@@ -179,7 +179,7 @@ def test_template_explains_the_decision_with_the_same_facts() -> None:
 
     assert text.startswith("Am analizat căutările și reclamele contului tău.")
     assert "«Ocupatul pragmatic» (47% din căutări și 74% din conversii)" in text
-    assert "Reclama «Schimb ulei ATF cutie automata» nu rezonează cu el" in text
+    assert "Reclama «Schimb ulei ATF cutie automata» nu îi vorbește" in text
     assert "68,89 RON" in text
     assert "ce am propus: schimbă textele din tehnice" in text.lower()
     assert text.endswith("nimic nu se aplică până nu le aprobi tu.")

@@ -299,14 +299,14 @@ def test_cfo_cuts_creative_ideas_that_need_money_on_a_losing_account() -> None:
     ruling = rule_on_question(QuestionTopic("budget"), _directive(), snapshot)
 
     assert ruling.decision == "Nu acum: contul nu e rentabil. Întâi se taie ce pierde bani."
-    assert ruling.cut[0] == "creșterea bugetului - contul nu e rentabil"
+    assert ruling.cut[0] == "creșterea bugetului: contul nu e rentabil"
     assert any(
-        "testează-le ca set separat - un test nou consumă buget" in idea for idea in ruling.cut
+        "testează-le ca set separat: un test nou consumă buget" in idea for idea in ruling.cut
     )
     # Ce nu costa bani trece si pe un cont pe pierdere.
     approved = " | ".join(ruling.approved)
     assert "oprirea sau refacerea anunțului 222" in approved
-    assert "nu rezonează cu clientul ideal și nici nu e rentabilă" in approved
+    assert "nu îi vorbește clientului ideal și nici nu e rentabilă" in approved
 
 
 def test_a_profitable_ad_the_queen_wants_rewritten_becomes_an_ab_test() -> None:

@@ -585,6 +585,25 @@ respins sau picat e inlocuit cu pozitia lui determinista; fara `HUGGINGFACE_API_
 raspunde consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
 niciun LLM nu e apelat - raspunsul spune ce lipseste, nu da sfaturi generice.
 
+**Psihologia cumparatorului** (`services/cognitive.py`, determinist, in
+`BrandStrategyDirective.cognitive_profile`) da argumentului de brand un "de ce":
+
+| Clasificare | Din ce date | Rezultat |
+|-------------|-------------|----------|
+| Modul de decizie (Kahneman) | cota profilurilor MiroFish deliberative (incredere, informare) in ce aduce contul | Sistemul 1 (<= 40%), Sistemul 2 (>= 60%), mixt |
+| Bariera de conversie | profilul care converteste sub 60% din media contului, cu cel putin 20 de click-uri platite | valoare perceputa (pret), incredere, frictiune (urgenta, comoditate), niciuna sau date insuficiente |
+| Ruta de persuasiune (ELM) | modul de decizie | centrala (argumente), periferica (imagine, brand, dovada sociala), ambele |
+
+Fiecare reclama primeste si efortul pe care il cere (tehnica sau lunga = Sistemul 2);
+nepotrivirea cu publicul ajunge in raspuns ("Publicul tau decide repede, pe intuitie
+(Sistemul 1). Reclama X il pune sa gandeasca (Sistemul 2)..."), in faptele LLM-ului
+si in brief-ul propunerilor de rescriere (`after.psychology`).
+
+Toate textele LLM au un strat de voce (`services/humanizer.py`, dupa
+`blader/humanizer`): consultant senior, fraze foarte scurte alternate cu fraze lungi,
+diateza activa, fara scuze, fara formule de chatbot si fara cuvinte-tic (crucial,
+esential, dinamic, "in concluzie"...). Stilul nu relaxeaza nicio garda.
+
 #### Integrari Google: Search Console si GA4
 
 Clientul isi conecteaza singur conturile din site (`/cont/seo-geo/integrari`),

@@ -145,7 +145,7 @@ def test_without_a_key_the_route_answers_from_the_template(
     assert body["model"] is None
     assert "nu e configurată" in body["fallback_reason"]
     assert "«Ocupatul pragmatic»" in body["message"]
-    assert "Reclama «Schimb ulei ATF cutie automata» nu rezonează cu el" in body["message"]
+    assert "Reclama «Schimb ulei ATF cutie automata» nu îi vorbește" in body["message"]
 
 
 @pytest.mark.parametrize(

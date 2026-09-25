@@ -25,6 +25,7 @@ import {
   ApiError,
   askQueen,
   QUEEN_MAX_QUESTION_CHARS,
+  type CognitiveProfile,
   type CouncilTopic,
   type FinancialStatus,
   type QueenChatReply,
@@ -85,7 +86,7 @@ const CHANNEL_NAME: Record<string, string> = {
  */
 const DELIBERATION_STEPS: { label: string; phase: number }[] = [
   { label: "Datele contului: căutări, reclame, cheltuieli", phase: 0 },
-  { label: "Regina verifică rezonanța cu clientul ideal", phase: 1 },
+  { label: "Regina citește psihologia clientului ideal", phase: 1 },
   { label: "Agentul CFO analizează rentabilitatea", phase: 1 },
   { label: "Sinteza: ce trece, ce se taie", phase: 2 },
 ];
@@ -184,6 +185,52 @@ function Deliberation() {
   );
 }
 
+const DECISION_LABEL: Record<CognitiveProfile["decision_mode"]["system"], string> = {
+  system_1: "Sistemul 1 · rapidă",
+  system_2: "Sistemul 2 · cântărită",
+  mixed: "Mixtă · 1 și 2",
+};
+
+const ROUTE_LABEL: Record<CognitiveProfile["persuasion_route"]["route"], string> = {
+  central: "Centrală · argumente",
+  peripheral: "Periferică · semnale",
+  dual: "Ambele rute",
+};
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** Profilul cognitiv pe care s-a sprijinit argumentul de brand. */
+function Psychology({ profile }: { profile: CognitiveProfile }) {
+  const cells = [
+    { title: "Decizie (Kahneman)", value: DECISION_LABEL[profile.decision_mode.system] },
+    { title: "Bariera", value: capitalize(profile.barrier.label) },
+    { title: "Ruta (ELM)", value: ROUTE_LABEL[profile.persuasion_route.route] },
+  ];
+  // "aversiunea la pierdere: ce pierde omul..." -> numele pargiei si ce inseamna.
+  const [lever, meaning] = profile.lever.split(": ", 2);
+  return (
+    <div>
+      <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+        Psihologia cumpărătorului
+      </p>
+      <dl className="mt-2 grid gap-2 sm:grid-cols-3">
+        {cells.map((cell) => (
+          <div key={cell.title} className="rounded-xl border border-border-subtle bg-background/60 px-3 py-2.5">
+            <dt className="text-[11px] text-foreground-muted">{cell.title}</dt>
+            <dd className="mt-0.5 text-[13px] font-medium text-foreground">{cell.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-2 text-[13px] leading-relaxed text-foreground/90">
+        {profile.barrier.evidence} Pârghia pentru texte e {lever}
+        {meaning ? ` (${meaning})` : ""}.
+      </p>
+    </div>
+  );
+}
+
 function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
   const { ruling } = reply;
   const ref = useRef<HTMLDivElement>(null);
@@ -196,6 +243,8 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
 
   return (
     <div ref={ref} id={id} className="mt-3 space-y-4 border-t border-border-subtle pt-4">
+      {reply.psychology && <Psychology profile={reply.psychology} />}
+
       <div className="grid gap-3 md:grid-cols-2">
         {reply.opinions.map((opinion) => (
           <div
