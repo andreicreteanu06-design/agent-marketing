@@ -425,6 +425,8 @@ export interface QueenChatReply {
   technical: TechnicianDirective | null;
   /** Contextul pietei (Researcher-ul); null cand consiliul a deliberat fara el. */
   market?: MarketDirective | null;
+  /** Contextul Istoric pe care l-a primit consiliul (memoria), cate un rand. */
+  history?: string[];
 }
 
 /** Contextul pietei (ppc_agent_server/services/researcher.py). is_demo = ilustratie, nu fapte. */

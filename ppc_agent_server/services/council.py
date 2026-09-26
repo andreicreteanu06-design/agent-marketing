@@ -44,6 +44,10 @@ picat nu trece nicio idee care citeste conversiile (CFO-ul ar judeca cifre
 false), cu site-ul lent pe mobil nu trece nicio cheltuiala in plus. Veto-ul e tot
 determinist - calculat inainte de orice LLM, ca restul deciziei.
 
+Consiliul tine minte (``memory.py``, dupa claude-mem): deciziile majore se scriu
+dupa fiecare raspuns, iar ultimele 5 - plus propunerile respinse sau esuate -
+intra ca "Context Istoric" in faptele fiecarui membru si ale sintezei.
+
 Al patrulea e Researcher-ul (``researcher.py``): piata din jurul clientului -
 concurenta din licitatie, trendul cererii, durerile noi. Nu schimba ce trece si
 ce se taie; adauga contextul (``CouncilRuling.market_context``), ca decizia sa
@@ -71,6 +75,15 @@ from pydantic import BaseModel, Field
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.cognitive import CognitiveProfile
 from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
+from ppc_agent_server.services.memory import (
+    HISTORY_RULE,
+    MemoryEntry,
+    MemorySource,
+    compress,
+    history_context,
+    memory_line,
+    recall_for,
+)
 from ppc_agent_server.services.queen_agent import (
     _BY_KEY,
     MAX_MESSAGE_CHARS,
@@ -982,6 +995,7 @@ def template_council_reply(
     directive: BrandStrategyDirective,
     finances: FinancialSnapshot,
     technical: TechnicianDirective | None = None,
+    history_line: str | None = None,
 ) -> str:
     """Raspunsul determinist al consiliului: decizia, de ce (psihologia), ce trece, ce se taie.
 
@@ -991,6 +1005,9 @@ def template_council_reply(
     era despre altceva.
     """
     parts = [ruling.decision]
+    if history_line:
+        # Memoria: ce s-a decis despre acelasi subiect intr-o sesiune trecuta.
+        parts.append(f"Țin minte: {_lower_first(history_line)}")
     if ruling.veto and ruling.veto not in ruling.decision:
         parts.append(f"Tehnicianul a pus veto: {_lower_first(ruling.veto)}")
     if ruling.veto and technical is not None and technical.recommendations:
@@ -1088,7 +1105,8 @@ STRATEGIST_SYSTEM_PROMPT = (
     "3. Folosești DOAR FAPTELE. Nicio cifră care nu apare în ele.\n"
     "4. Nu pretinzi că ai făcut ceva și nu promiți nimic: totul sunt propuneri care așteaptă "
     "aprobarea clientului.\n"
-    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n\n"
+    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
+    f"6. {HISTORY_RULE}\n\n"
     f"{CONSULTANT_VOICE}"
 )
 
@@ -1102,7 +1120,8 @@ CFO_SYSTEM_PROMPT = (
     "3. Nu calculezi cifre noi, nu estimezi, nu extrapolezi: orice cifră din răspuns trebuie "
     "să apară în FAPTE. Dacă datele nu ajung, spui exact ce lipsește.\n"
     "4. Nu promiți rezultate și nu pretinzi că ai modificat ceva.\n"
-    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n\n"
+    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
+    f"6. {HISTORY_RULE}\n\n"
     f"{CONSULTANT_VOICE}"
 )
 
@@ -1131,7 +1150,9 @@ CHAIR_SYSTEM_PROMPT = (
     "6. Dacă întrebarea nu ține de marketingul sau campaniile clientului, spui politicos că "
     "răspunzi doar la întrebări despre campaniile lui.\n"
     "7. Maximum 170 de cuvinte, la persoana I, adresându-te cu «tu». Fără markdown, fără "
-    "liste, fără linkuri.\n\n"
+    "liste, fără linkuri.\n"
+    f"8. {HISTORY_RULE} Când o decizie de acum leagă de una din istoric, o spui pe scurt "
+    "(«acum două săptămâni, CFO-ul a tăiat...»).\n\n"
     f"{CONSULTANT_VOICE}"
 )
 
@@ -1149,6 +1170,10 @@ _MEMBER_PROMPTS: dict[CouncilMember, tuple[str, str]] = {
     "technician": (TECHNICIAN_SYSTEM_PROMPT, "FAPTE TEHNICE"),
     "researcher": (RESEARCHER_SYSTEM_PROMPT, "FAPTE DE PIAȚĂ"),
 }
+
+
+def _history_block(history_text: str) -> str:
+    return f"CONTEXT ISTORIC (memoria consiliului):\n{history_text}\n\n" if history_text else ""
 
 
 def build_member_prompt(member: CouncilMember, question: str, facts: str) -> tuple[str, str]:
@@ -1170,6 +1195,7 @@ def build_chair_prompt(
     ruling: CouncilRuling,
     tech_facts: str | None = None,
     market_text: str | None = None,
+    history_text: str = "",
 ) -> tuple[str, str]:
     """Promptul Reginei ca presedinte: parerile, toate faptele si decizia.
 
@@ -1196,6 +1222,7 @@ def build_chair_prompt(
         f"FAPTE FINANCIARE:\n{money_facts}\n\n"
         f"{technician}"
         f"{researcher}"
+        f"{_history_block(history_text)}"
         f"DECIZIA CONSILIULUI:\n{ruling_facts(ruling)}\n\n"
         "Scrie răspunsul tău final către client."
     )
@@ -1247,6 +1274,8 @@ class CouncilReply(BaseModel):
     technical: TechnicianDirective | None = None
     #: Contextul pietei (Researcher-ul); ``is_demo`` = ilustratie, nu fapte despre piata.
     market: MarketDirective | None = None
+    #: Contextul Istoric pe care l-a primit consiliul, cate un rand (memoria).
+    history: list[str] = Field(default_factory=list)
 
 
 def clean_question(query: str) -> str:
@@ -1269,6 +1298,55 @@ def _active_platforms(directive: BrandStrategyDirective, finances: FinancialSnap
     if finances.search is not None:
         platforms.add("google")
     return platforms
+
+
+def memories_from_reply(
+    question: str,
+    ruling: CouncilRuling,
+    finances: FinancialSnapshot,
+    technical: TechnicianDirective | None,
+    market: MarketDirective | None,
+    *,
+    at: datetime,
+) -> list[MemoryEntry]:
+    """Deciziile majore ale unui raspuns, comprimate - ce merita tinut minte.
+
+    Majore: o taietura a CFO-ului, un veto, sau o intrebare despre bani (buget, canal
+    nou). O intrebare despre public sau texte fara nicio taietura nu lasa urme.
+    """
+    topic = ruling.topic
+    entries: list[MemoryEntry] = []
+    if ruling.cut:
+        # "creșterea bugetului: contul nu e rentabil" -> "... , pentru că contul nu e rentabil".
+        what, _, why = compress(ruling.cut[0]).partition(": ")
+        cut = f"a tăiat {what}, pentru că {why}" if why else f"a tăiat {what}"
+        # Verdictul fara concluzia repetata: doar cifrele ("CPA-ul e 175 RON ...").
+        figures = compress(finances.verdict).partition(": ")[2] or compress(finances.verdict)
+        entries.append(MemoryEntry(at, "cfo", topic, cut, figures))
+    if technical is not None and technical.veto_code is not None and technical.veto_reason:
+        veto = f"a pus veto: {_lower_first(compress(technical.veto_reason))}"
+        entries.append(MemoryEntry(at, "cto", topic, veto))
+    major = bool(entries) or bool(ruling.vetoed) or topic in ("budget", "channel")
+    if not major:
+        return []
+    if market is not None and not market.is_demo:
+        noted = f"a notat: {_lower_first(compress(market.opportunity))}"
+        entries.append(MemoryEntry(at, "cso", topic, noted))
+    elif market is not None and market.web_findings:
+        finding = market.web_findings[0]
+        entries.append(
+            MemoryEntry(
+                at, "cso", topic,
+                f"a găsit pe web, pentru «{market.niche}» în {market.location}: "
+                f"«{compress(finding.title, 100)}» ({finding.source})",
+            )
+        )
+    answer = compress(ruling.decision)
+    asked = compress(question, 120)
+    entries.append(
+        MemoryEntry(at, "queen", topic, f"a răspuns «{answer}» la întrebarea «{asked}»")
+    )
+    return entries
 
 
 def _demo_market_opinion(market: MarketDirective) -> CouncilOpinion:
@@ -1302,12 +1380,14 @@ class QueenCouncil:
         *,
         technical: TechnicalSignalsSource | None = None,
         market: MarketIntelligenceSource | None = None,
+        memory: MemorySource | None = None,
         voice: TextGenerator | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._finances = finances
         self._technical = technical
         self._market = market
+        self._memory = memory
         self._voice = voice
         self._clock = clock
 
@@ -1329,6 +1409,14 @@ class QueenCouncil:
         technical = self._technical_report(client_account_id)
         market = self._market_report(client_account_id, context)
         ruling = rule_on_question(topic, context, finances, technical, market)
+        now = self._clock()
+        history = self._recall(client_account_id)
+        history_text = history_context(history, now)
+        recalled = recall_for(history, topic.topic, now)
+
+        def _with_history(facts: str) -> str:
+            return f"{facts}\n\n{_history_block(history_text)}".rstrip() if history_text else facts
+
         brand_facts = cmo_facts(context)
         money_facts = cfo_facts(finances)
         tech_facts = technician_facts(technical) if technical is not None else None
@@ -1349,7 +1437,7 @@ class QueenCouncil:
                 self._opinion,
                 "strategist",
                 question,
-                facts=brand_facts,
+                facts=_with_history(brand_facts),
                 has_data=has_brand,
                 fallback=strategist_position(context),
             )
@@ -1357,7 +1445,7 @@ class QueenCouncil:
                 self._opinion,
                 "cfo",
                 question,
-                facts=money_facts,
+                facts=_with_history(money_facts),
                 has_data=has_money,
                 fallback=cfo_position(finances),
             )
@@ -1368,7 +1456,7 @@ class QueenCouncil:
                         self._opinion,
                         "technician",
                         question,
-                        facts=tech_facts or "",
+                        facts=_with_history(tech_facts or ""),
                         has_data=has_tech,
                         fallback=technician_position(technical),
                     )
@@ -1380,7 +1468,7 @@ class QueenCouncil:
                         self._opinion,
                         "researcher",
                         question,
-                        facts=market_text,
+                        facts=_with_history(market_text),
                         has_data=True,
                         fallback=position,
                     )
@@ -1405,37 +1493,64 @@ class QueenCouncil:
                 generated_at=self._clock(),
                 technical=technical,
                 market=market,
+                history=[memory_line(entry, now) for entry in history],
             )
 
         def _deterministic(reason: str) -> CouncilReply:
-            text = template_council_reply(ruling, context, finances, technical)
+            line = memory_line(recalled, now) if recalled is not None else None
+            text = template_council_reply(ruling, context, finances, technical, line)
             return _reply(text, "template", reason)
 
         if self._voice is None:
-            return _deterministic(
+            reply = _deterministic(
                 "Vocea LLM nu e configurată - răspunsul determinist al consiliului."
             )
-        if not (has_brand or has_money or has_tech or market_text):
-            return _deterministic(
+        elif not (has_brand or has_money or has_tech or market_text):
+            reply = _deterministic(
                 "Consiliul nu are încă date pe care să delibereze - răspunsul standard, fără "
                 "sfaturi generice."
             )
-        system, user = build_chair_prompt(
-            question,
-            opinions,
-            brand_facts=brand_facts,
-            money_facts=money_facts,
-            ruling=ruling,
-            tech_facts=tech_facts,
-            market_text=market_text,
-        )
-        text, problem = self._ask(system=system, user=user, max_chars=MAX_REPLY_CHARS)
-        if text is None:
-            logger.warning(
-                "[Consiliu] sinteza respinsa pentru clientul %s: %s", client_account_id, problem
+        else:
+            system, user = build_chair_prompt(
+                question,
+                opinions,
+                brand_facts=brand_facts,
+                money_facts=money_facts,
+                ruling=ruling,
+                tech_facts=tech_facts,
+                market_text=market_text,
+                history_text=history_text,
             )
-            return _deterministic(f"{problem} - răspunsul determinist al consiliului.")
-        return _reply(text, "llm", None)
+            text, problem = self._ask(system=system, user=user, max_chars=MAX_REPLY_CHARS)
+            if text is None:
+                logger.warning(
+                    "[Consiliu] sinteza respinsa pentru clientul %s: %s", client_account_id, problem
+                )
+                reply = _deterministic(f"{problem} - răspunsul determinist al consiliului.")
+            else:
+                reply = _reply(text, "llm", None)
+        self._remember(
+            client_account_id,
+            memories_from_reply(question, ruling, finances, technical, market, at=now),
+        )
+        return reply
+
+    def _recall(self, client_account_id: int) -> list[MemoryEntry]:
+        if self._memory is None:
+            return []
+        try:
+            return self._memory.recall(client_account_id)
+        except Exception:  # memoria e un plus: fara ea, consiliul raspunde tot
+            logger.exception("[Consiliu] memoria nu s-a putut citi pentru %s", client_account_id)
+            return []
+
+    def _remember(self, client_account_id: int, entries: Sequence[MemoryEntry]) -> None:
+        if self._memory is None or not entries:
+            return
+        try:
+            self._memory.remember(client_account_id, entries)
+        except Exception:  # raspunsul a plecat deja; o memorie pierduta nu-l strica
+            logger.exception("[Consiliu] memoria nu s-a putut scrie pentru %s", client_account_id)
 
     def _market_report(
         self, client_account_id: int, context: BrandStrategyDirective

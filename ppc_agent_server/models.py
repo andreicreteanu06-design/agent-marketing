@@ -587,6 +587,27 @@ class TrackingEvidence(SQLModel, table=True):
     evidence: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
+class MemoryStream(SQLModel, table=True):
+    """Memoria consiliului: deciziile majore, ca agentii sa nu o ia de la zero la fiecare sesiune.
+
+    Scrisa dupa fiecare raspuns al consiliului (``services/council.py``), comprimata
+    si fara repetitii (``services/memory.py``); citita inapoi ca "Context Istoric" in
+    faptele fiecarui agent. Propunerile respinse/esuate nu se copiaza aici - se citesc
+    din ``ProposedChange``.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    timestamp: datetime = Field(default_factory=_now, index=True)
+    #: ``queen``, ``cfo``, ``cto`` sau ``cso`` (``memory.AgentRole``).
+    agent_role: str
+    #: Subiectul intrebarii (``council.CouncilTopic``): "budget", "creative"...
+    topic: str = "general"
+    #: Ce a vazut agentul (in piata, pe site, in cifre) - comprimat.
+    observation: str = ""
+    #: Ce a decis, scris ca fapta lui ("a taiat ...", "a pus veto ...").
+    decision: str
+
 class WeeklyReport(SQLModel, table=True):
     """Raportul saptamanal al unui client, salvat exact cum l-a servit API-ul.
 

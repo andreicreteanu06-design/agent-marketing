@@ -17,6 +17,9 @@ Tehnicianului - e determinista. Tot doar citeste; raspunde 200 si fara Hugging F
 tracking-ul conversiilor si viteza pe mobil, verde/rosu, cu reparatiile. Determinist,
 fara LLM, doar citeste.
 
+``GET /api/v1/queen/memory`` - memoria consiliului, completa (``services/memory.py``):
+consiliul primeste doar ultimele 5 intrari; aici e tot istoricul, la cerere.
+
 ``GET /api/v1/queen/market`` - contextul pietei al Researcher-ului
 (``services/researcher.py``): cautarea pe web, reala, pe nisa si orasul clientului,
 plus licitatia si cererea - acestea demonstrative (``is_demo: true``) pana se
@@ -25,6 +28,7 @@ conecteaza surse. Cautarea pe web poate dura cateva secunde (cache pe zi).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -42,6 +46,7 @@ from ppc_agent_server.services.council import (
     clean_question,
 )
 from ppc_agent_server.services.hf_client import hf_client_from_settings
+from ppc_agent_server.services.memory import MemoryOutcome, memory_line
 from ppc_agent_server.services.queen_agent import (
     BrandStrategist,
     CmoMessage,
@@ -52,6 +57,7 @@ from ppc_agent_server.services.queen_signals import (
     ClientMarketSignals,
     DbBrandSignals,
     DbFinancialSignals,
+    DbMemory,
     DbTechnicalSignals,
     SearchConsoleIntent,
     SeoIntentSource,
@@ -123,6 +129,7 @@ def chat_with_queen(
         DbFinancialSignals(session),
         technical=DbTechnicalSignals(session),
         market=ClientMarketSignals(session),
+        memory=DbMemory(session),
         voice=voice,
     )
     return council.evaluate_client_query(body.message, directive)
@@ -150,3 +157,36 @@ def read_market_context(
     queries = [query for segment in directive.segments for query in segment.sample_queries]
     researcher = MarketResearcher(ClientMarketSignals(session), clock=_utc_now)
     return researcher.evaluate_market_context(user.client_account_id, queries)
+
+
+class MemoryRecord(BaseModel):
+    """O intrare din memoria consiliului, cu randul pe care il vede si consiliul."""
+
+    at: datetime
+    agent_role: str
+    topic: str
+    decision: str
+    observation: str
+    outcome: MemoryOutcome
+    line: str
+
+
+@router.get("/memory", response_model=list[MemoryRecord])
+def read_council_memory(
+    user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[MemoryRecord]:
+    """Tot istoricul consiliului (ultimele 50 de intrari), cele mai recente primele."""
+    now = _utc_now()
+    return [
+        MemoryRecord(
+            at=entry.at,
+            agent_role=entry.role,
+            topic=entry.topic,
+            decision=entry.decision,
+            observation=entry.observation,
+            outcome=entry.outcome,
+            line=memory_line(entry, now),
+        )
+        for entry in DbMemory(session).recall(user.client_account_id, limit=50)
+    ]

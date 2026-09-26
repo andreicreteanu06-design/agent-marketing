@@ -19,6 +19,8 @@ pur si le primeste gata adunate (:class:`~ppc_agent_server.services.queen_agent.
   - Google Ads din ``SearchTermConversion`` (cu click-urile zilei), comenzile si
   apelurile din ``ConversionEvent`` (pe sursa webhook-ului) - si ultima
   masuratoare PageSpeed pe mobil (``SiteSpeedSample``);
+- **memoria consiliului** (``memory.py``): ``MemoryStream`` + propunerile
+  respinse sau esuate din ``ProposedChange``, ca istoric;
 - **piata** (pentru Researcher, ``researcher.py``): licitatia, cererea si
   mentiunile sunt demonstrative (``market_demo.py``) - nu exista inca surse; cautarea
   pe web e reala, pe nisa si orasul scoase din cautarile clientului.
@@ -46,6 +48,7 @@ from ppc_agent_server.models import (
     ChangeStatus,
     ClientAccount,
     ConversionEvent,
+    MemoryStream,
     ProposedChange,
     SearchTermConversion,
     SiteSpeedSample,
@@ -53,6 +56,14 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
 from ppc_agent_server.services.market_demo import demo_market_signals
+from ppc_agent_server.services.memory import (
+    DEDUPE_DAYS,
+    FAILED_LOOKBACK_DAYS,
+    HISTORY_LIMIT,
+    AgentRole,
+    MemoryEntry,
+    compress,
+)
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
 from ppc_agent_server.services.researcher import (
     MarketSignals,
@@ -548,3 +559,94 @@ class ClientMarketSignals:
         return replace(
             signals, niche=niche, location=location, web=findings, web_status=status, web_note=note
         )
+
+
+def _proposal_topic(resource_type: str) -> str:
+    kind = resource_type.lower()
+    if "copy" in kind:
+        return "creative"
+    return "budget" if "budget" in kind or "campaign" in kind else "general"
+
+
+class DbMemory:
+    """:class:`~ppc_agent_server.services.memory.MemorySource` peste DB-ul serverului."""
+
+    def __init__(self, session: Session, *, clock: Callable[[], datetime] | None = None) -> None:
+        self._session = session
+        self._clock = clock or (lambda: datetime.now(tz=UTC))
+
+    def recall(self, client_account_id: int, limit: int = HISTORY_LIMIT) -> list[MemoryEntry]:
+        """Cele mai recente ``limit`` intrari: memoria consiliului si propunerile care n-au mers."""
+        rows = self._session.exec(
+            select(MemoryStream)
+            .where(MemoryStream.client_account_id == client_account_id)
+            .order_by(MemoryStream.timestamp.desc())  # type: ignore[attr-defined]
+            .limit(limit)
+        ).all()
+        since = self._clock() - timedelta(days=FAILED_LOOKBACK_DAYS)
+        proposals = self._session.exec(
+            select(ProposedChange)
+            .where(ProposedChange.client_account_id == client_account_id)
+            .where(ProposedChange.status.in_((ChangeStatus.REJECTED, ChangeStatus.FAILED)))  # type: ignore[attr-defined]
+            .where(ProposedChange.created_at >= since)
+            .order_by(ProposedChange.created_at.desc())  # type: ignore[attr-defined]
+            .limit(limit)
+        ).all()
+        entries = [
+            MemoryEntry(
+                at=row.timestamp,
+                role=_role(row.agent_role),
+                topic=row.topic,
+                decision=row.decision,
+                observation=row.observation,
+            )
+            for row in rows
+        ]
+        entries.extend(
+            MemoryEntry(
+                at=proposal.decided_at or proposal.created_at,
+                role="queen" if proposal.source_module == "queen_agent" else "cfo",
+                topic=_proposal_topic(proposal.resource_type),
+                decision=compress(proposal.rationale),
+                observation=compress(proposal.error_message or ""),
+                outcome="rejected" if proposal.status == ChangeStatus.REJECTED else "failed",
+            )
+            for proposal in proposals
+        )
+        entries.sort(key=lambda entry: _utc(entry.at), reverse=True)
+        return entries[:limit]
+
+    def remember(self, client_account_id: int, entries: Sequence[MemoryEntry]) -> None:
+        """Scrie intrarile noi; aceeasi decizie a aceluiasi rol, din ultimele 7 zile, se sare."""
+        for entry in entries:
+            recent = self._session.exec(
+                select(MemoryStream.id)
+                .where(MemoryStream.client_account_id == client_account_id)
+                .where(MemoryStream.agent_role == entry.role)
+                .where(MemoryStream.decision == entry.decision)
+                .where(MemoryStream.timestamp >= entry.at - timedelta(days=DEDUPE_DAYS))
+            ).first()
+            if recent is not None:
+                continue
+            self._session.add(
+                MemoryStream(
+                    client_account_id=client_account_id,
+                    timestamp=entry.at,
+                    agent_role=entry.role,
+                    topic=entry.topic,
+                    observation=entry.observation,
+                    decision=entry.decision,
+                )
+            )
+        self._session.commit()
+
+
+_ROLES: dict[str, AgentRole] = {"queen": "queen", "cfo": "cfo", "cto": "cto", "cso": "cso"}
+
+
+def _role(value: str) -> AgentRole:
+    return _ROLES.get(value, "queen")
+
+
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

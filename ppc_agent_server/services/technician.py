@@ -51,6 +51,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel
 
 from ppc_agent_server.services.humanizer import ENGINEER_VOICE
+from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.ro_format import count as _count
 
 HealthStatus = Literal["green", "amber", "red", "unknown"]
@@ -847,6 +848,7 @@ TECHNICIAN_SYSTEM_PROMPT = (
     "lipsesc, spui exact ce lipsește.\n"
     "4. Recomanzi reparația din FAPTE, cu componenta exactă. Nu pretinzi că ai reparat, "
     "instalat sau configurat ceva și nu promiți rezultate.\n"
-    "5. Maximum 60 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n\n"
+    "5. Maximum 60 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
+    f"6. {HISTORY_RULE}\n\n"
     f"{ENGINEER_VOICE}"
 )

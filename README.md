@@ -680,6 +680,28 @@ intern scris literal ar ajunge la el orb (nu i se pastreaza continutul). Urmator
 cand conteaza: un proxy de iesire sau o politica de retea care blocheaza RFC1918 si
 link-local pentru containerul worker.
 
+#### Memoria consiliului (fara amnezie intre sesiuni)
+
+`services/memory.py`, dupa conceptele din `thedotmack/claude-mem` (Apache-2.0,
+reimplementat, fara cod copiat):
+
+- **Captura**: dupa fiecare raspuns, deciziile majore - ce a taiat CFO-ul, veto-ul
+  Tehnicianului, ce a notat Researcher-ul (doar date reale), decizia Reginei pe bani -
+  intra in `MemoryStream` (`client_account_id`, `timestamp`, `agent_role`, `topic`,
+  `observation`, `decision`). O intrebare care nu decide nimic (publicul, fara nicio
+  taietura) nu lasa urme. Propunerile respinse de client sau esuate la aplicare nu se
+  copiaza: se citesc direct din `ProposedChange` (ultimele 30 de zile).
+- **Compresie** determinista: prima fraza, cel mult 220 de caractere; aceeasi decizie a
+  aceluiasi rol, in ultimele 7 zile, nu se rescrie.
+- **Progressive disclosure**: consiliul primeste doar indexul - ultimele 5 intrari, cate
+  un rand ("Acum 2 saptamani, CFO-ul a taiat cresterea bugetului...") - in faptele
+  fiecarui agent si ale sintezei; istoricul complet e la `GET /api/v1/queen/memory`.
+
+Toate prompturile au regula: verifica Contextul Istoric, nu repeta o decizie respinsa
+sau esuata, iar daca o reiei spui ce s-a schimbat. Raspunsul determinist citeaza cea mai
+recenta decizie pe acelasi subiect dintr-o sesiune trecuta. O memorie indisponibila nu
+opreste chatul: consiliul raspunde fara ea.
+
 #### Researcher-ul (CSO): contextul pietei
 
 Al patrulea scaun (`services/researcher.py`, determinist): aduce piata, ca

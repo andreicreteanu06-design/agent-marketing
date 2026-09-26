@@ -16,6 +16,7 @@ import {
   ArrowClockwise,
   CaretDown,
   Check,
+  ClockCounterClockwise,
   Crown,
   PaperPlaneRight,
   Prohibit,
@@ -423,6 +424,22 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
           </div>
         ))}
       </div>
+
+      {reply.history && reply.history.length > 0 && (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+            Din memoria consiliului
+          </p>
+          <ul className="mt-2 space-y-1.5">
+            {reply.history.map((line) => (
+              <li key={line} className="flex gap-2 text-[13px] leading-relaxed text-foreground/80">
+                <ClockCounterClockwise size={14} weight="bold" className="mt-0.5 shrink-0 text-brand-cyan" />
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div>
         <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
