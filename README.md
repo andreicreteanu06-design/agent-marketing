@@ -542,7 +542,8 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
 | `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
 | `GET /api/v1/queen/client-message` | Agentul Regina explica clientului, ca un CMO, publicul ideal si ce a propus (vezi mai jos) |
-| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician) |
+| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician + Researcher) |
+| `GET /api/v1/queen/market` | Contextul pietei al Researcher-ului: concurenta, trendul cererii, durerile noi (azi demonstrativ, vezi mai jos) |
 | `GET /api/v1/queen/technician` | Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil, veto si reparatii (vezi mai jos) |
 
 #### Agentul Regina: `GET /api/v1/queen/client-message`
@@ -623,8 +624,10 @@ verde. Pixelul Meta si GA4 nu trimit inca serii zilnice in platforma, deci nu se
 
 **Veto-ul** e calculat inaintea oricarui LLM: tracking picat -> nicio idee care
 citeste conversiile (buget, canal nou, teste platite, reclame "care pierd",
-cuvinte negative - ar fi luate pe cifre false); site lent pe mobil -> nicio
-cheltuiala in plus. Rescrierile si excluderile trec. Raspunsul Reginei spune
+cuvinte negative - ar fi luate pe cifre false - si textele noi ale Reginei: un
+test A/B fara conversii masurate n-are castigator); daca s-au oprit si comenzile
+reale, problema e pe site si reclamele se opresc pana la reparatie. Site lent pe
+mobil -> nicio cheltuiala in plus. Excluderile trec. Raspunsul Reginei spune
 veto-ul si prima reparatie, oricare ar fi fost intrebarea.
 
 Vocea lui (`ENGINEER_VOICE` din `humanizer.py`): inginer senior, extrem de scurt -
@@ -635,6 +638,44 @@ Masuratoarea de viteza e un pas al mentenantei de noapte (`speed_check` in
 `run_client_maintenance_job`), doar pentru clientii cu domeniu in Setari.
 `SEOGEO_PAGESPEED_API_KEY` e optionala (fara ea, cota Google e mica, dar ajunge
 pentru o masuratoare pe client pe noapte).
+
+#### Researcher-ul (CSO): contextul pietei
+
+Al patrulea scaun (`services/researcher.py`, determinist): aduce piata, ca
+deciziile sa nu se ia doar pe datele interne ale clientului.
+
+| Semnal | Regula |
+|--------|--------|
+| Activitatea competitorilor | presiune in crestere cand CPC-ul licitatiei urca cu 10%+ SI au intrat concurenti noi sau unul si-a urcat cota de afisari cu 5+ puncte - explica un CPC mai mare care nu vine din cont; relaxare la -10% fara intrari |
+| Trendul cererii | ultimele 4 saptamani fata de cele 4 dinainte (+/-10%), fata de anul trecut, plus sezonul (indicele lunar): sezon care porneste = fereastra de oportunitate, sezon care se stinge = fara teste noi |
+| Ce cauta piata | temele (durerile) din cautari si recenzii care cresc cu 25%+, din cel putin 20 de mentiuni |
+
+**Azi datele sunt demonstrative** (`services/market_demo.py`, acelasi tipar ca
+`intelligence_demo.py`): nu exista inca surse de piata conectate. Sunt deterministe
+(seed = brandul clientului + ziua), marcate `is_demo`, cu nume ilustrative
+("Concurentul A"). Consiliul le arata in deliberare, cu eticheta "Demonstrativ",
+dar nu le trimite la niciun LLM, nu le pune in decizie si nu le spune clientului ca
+fapte despre piata lui. Cand se conecteaza o sursa reala (Auction Insights, Keyword
+Planner, recenzii), aceleasi reguli dau `CouncilRuling.market_context` - contextul
+pietei pentru intrebare, care explica decizia fara s-o schimbe. O intrebare despre
+pretul click-ului ("de ce a crescut CPC-ul?") primeste raspunsul din licitatie; fara
+date reale de licitatie, consiliul spune ca le lipsesc, nu ghiceste.
+
+**Cautarea pe web (ca Perplexity), reala:** nisa si orasul se scot din cautarile
+clientului (`market_focus`: cel mai lung grup de cuvinte repetat in cautari, fara
+"pret"/"program"/brand; orasul recunoscut, altfel Romania), apoi doua interogari
+DuckDuckGo (`ddgs`, fara cheie): "competitori <nisa> <oras>" si "trenduri <nisa>
+Romania <an>". Primele 5 surse distincte (titlu, fragment, site) ajung la LLM-ul
+Researcher-ului, care are voie sa formuleze EXCLUSIV din ele: garda respinge orice
+cifra din afara lor, linkurile si sfaturile generice ("Silicon Valley", "growth
+hacking", "startup"). Cautarile ruleaza in paralel (`asyncio.to_thread`), cu timeout de
+8 s; un timeout sau o limita DuckDuckGo nu opreste chatul - Researcher-ul spune ca n-a
+mers. Rezultatele se tin minte o zi, in proces. Datele demonstrative (licitatie,
+cerere) tot nu ajung la niciun LLM.
+
+Vocea lui (`ANALYST_VOICE` din `humanizer.py`): analist de intelligence comercial -
+cota de piata, miscarile competitorilor, ferestrele de oportunitate - asertiv, scurt,
+fiecare afirmatie cu cifra ei din fapte, fara speculatii despre intentiile concurentilor.
 
 #### Integrari Google: Search Console si GA4
 

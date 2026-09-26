@@ -323,7 +323,11 @@ def test_broken_tracking_vetoes_every_money_decision_in_the_council() -> None:
     assert ruling.veto == reply.technical.veto_reason
     assert any(idea.startswith("creșterea treptată") for idea in ruling.vetoed)
     assert not any(idea.startswith("creșterea") for idea in ruling.approved)
-    assert any(idea.startswith("rescrierea reclamei") for idea in ruling.approved)
+    # Textele noi ale Reginei se opresc si ele: un test A/B fara conversii n-are castigator.
+    assert any(idea.startswith("rescrierea reclamei") for idea in ruling.vetoed)
+    assert not any(idea.startswith("rescrierea") for idea in ruling.approved)
+    assert "Propun rescrierea" not in reply.reply
+    assert "atunci oprim reclamele până se repară" in ruling.decision
     assert "Reparația de făcut întâi: verifică tag-ul de conversie Google" in reply.reply
     assert [opinion.member for opinion in reply.opinions] == ["strategist", "cfo", "technician"]
     assert reply.opinions[2].opinion == reply.technical.summary
@@ -341,6 +345,15 @@ def test_a_slow_mobile_site_blocks_extra_spend_but_not_rewrites() -> None:
     assert "Reparația de făcut întâi: LCP: comprimă imaginea principală" in reply.reply
     assert any(idea.startswith("creșterea treptată") for idea in ruling.vetoed)
     assert any(idea.startswith("rescrierea reclamei") for idea in ruling.approved)
+
+
+def test_new_ad_copy_waits_for_the_tracking_fix() -> None:
+    reply = _council(technical=_signals(BROKEN_TAG)).evaluate_client_query(
+        "Ce texte noi să pun în reclame?", _directive()
+    )
+
+    assert reply.ruling.decision.startswith("Nu acum. Tracking-ul e picat")
+    assert "fără conversii măsurate, nu are câștigător" in reply.ruling.decision
 
 
 def test_the_veto_is_told_even_when_the_question_is_about_the_audience() -> None:
@@ -639,4 +652,5 @@ def test_the_chat_carries_the_technician_veto(broken: Signed) -> None:
         "strategist",
         "cfo",
         "technician",
+        "researcher",
     ]

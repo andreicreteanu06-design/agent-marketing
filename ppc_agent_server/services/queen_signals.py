@@ -18,14 +18,18 @@ pur si le primeste gata adunate (:class:`~ppc_agent_server.services.queen_agent.
 - **datele tehnice** (pentru Tehnician, ``technician.py``): conversiile zi de zi
   - Google Ads din ``SearchTermConversion`` (cu click-urile zilei), comenzile si
   apelurile din ``ConversionEvent`` (pe sursa webhook-ului) - si ultima
-  masuratoare PageSpeed pe mobil (``SiteSpeedSample``).
+  masuratoare PageSpeed pe mobil (``SiteSpeedSample``);
+- **piata** (pentru Researcher, ``researcher.py``): licitatia, cererea si
+  mentiunile sunt demonstrative (``market_demo.py``) - nu exista inca surse; cautarea
+  pe web e reala, pe nisa si orasul scoase din cautarile clientului.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter, defaultdict
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 
@@ -47,7 +51,14 @@ from ppc_agent_server.models import (
     SiteSpeedSample,
 )
 from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
+from ppc_agent_server.services.market_demo import demo_market_signals
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
+from ppc_agent_server.services.researcher import (
+    MarketSignals,
+    WebSearch,
+    market_focus,
+    search_market_web,
+)
 from ppc_agent_server.services.technician import (
     DailyConversions,
     MobileSpeed,
@@ -459,4 +470,48 @@ class DbTechnicalSignals:
                 else None
             ),
             notes=notes,
+        )
+
+
+class ClientMarketSignals:
+    """:class:`~ppc_agent_server.services.researcher.MarketIntelligenceSource` a unui client.
+
+    Licitatia, cererea si mentiunile: demonstrative (seed = brandul, stabile toata
+    ziua, marcate ``source="demo"``) - nu exista inca API-uri pentru ele. Cautarea
+    pe web: reala, pe nisa si orasul din ``queries`` (cautarile clientului); fara
+    cautari, nu se cauta nimic. ``search`` e injectabil in teste.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        today: Callable[[], date] = _utc_today,
+        search: WebSearch | None = None,
+    ) -> None:
+        self._session = session
+        self._today = today
+        self._search = search
+
+    def load(self, client_account_id: int, queries: Sequence[str] = ()) -> MarketSignals:
+        account = self._session.get(ClientAccount, client_account_id)
+        if account is None:
+            raise LookupError(f"clientul {client_account_id} nu exista")
+        today = self._today()
+        brand = _brand(account)
+        signals = demo_market_signals(brand or account.name or str(client_account_id), today)
+        country = "România" if account.geo.upper() == "RO" else account.geo
+        niche, location = market_focus(queries, brand=brand, country=country)
+        if not niche:
+            return replace(
+                signals,
+                location=location,
+                web_note="Nișa nu se poate deduce încă (lipsesc căutările clientului): nu "
+                "s-a căutat pe web.",
+            )
+        findings, status, note = asyncio.run(
+            search_market_web(niche, location, year=today.year, search=self._search)
+        )
+        return replace(
+            signals, niche=niche, location=location, web=findings, web_status=status, web_note=note
         )

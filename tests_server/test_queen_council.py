@@ -33,6 +33,11 @@ from ppc_agent_server.services.queen_agent import (
     SearchSignal,
     build_directive,
 )
+from ppc_agent_server.services.researcher import (
+    RESEARCHER_SYSTEM_PROMPT,
+    MarketIntelligenceSource,
+    MarketSignals,
+)
 from ppc_agent_server.services.technician import (
     TECHNICIAN_SYSTEM_PROMPT,
     TechnicalSignals,
@@ -114,6 +119,7 @@ _ROLE_BY_PROMPT = {
     CFO_SYSTEM_PROMPT: "cfo",
     CHAIR_SYSTEM_PROMPT: "chair",
     TECHNICIAN_SYSTEM_PROMPT: "technician",
+    RESEARCHER_SYSTEM_PROMPT: "researcher",
 }
 STRATEGIST_SAYS = (
     "Clientul tău ideal e «Ocupatul pragmatic»: vrea să rezolve totul din telefon. Reclama "
@@ -124,6 +130,7 @@ CFO_SAYS = (
     "deja clienți, în plafonul de 50 RON pe zi."
 )
 TECHNICIAN_SAYS = "Tracking: roșu. Conversiile Google Ads tac. Nu e marketing, e tag-ul."
+RESEARCHER_SAYS = "Concurența urcă prețul. CPC-ul pieței: +26% în 28 de zile. Fereastra e acum."
 CHAIR_SAYS = (
     "Da, dar controlat. Contul e rentabil - CPA 39,23 RON, sub ținta de 80 RON - deci "
     "cheltuiala poate crește treptat, doar pe ce aduce deja clienți, în plafonul de 50 RON pe zi. "
@@ -147,6 +154,7 @@ class _CouncilVoice:
             "strategist": STRATEGIST_SAYS,
             "cfo": CFO_SAYS,
             "technician": TECHNICIAN_SAYS,
+            "researcher": RESEARCHER_SAYS,
             "chair": CHAIR_SAYS,
         }
         self.answers.update(answers or {})
@@ -185,17 +193,33 @@ class _StaticTechnical:
         return self._signals
 
 
+class _StaticMarket:
+    def __init__(self, signals: MarketSignals) -> None:
+        self._signals = signals
+
+    def load(self, client_account_id: int, queries: Sequence[str] = ()) -> MarketSignals:
+        return self._signals
+
+
 def _council(
     finances: FinancialSignals | None = None,
     voice: _CouncilVoice | None = None,
     *,
     technical: TechnicalSignals | None = None,
+    market: MarketSignals | None = None,
 ) -> QueenCouncil:
     source: TechnicalSignalsSource | None = (
         _StaticTechnical(technical) if technical is not None else None
     )
+    market_source: MarketIntelligenceSource | None = (
+        _StaticMarket(market) if market is not None else None
+    )
     return QueenCouncil(
-        _Static(finances or _finances()), technical=source, voice=voice, clock=lambda: NOW
+        _Static(finances or _finances()),
+        technical=source,
+        market=market_source,
+        voice=voice,
+        clock=lambda: NOW,
     )
 
 

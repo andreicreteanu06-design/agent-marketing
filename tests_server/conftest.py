@@ -22,6 +22,7 @@ from ppc_agent_server.jobs import tasks
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
+from ppc_agent_server.services import researcher
 from ppc_agent_server.settings import get_server_settings
 
 
@@ -63,6 +64,24 @@ def _no_pagespeed_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     Testele care verifica masuratoarea isi dau propriul ``measure``.
     """
     monkeypatch.setattr(tasks, "measure_mobile_speed", lambda url: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_web_search(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Researcher-ul cauta pe web prin DuckDuckGo - niciodata din teste.
+
+    Cautarea "pica" (starea ``failed``, gratios); testele care o verifica isi dau
+    propriul ``search``. Cache-ul pe zi se goleste, ca rezultatele sa nu treaca
+    dintr-un test in altul.
+    """
+
+    def _offline(query: str) -> list[dict[str, str]]:
+        raise ConnectionError("fara retea in teste")
+
+    monkeypatch.setattr(researcher, "ddgs_text", _offline)
+    researcher._cached_search.cache_clear()
+    yield
+    researcher._cached_search.cache_clear()
 
 
 @pytest.fixture

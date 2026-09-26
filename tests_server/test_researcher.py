@@ -1,0 +1,637 @@
+"""Researcher-ul (CSO): contextul pietei, determinist, si locul lui in consiliu.
+
+Regulile se verifica pe semnale "live" construite in test. Motorul demonstrativ
+(``market_demo.py``) se verifica separat: determinist, arata fiecare regula si nu
+ajunge niciodata in decizie, in sinteza sau in raspunsul catre client.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+import time
+from collections.abc import Iterator, Sequence
+from dataclasses import replace
+from datetime import date
+from decimal import Decimal
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlmodel import Session
+
+from ppc_agent_server.services import researcher
+from ppc_agent_server.services.council import QuestionTopic, classify_question
+from ppc_agent_server.services.humanizer import ANALYST_VOICE, ai_tells
+from ppc_agent_server.services.market_demo import SEASON_INDEX, demo_market_signals
+from ppc_agent_server.services.queen_signals import ClientMarketSignals
+from ppc_agent_server.services.researcher import (
+    RESEARCHER_SYSTEM_PROMPT,
+    AuctionSnapshot,
+    CompetitorMove,
+    DemandSeries,
+    MarketDirective,
+    MarketResearcher,
+    MarketSignals,
+    PainTopic,
+    WebFinding,
+    build_market_directive,
+    competitor_activity,
+    market_facts,
+    market_focus,
+    market_trend,
+    search_market_web,
+    social_sentiment,
+)
+from tests_server.test_jobs_tasks import _client_account
+from tests_server.test_queen_agent import NOW
+from tests_server.test_queen_council import RESEARCHER_SAYS, _council, _CouncilVoice, _directive
+from tests_server.test_queen_router import signed_in  # noqa: F401 - fixture
+
+TODAY = NOW.date()  # 25 septembrie: octombrie e varf de sezon in indicele demo
+
+AUCTION = AuctionSnapshot(
+    competitors_before=5,
+    competitors_now=7,
+    cpc_before=Decimal("2.10"),
+    cpc_now=Decimal("2.65"),
+    client_share_before=0.31,
+    client_share_now=0.24,
+    movers=(
+        CompetitorMove("Concurentul B", 0.12, 0.24),
+        CompetitorMove("Concurentul C", 0.2, 0.19),
+    ),
+)
+DEMAND = DemandSeries(
+    category="service auto",
+    weekly=[1000, 1010, 1020, 1030, 1120, 1150, 1170, 1190],
+    same_weeks_last_year=4200,
+    monthly_index=SEASON_INDEX,
+)
+PAINS = (
+    PainTopic("prețul afișat înainte de programare", "cat costa diagnoza auto", 90, 140),
+    PainTopic("garanție la manoperă", "service auto cu garantie", 80, 82),
+    # Creste mult, dar din prea putine mentiuni: zgomot.
+    PainTopic("programare în weekend", "service auto sambata", 10, 19),
+)
+LIVE = MarketSignals(
+    source="live",
+    market="service auto, București",
+    today=TODAY,
+    period_days=28,
+    auction=AUCTION,
+    demand=DEMAND,
+    pains=PAINS,
+)
+DEMO = demo_market_signals("autofix", TODAY)
+
+
+def _directive_for(signals: MarketSignals) -> MarketDirective:
+    return build_market_directive(42, signals, generated_at=NOW)
+
+
+# --- concurenta ---------------------------------------------------------------------------
+
+
+def test_new_entrants_that_push_the_cpc_up_are_rising_pressure() -> None:
+    activity = competitor_activity(AUCTION, period_days=28)
+
+    assert activity.pressure == "rising"
+    assert activity.evidence == (
+        "CPC-ul mediu din licitație a mers de la 2,10 la 2,65 RON (+26%) în ultimele 28 de zile. "
+        "Au intrat 2 concurenți noi (7 față de 5). Concurentul B și-a urcat cota de afișări de "
+        "la 12% la 24%. Cota ta de afișări a scăzut cu 7 puncte: de la 31% la 24%."
+    )
+    assert activity.implication.startswith("CPC-ul urcă din cauza concurenței.")
+    assert (activity.top_mover, activity.cpc_change) == ("Concurentul B", 0.2619)
+
+
+def test_one_aggressive_competitor_is_enough_for_pressure() -> None:
+    auction = replace(AUCTION, competitors_now=5)
+
+    assert competitor_activity(auction, period_days=28).pressure == "rising"
+
+
+def test_a_pricier_click_without_market_movers_is_not_blamed_on_competitors() -> None:
+    calm = (CompetitorMove("Concurentul B", 0.2, 0.21),)
+    auction = replace(AUCTION, competitors_now=5, movers=calm)
+
+    activity = competitor_activity(auction, period_days=28)
+
+    assert activity.pressure == "stable"
+    assert activity.implication == "Licitația e stabilă. Dacă CPC-ul tău se mișcă, cauza e în cont."
+    assert activity.top_mover is None
+
+
+def test_a_cheaper_auction_with_no_new_entrants_is_easing() -> None:
+    auction = replace(AUCTION, competitors_now=4, cpc_now=Decimal("1.80"), movers=())
+
+    activity = competitor_activity(auction, period_days=28)
+
+    assert activity.pressure == "easing"
+    assert "Au ieșit concurenți (4 față de 5)." in activity.evidence
+
+
+def test_without_auction_data_pressure_is_unknown() -> None:
+    activity = competitor_activity(None, period_days=28)
+
+    assert (activity.pressure, activity.cpc_change, activity.top_mover) == ("unknown", None, None)
+
+
+# --- cererea si sezonul ----------------------------------------------------------------------
+
+
+def test_growing_demand_before_the_peak_is_a_window_of_opportunity() -> None:
+    trend = market_trend(DEMAND, today=TODAY)
+
+    assert (trend.direction, trend.season) == ("growing", "rising")
+    assert (trend.change, trend.year_over_year) == (0.1404, 0.1024)
+    assert trend.evidence == (
+        "Căutări pentru «service auto»: 4630 de căutări în ultimele 4 săptămâni, +14% față de "
+        "cele 4 dinainte și +10% față de anul trecut. Sezonul urcă: octombrie e de obicei peste "
+        "luna asta."
+    )
+    assert trend.window.startswith(
+        "Fereastră de oportunitate: cererea urcă înainte de vârful din octombrie."
+    )
+
+
+@pytest.mark.parametrize(
+    ("today", "weekly", "direction", "season", "window"),
+    [
+        (date(2026, 10, 10), [1000] * 8, "flat", "peak", "Vârf de sezon"),
+        (date(2026, 12, 10), [1200] * 4 + [1000] * 4, "declining", "cooling", "Piața se strânge"),
+        (date(2026, 2, 10), [1000] * 8, "flat", "rising", "Fereastră de oportunitate"),
+        (date(2026, 6, 10), [1000] * 8, "flat", "normal", "Cerere stabilă"),
+        (date(2026, 1, 10), [1000] * 8, "flat", "low", "Piața se strânge"),
+    ],
+)
+def test_the_season_and_the_trend_decide_the_window(
+    today: date, weekly: list[int], direction: str, season: str, window: str
+) -> None:
+    trend = market_trend(replace(DEMAND, weekly=weekly, same_weeks_last_year=None), today=today)
+
+    assert (trend.direction, trend.season, trend.year_over_year) == (direction, season, None)
+    assert trend.window.startswith(window)
+
+
+def test_a_short_series_has_no_trend() -> None:
+    trend = market_trend(replace(DEMAND, weekly=[1000] * 5), today=TODAY)
+
+    assert (trend.direction, trend.season, trend.change) == ("unknown", "unknown", None)
+
+
+# --- ce cauta piata -------------------------------------------------------------------------
+
+
+def test_only_pains_that_grow_from_enough_mentions_count() -> None:
+    sentiment = social_sentiment(PAINS, period_days=28)
+
+    assert [(pain.theme, pain.growth, pain.mentions) for pain in sentiment.rising] == [
+        ("prețul afișat înainte de programare", 0.5556, 140)
+    ]
+    assert sentiment.evidence == (
+        "Crește «prețul afișat înainte de programare»: +56%, 140 de mențiuni în ultimele 28 de "
+        "zile (de exemplu «cat costa diagnoza auto»)."
+    )
+
+
+def test_a_quiet_market_says_so() -> None:
+    assert "aceleași lucruri" in social_sentiment(PAINS[1:2], period_days=28).evidence
+    assert "Nu am date" in social_sentiment((), period_days=28).evidence
+
+
+# --- directiva ------------------------------------------------------------------------------
+
+
+def test_the_directive_puts_competitors_demand_and_pains_together() -> None:
+    directive = MarketResearcher(_Static(LIVE), clock=lambda: NOW).evaluate_market_context(42)
+
+    assert (directive.source, directive.is_demo, directive.generated_at) == ("live", False, NOW)
+    assert directive.opportunity.endswith(
+        "Mesajul care prinde acum: «prețul afișat înainte de programare»."
+    )
+    assert directive.summary.startswith("Concurența: presiune în creștere. CPC-ul mediu")
+    assert "Cererea: în creștere." in directive.summary
+    assert directive.notes == []
+
+
+def test_demo_data_is_always_marked_as_such() -> None:
+    directive = _directive_for(DEMO)
+
+    assert (directive.source, directive.is_demo) == ("demo", True)
+    assert directive.notes[0].startswith("Date demonstrative")
+
+
+def test_no_researcher_text_sounds_generated() -> None:
+    texts: list[str] = []
+    for signals in (LIVE, DEMO, replace(LIVE, auction=None, demand=None, pains=())):
+        directive = _directive_for(signals)
+        texts.extend([directive.summary, market_facts(directive), directive.opportunity])
+    assert [(text[:60], ai_tells(text)) for text in texts if ai_tells(text)] == []
+
+
+# --- motorul demonstrativ -------------------------------------------------------------------
+
+
+def test_the_demo_is_stable_per_client_and_day() -> None:
+    assert demo_market_signals("autofix", TODAY) == DEMO
+    assert demo_market_signals("alt-service", TODAY) != DEMO
+    assert demo_market_signals("autofix", date(2026, 9, 26)) != DEMO
+
+
+def test_the_demo_shows_every_rule_with_illustrative_names_only() -> None:
+    directive = _directive_for(DEMO)
+
+    assert directive.competitor_activity.pressure == "rising"
+    assert directive.market_trend.season == "rising"
+    assert directive.market_trend.direction == "growing"
+    assert directive.social_sentiment.rising
+    assert DEMO.auction is not None
+    assert all(move.name.startswith("Concurentul ") for move in DEMO.auction.movers)
+    assert "demonstrativ" in directive.market
+
+
+# --- vocea ----------------------------------------------------------------------------------
+
+
+def test_the_researcher_prompt_speaks_like_a_market_analyst_after_the_factual_rules() -> None:
+    assert RESEARCHER_SYSTEM_PROMPT.endswith(ANALYST_VOICE)
+    assert RESEARCHER_SYSTEM_PROMPT.index("Nicio cifră care nu apare în ele") < (
+        RESEARCHER_SYSTEM_PROMPT.index("VOCEA (regulile de mai sus au prioritate")
+    )
+    for asked in (
+        "analist senior de intelligence comercial",
+        "asertiv, scurt, sprijinit pe cifre",
+        "cota de piață",
+        "mișcările competitorilor",
+        "ferestrele de oportunitate",
+        "Fără speculații despre intențiile concurenților",
+        "Diateza activă",
+        "dinamic",
+        "crucial",
+        "«Să analizăm»",
+    ):
+        assert asked in ANALYST_VOICE
+    assert re.search(r"\d", ANALYST_VOICE) is None
+
+
+# --- in consiliu ----------------------------------------------------------------------------
+
+
+class _Static:
+    def __init__(self, signals: MarketSignals) -> None:
+        self._signals = signals
+
+    def load(self, client_account_id: int, queries: Sequence[str] = ()) -> MarketSignals:
+        return self._signals
+
+
+QUESTION = "Merită să cresc bugetul?"
+
+
+def test_demo_market_data_is_shown_but_never_decides_or_reaches_an_llm() -> None:
+    voice = _CouncilVoice()
+    reply = _council(voice=voice, market=DEMO).evaluate_client_query(QUESTION, _directive())
+    without = _council(voice=_CouncilVoice()).evaluate_client_query(QUESTION, _directive())
+
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
+    assert opinion.demo is True and opinion.source == "template"
+    assert reply.market is not None and opinion.opinion == reply.market.summary
+    assert reply.ruling.market_context is None
+    assert reply.ruling == without.ruling
+    assert "researcher" not in voice.roles
+    chair = voice.prompt("chair")
+    assert "FAPTE DE PIAȚĂ" not in chair and "Concurentul" not in chair
+
+
+def test_demo_market_data_stays_out_of_the_deterministic_reply() -> None:
+    reply = _council(market=DEMO).evaluate_client_query(QUESTION, _directive())
+    without = _council().evaluate_client_query(QUESTION, _directive())
+
+    assert reply.reply == without.reply
+
+
+def test_live_market_context_explains_a_budget_decision() -> None:
+    reply = _council(market=LIVE).evaluate_client_query(QUESTION, _directive())
+
+    context = reply.ruling.market_context
+    assert context is not None
+    assert context.startswith("CPC-ul urcă din cauza concurenței.")
+    assert "Fereastră de oportunitate" in context
+    assert context in reply.reply
+    # Contextul nu muta nicio idee.
+    without = _council().evaluate_client_query(QUESTION, _directive()).ruling
+    assert (reply.ruling.approved, reply.ruling.cut) == (without.approved, without.cut)
+
+
+def test_live_market_gives_creative_questions_the_rising_pain() -> None:
+    reply = _council(market=LIVE).evaluate_client_query(
+        "Ce text să pun în reclame?", _directive()
+    )
+
+    assert reply.ruling.market_context == (
+        "Piața caută acum «prețul afișat înainte de programare»: un unghi pentru textele noi."
+    )
+
+
+CPC_QUESTION = "De ce a crescut costul pe click (CPC) luna asta?"
+
+
+@pytest.mark.parametrize(
+    "question", [CPC_QUESTION, "De ce s-a scumpit prețul pe click?", "CPC-ul e prea mare"]
+)
+def test_click_price_questions_are_about_the_auction(question: str) -> None:
+    assert classify_question(question, active_platforms=set()) == QuestionTopic(
+        "profitability", about_cpc=True
+    )
+
+
+def test_a_live_auction_answers_why_the_click_got_pricier() -> None:
+    reply = _council(market=LIVE).evaluate_client_query(CPC_QUESTION, _directive())
+
+    decision = reply.ruling.decision
+    assert decision.startswith("CPC-ul mediu din licitație a mers de la 2,10 la 2,65 RON (+26%)")
+    assert "CPC-ul urcă din cauza concurenței." in decision
+    assert "Ce contează e costul pe client. Contul e rentabil" in decision
+    # Licitatia e deja in decizie: contextul pietei nu o repeta.
+    assert reply.ruling.market_context is not None
+    assert reply.ruling.market_context.startswith("Fereastră de oportunitate")
+
+
+def test_without_real_auction_data_the_council_says_what_is_missing() -> None:
+    reply = _council(market=DEMO).evaluate_client_query(CPC_QUESTION, _directive())
+
+    assert reply.ruling.decision.startswith("De ce s-a scumpit click-ul nu pot spune încă")
+    assert "Concurentul" not in reply.reply
+
+
+def test_a_live_researcher_speaks_with_market_facts_only() -> None:
+    voice = _CouncilVoice()
+    reply = _council(voice=voice, market=LIVE).evaluate_client_query(QUESTION, _directive())
+
+    assert voice.roles == ["cfo", "chair", "researcher", "strategist"]
+    researcher = voice.prompt("researcher")
+    assert "FAPTE DE PIAȚĂ" in researcher and "Au intrat 2 concurenți noi" in researcher
+    assert "Verdict financiar" not in researcher
+    chair = voice.prompt("chair")
+    assert "PĂREREA RESEARCHER-ULUI" in chair and RESEARCHER_SAYS in chair
+    assert "Contextul pieței (Researcher): CPC-ul urcă" in chair
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
+    assert (opinion.source, opinion.opinion, opinion.demo) == ("llm", RESEARCHER_SAYS, False)
+
+
+def test_a_researcher_that_invents_a_market_number_falls_back() -> None:
+    voice = _CouncilVoice({"researcher": "Concurentul B a pus 40% din buget pe cuvintele tale."})
+    reply = _council(voice=voice, market=LIVE).evaluate_client_query(QUESTION, _directive())
+
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
+    assert reply.market is not None
+    assert (opinion.source, opinion.opinion) == ("template", reply.market.summary)
+    assert opinion.fallback_reason is not None and "(40)" in opinion.fallback_reason
+
+
+# --- sursa si ruta ----------------------------------------------------------------------------
+
+
+def test_the_demo_source_is_seeded_by_the_client_brand(session: Session) -> None:
+    account = _client_account(session)
+    account.brand_name = "autofix"
+    session.add(account)
+    session.commit()
+
+    signals = ClientMarketSignals(session, today=lambda: TODAY).load(account.id or 0)
+
+    demo = demo_market_signals("autofix", TODAY)
+    assert signals.auction == demo.auction
+    assert (signals.demand, signals.pains) == (demo.demand, demo.pains)
+    # Fara cautarile clientului nu exista nisa - deci nicio cautare pe web.
+    assert (signals.niche, signals.location, signals.web_status) == ("", "România", "off")
+    assert signals.web_note.startswith("Nișa nu se poate deduce încă")
+    with pytest.raises(LookupError):
+        ClientMarketSignals(session).load(999_999)
+
+
+# --- cautarea pe web ---------------------------------------------------------------------------
+
+SERVICE_QUERIES = [
+    "service auto bucuresti",
+    "service auto sector 3 pret",
+    "revizie service auto",
+    "itp bucuresti",
+]
+
+
+def _found(query: str, *sources: str) -> list[WebFinding]:
+    return [
+        WebFinding(
+            query=query, title=f"Titlu {source}", snippet=f"Fragment {source}", source=source
+        )
+        for source in sources
+    ]
+
+
+@pytest.mark.parametrize(
+    ("queries", "expected"),
+    [
+        (SERVICE_QUERIES, ("service auto", "București")),
+        (
+            ["cafenea specialty cluj", "cafenea specialty centru"],
+            ("cafenea specialty", "Cluj-Napoca"),
+        ),
+        (["schimb ulei cutie automata pret", "schimb ulei cutie automata langa mine"],
+         ("schimb ulei cutie automata", "România")),
+        ([], ("", "România")),
+    ],
+)
+def test_the_niche_and_city_come_from_the_client_searches(
+    queries: list[str], expected: tuple[str, str]
+) -> None:
+    assert market_focus(queries) == expected
+
+
+def test_the_brand_is_never_the_niche() -> None:
+    assert market_focus(["autofix pitesti", "autofix program"], brand="autofix") == (
+        "", "Pitești"
+    )
+
+
+def test_two_real_searches_give_up_to_five_distinct_local_sources() -> None:
+    asked: list[str] = []
+
+    def search(query: str) -> list[WebFinding]:
+        asked.append(query)
+        return _found(query, "yably.ro", "cylex.ro", "homerun.ro", "a.ro", "b.ro")
+
+    findings, status, note = asyncio.run(
+        search_market_web("service auto", "București", year=2026, search=search)
+    )
+
+    assert sorted(asked) == [
+        "competitori service auto București",
+        "trenduri service auto România 2026",
+    ]
+    assert (status, note) == ("ok", "")
+    assert [finding.source for finding in findings] == [
+        "yably.ro", "cylex.ro", "homerun.ro", "a.ro", "b.ro"
+    ]
+
+
+def test_one_failed_search_does_not_lose_the_other() -> None:
+    def search(query: str) -> list[WebFinding]:
+        if query.startswith("trenduri"):
+            raise ConnectionError("rate limit")
+        return _found(query, "yably.ro")
+
+    findings, status, _ = asyncio.run(
+        search_market_web("service auto", "București", year=2026, search=search)
+    )
+
+    assert (status, [finding.source for finding in findings]) == ("ok", ["yably.ro"])
+
+
+def test_a_hanging_search_times_out_gracefully() -> None:
+    def search(query: str) -> list[WebFinding]:
+        time.sleep(0.5)
+        return _found(query, "yably.ro")
+
+    findings, status, note = asyncio.run(
+        search_market_web("service auto", "București", year=2026, search=search, timeout=0.05)
+    )
+
+    assert (findings, status) == ([], "failed")
+    assert note.startswith("Căutarea pe web n-a răspuns acum")
+
+
+def test_a_search_with_no_results_says_so() -> None:
+    findings, status, note = asyncio.run(
+        search_market_web("service auto", "București", year=2026, search=lambda query: [])
+    )
+
+    assert (findings, status) == ([], "empty")
+    assert note == "Căutarea pe web n-a găsit nimic despre «service auto» în București."
+
+
+def test_ddgs_results_become_cited_findings_cached_for_the_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def ddgs(query: str) -> list[dict[str, str]]:
+        calls.append(query)
+        return [
+            {
+                "title": "Top service-uri auto în Bucureşti",
+                "href": "https://www.cylex.ro/service-auto/",
+                "body": "Găsește informații   exacte despre service-uri auto.",
+            },
+            {"title": "", "href": "https://gol.ro/", "body": "fara titlu"},
+        ]
+
+    monkeypatch.setattr(researcher, "ddgs_text", ddgs)
+    for _ in range(2):
+        findings, status, _ = asyncio.run(search_market_web("service auto", "București", year=2026))
+
+    assert status == "ok"
+    assert findings == [
+        WebFinding(
+            query="competitori service auto București",
+            title="Top service-uri auto în Bucureşti",
+            snippet="Găsește informații exacte despre service-uri auto.",
+            source="cylex.ro",
+        )
+    ]
+    assert len(calls) == 2  # doua interogari, o singura data pe zi
+
+
+def test_the_loader_searches_the_niche_and_city_of_the_client(session: Session) -> None:
+    account = _client_account(session)
+    seen: list[str] = []
+
+    def search(query: str) -> list[WebFinding]:
+        seen.append(query)
+        return _found(query, "yably.ro")
+
+    signals = ClientMarketSignals(session, today=lambda: TODAY, search=search).load(
+        account.id or 0, SERVICE_QUERIES
+    )
+
+    assert (signals.niche, signals.location, signals.web_status) == (
+        "service auto",
+        "București",
+        "ok",
+    )
+    assert "competitori service auto București" in seen
+
+
+WEB = replace(
+    DEMO,
+    niche="service auto",
+    location="București",
+    web=_found("competitori service auto București", "yably.ro", "cylex.ro"),
+    web_status="ok",
+)
+
+
+def test_real_web_findings_reach_the_researcher_llm_but_demo_numbers_do_not() -> None:
+    voice = _CouncilVoice({"researcher": "Piața din București e plină: yably.ro listează top."})
+    reply = _council(voice=voice, market=WEB).evaluate_client_query(QUESTION, _directive())
+
+    researcher_prompt = voice.prompt("researcher")
+    assert "Rezultatul 1 (yably.ro): «Titlu yably.ro»" in researcher_prompt
+    assert "Concurentul" not in researcher_prompt and "CPC-ul mediu" not in researcher_prompt
+    chair = voice.prompt("chair")
+    assert "FAPTE DE PIAȚĂ" in chair and "yably.ro" in chair and "Concurentul" not in chair
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
+    assert (opinion.source, opinion.demo) == ("llm", False)
+    # Fragmentele nu muta decizia.
+    assert reply.ruling.market_context is None
+
+
+def test_without_a_voice_the_researcher_cites_the_web_sources() -> None:
+    reply = _council(market=WEB).evaluate_client_query(QUESTION, _directive())
+
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
+    assert opinion.demo is False
+    assert opinion.opinion.startswith("Pe web, pentru «service auto» în București: 2 surse locale.")
+    assert "yably.ro: «Titlu yably.ro» - Fragment yably.ro" in opinion.opinion
+
+
+@pytest.mark.parametrize(
+    "generic",
+    [
+        "Faceți growth hacking, ca în Silicon Valley.",
+        "Gândiți ca un startup: testați repede.",
+    ],
+)
+def test_generic_business_advice_is_rejected(generic: str) -> None:
+    voice = _CouncilVoice({"researcher": generic})
+    reply = _council(voice=voice, market=WEB).evaluate_client_query(QUESTION, _directive())
+
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
+    assert opinion.source == "template"
+    assert opinion.fallback_reason is not None and "sfaturi generice" in opinion.fallback_reason
+
+
+Signed = tuple[TestClient, FastAPI, dict[str, str], int]
+
+
+@pytest.fixture
+def market_client(signed_in: Signed) -> Iterator[Signed]:  # noqa: F811
+    yield signed_in
+
+
+def test_the_market_route_returns_the_marked_demo_context(market_client: Signed) -> None:
+    client, _, headers, account_id = market_client
+
+    response = client.get("/api/v1/queen/market", headers=headers)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["client_account_id"], body["source"], body["is_demo"]) == (
+        account_id,
+        "demo",
+        True,
+    )
+    assert body["notes"][0].startswith("Date demonstrative")
+    assert client.get("/api/v1/queen/market").status_code == 401

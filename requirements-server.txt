@@ -30,3 +30,6 @@ arq>=0.26,<1
 # Server MCP peste SSE (ppc_agent_server/mcp/) - expune motorul hibrid catre
 # agenti externi (Claude Desktop, Cursor). SDK-ul oficial Anthropic.
 mcp>=2,<3
+# Cautarea pe web a Researcher-ului (services/researcher.py): DuckDuckGo, fara cheie.
+# (Fostul duckduckgo-search, redenumit ddgs de autori; acelasi DDGS().text().)
+ddgs>=9.16,<10

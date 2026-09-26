@@ -13,6 +13,7 @@ const COUNCIL = [
   "Regina · strategie de brand",
   "CFO · rentabilitate",
   "Tehnician · tracking și viteză",
+  "Researcher · piață",
   "Decizie deterministă",
 ];
 

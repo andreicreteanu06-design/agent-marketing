@@ -272,8 +272,13 @@ def test_chat_reply_is_deliberated_by_the_council_through_hugging_face(
         ("strategist", "llm"),
         ("cfo", "llm"),
         ("technician", "llm"),
+        ("researcher", "template"),
     ]
-    # Patru apeluri: cei trei membri, apoi sinteza - toate catre routerul HF simulat.
+    # Researcher-ul are doar date demonstrative: se vede, marcat, dar nu ajunge la niciun LLM.
+    assert body["opinions"][3]["demo"] is True
+    assert body["market"]["is_demo"] is True
+    assert body["ruling"]["market_context"] is None
+    # Patru apeluri: cei trei membri cu date reale, apoi sinteza - catre routerul HF simulat.
     assert len(hf.requests) == 4
     assert {request.url.host for request in hf.requests} == {"router.huggingface.co"}
     chair = json.loads(hf.requests[-1].content)["messages"]

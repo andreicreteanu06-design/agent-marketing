@@ -16,6 +16,11 @@ Tehnicianului - e determinista. Tot doar citeste; raspunde 200 si fara Hugging F
 ``GET /api/v1/queen/technician`` - raportul Tehnicianului (``services/technician.py``):
 tracking-ul conversiilor si viteza pe mobil, verde/rosu, cu reparatiile. Determinist,
 fara LLM, doar citeste.
+
+``GET /api/v1/queen/market`` - contextul pietei al Researcher-ului
+(``services/researcher.py``): cautarea pe web, reala, pe nisa si orasul clientului,
+plus licitatia si cererea - acestea demonstrative (``is_demo: true``) pana se
+conecteaza surse. Cautarea pe web poate dura cateva secunde (cache pe zi).
 """
 
 from __future__ import annotations
@@ -44,12 +49,14 @@ from ppc_agent_server.services.queen_agent import (
     _utc_now,
 )
 from ppc_agent_server.services.queen_signals import (
+    ClientMarketSignals,
     DbBrandSignals,
     DbFinancialSignals,
     DbTechnicalSignals,
     SearchConsoleIntent,
     SeoIntentSource,
 )
+from ppc_agent_server.services.researcher import MarketDirective, MarketResearcher
 from ppc_agent_server.services.technician import TechnicianDirective, evaluate_technical_health
 from ppc_agent_server.settings import get_server_settings
 
@@ -113,7 +120,10 @@ def chat_with_queen(
     queen = BrandStrategist(DbBrandSignals(session, seo_intent=seo_intent))
     directive = queen.evaluate_brand_alignment(user.client_account_id)
     council = QueenCouncil(
-        DbFinancialSignals(session), technical=DbTechnicalSignals(session), voice=voice
+        DbFinancialSignals(session),
+        technical=DbTechnicalSignals(session),
+        market=ClientMarketSignals(session),
+        voice=voice,
     )
     return council.evaluate_client_query(body.message, directive)
 
@@ -126,3 +136,17 @@ def read_technician_report(
     """Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil, veto si reparatii."""
     signals = DbTechnicalSignals(session).load(user.client_account_id)
     return evaluate_technical_health(user.client_account_id, signals, generated_at=_utc_now())
+
+
+@router.get("/market", response_model=MarketDirective)
+def read_market_context(
+    user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+    seo_intent: Annotated[SeoIntentSource, Depends(get_seo_intent)],
+) -> MarketDirective:
+    """Contextul pietei: cautarea pe web (reala) + licitatia si cererea (demonstrative azi)."""
+    queen = BrandStrategist(DbBrandSignals(session, seo_intent=seo_intent))
+    directive = queen.evaluate_brand_alignment(user.client_account_id)
+    queries = [query for segment in directive.segments for query in segment.sample_queries]
+    researcher = MarketResearcher(ClientMarketSignals(session), clock=_utc_now)
+    return researcher.evaluate_market_context(user.client_account_id, queries)

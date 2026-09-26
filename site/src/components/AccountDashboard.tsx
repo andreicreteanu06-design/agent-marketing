@@ -115,7 +115,7 @@ export function AccountDashboard() {
             <div>
               <p className="text-sm font-semibold text-foreground">Regina, CMO-ul tău</p>
               <p className="text-sm text-foreground-muted">
-                Întreab-o orice despre campanii - răspunde după ce își consultă consiliul (brand, CFO și Tehnician).
+                Întreab-o orice despre campanii - răspunde după ce își consultă consiliul (brand, CFO, Tehnician și Researcher).
               </p>
             </div>
           </div>

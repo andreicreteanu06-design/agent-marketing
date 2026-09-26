@@ -28,9 +28,10 @@ humanizer e aici dublata de garzile deterministe (``check_cmo_message``,
 :func:`ai_tells` doar MASOARA cat de bine tine modelul vocea (jurnal, teste) -
 nu respinge nimic, un tic de stil nu e o halucinatie.
 
-Doua voci, aceleasi interdictii: :data:`CONSULTANT_VOICE` (Regina, Strategul,
-CFO-ul - directorul de marketing la o cafea) si :data:`ENGINEER_VOICE`
-(Tehnicianul - inginerul care raporteaza un diagnostic, scurt si precis).
+Trei voci, aceleasi interdictii: :data:`CONSULTANT_VOICE` (Regina, Strategul,
+CFO-ul - directorul de marketing la o cafea), :data:`ENGINEER_VOICE`
+(Tehnicianul - inginerul care raporteaza un diagnostic, scurt si precis) si
+:data:`ANALYST_VOICE` (Researcher-ul - analistul de piata, pe cifre).
 """
 
 from __future__ import annotations
@@ -146,6 +147,25 @@ ENGINEER_VOICE = (
     "lipsesc, spui ce lipsește.\n"
     "- Diateza activă: spune ce face fiecare componentă și ce trebuie verificat întâi, nu "
     "«s-a constatat» sau «este de menționat».\n"
+    f"{_PLAIN_TEXT_RULES}"
+)
+
+#: Vocea Researcher-ului (``researcher.py``): analistul de intelligence comercial.
+#: Aceleasi interdictii, alt vocabular: cota de piata, miscarile competitorilor,
+#: ferestrele de oportunitate. Tot fara cifre si fara fraze-exemplu despre concurenti:
+#: un model mic ar "vedea" un atac care nu e in date.
+ANALYST_VOICE = (
+    f"{_VOICE_HEADER}"
+    "Scrii ca un analist senior de intelligence comercial, strategul care urmărește piața "
+    "pentru proprietarul afacerii: asertiv, scurt, sprijinit pe cifre. Vorbești în termenii "
+    "pieței: cota de piață și de afișări, mișcările competitorilor, cererea, ferestrele de "
+    "oportunitate.\n"
+    "- Ritm: propoziții scurte, de două până la cinci cuvinte, care dau verdictul, urmate de "
+    "fraza care îl sprijină cu cifra din fapte. Fără structuri simetrice.\n"
+    "- Fiecare afirmație despre piață are cifra ei din fapte. Unde faptele nu au cifra, nu faci "
+    "afirmația. Fără speculații despre intențiile concurenților și fără limbaj de alarmă.\n"
+    "- Diateza activă: spune cine mișcă piața și ce face clientul acum, nu «s-a observat» sau "
+    "«este de menționat».\n"
     f"{_PLAIN_TEXT_RULES}"
 )
 

@@ -84,24 +84,28 @@ const CHANNEL_NAME: Record<string, string> = {
 };
 
 /**
- * Pasii deliberarii, in ordinea in care ii face serverul: datele, apoi
- * strategia de brand, CFO-ul si Tehnicianul IN PARALEL, apoi sinteza Reginei. Durata reala
+ * Pasii deliberarii: datele, apoi cei patru membri (pe server IN PARALEL, aici
+ * pe rand, ca sa se vada fiecare), apoi sinteza Reginei. Durata reala
  * nu se stie dinainte (un apel HTTP), deci fazele avanseaza pe un ceas si
  * ultima ramane activa pana vine raspunsul.
  */
 const DELIBERATION_STEPS: { label: string; phase: number }[] = [
   { label: "Datele contului: căutări, reclame, cheltuieli", phase: 0 },
   { label: "Regina citește psihologia clientului ideal", phase: 1 },
-  { label: "Agentul CFO analizează rentabilitatea", phase: 1 },
-  { label: "Tehnicianul verifică tracking-ul și viteza pe mobil", phase: 1 },
-  { label: "Sinteza: ce trece, ce se taie", phase: 2 },
+  { label: "Agentul CFO analizează rentabilitatea", phase: 2 },
+  { label: "Tehnicianul verifică tracking-ul și viteza pe mobil", phase: 3 },
+  { label: "Researcher-ul citește piața și concurența", phase: 4 },
+  { label: "Sinteza: ce trece, ce se taie", phase: 5 },
 ];
 const DELIBERATION_HEADLINES = [
   "Regina își convoacă consiliul…",
-  "Agentul CFO analizează rentabilitatea…",
-  "Regina taie ideile neprofitabile și formulează răspunsul…",
+  "Regina citește psihologia clientului…",
+  "CFO-ul calculează rentabilitatea…",
+  "Tehnicianul verifică site-ul și tracking-ul…",
+  "Researcher-ul scanează piața…",
+  "Regina taie ideile proaste și formulează răspunsul…",
 ];
-const PHASE_DELAYS_MS = [900, 3200];
+const PHASE_DELAYS_MS = [700, 1500, 2300, 3100, 3900];
 
 function time(iso: string): string {
   const date = new Date(iso);
@@ -378,18 +382,43 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
           <div
             key={opinion.member}
             className={cn(
-              "rounded-xl border border-border-subtle bg-background/60 p-3.5",
-              opinion.member === "technician" && "md:col-span-2"
+              "rounded-xl border bg-background/60 p-3.5",
+              opinion.demo ? "border-dashed border-border-strong" : "border-border-subtle",
+              (opinion.member === "technician" || opinion.member === "researcher") &&
+                "md:col-span-2"
             )}
           >
-            <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
-              {opinion.title}
-            </p>
-            <p className="mt-2 text-[13px] leading-relaxed text-foreground/90">{opinion.opinion}</p>
-            {opinion.source === "template" && (
-              <p className="mt-2 text-[11px] text-foreground-muted" title={opinion.fallback_reason ?? undefined}>
-                Poziție deterministă, din datele contului
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+                {opinion.title}
               </p>
+              {opinion.demo && <Badge variant="warning">Demonstrativ</Badge>}
+            </div>
+            <p
+              className={cn(
+                "mt-2 text-[13px] leading-relaxed",
+                opinion.demo ? "text-foreground/70" : "text-foreground/90"
+              )}
+            >
+              {opinion.opinion}
+            </p>
+            {opinion.member === "researcher" && reply.market?.web_status === "ok" && (
+              <p className="mt-2 text-[11px] text-foreground-muted">
+                Căutat pe web: «{reply.market.niche}», {reply.market.location} · surse:{" "}
+                {reply.market.web_findings.map((finding) => finding.source).join(" · ")}
+              </p>
+            )}
+            {opinion.demo ? (
+              <p className="mt-2 text-[11px] text-foreground-muted" title={opinion.fallback_reason ?? undefined}>
+                Date demonstrative, nu cifrele pieței tale: nu intră în decizie până nu conectăm surse
+                reale de piață.
+              </p>
+            ) : (
+              opinion.source === "template" && (
+                <p className="mt-2 text-[11px] text-foreground-muted" title={opinion.fallback_reason ?? undefined}>
+                  Poziție deterministă, din datele contului
+                </p>
+              )
             )}
           </div>
         ))}
@@ -400,6 +429,12 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
           Decizia consiliului
         </p>
         <p className="mt-1.5 text-[13px] leading-relaxed text-foreground">{ruling.decision}</p>
+        {ruling.market_context && (
+          <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/80">
+            <span className="text-foreground-muted">Contextul pieței: </span>
+            {ruling.market_context}
+          </p>
+        )}
       </div>
 
       {ruling.approved.length > 0 && (
@@ -517,7 +552,8 @@ function QueenIntro() {
           <p>
             Sunt Regina, CMO-ul tău. Nu îți dau sfaturi generice: fiecare întrebare trece prin
             consiliul meu - propria analiză de brand, pe clientul tău ideal, CFO-ul, pe cifrele
-            campaniilor tale, și Tehnicianul, pe tracking și viteza site-ului pe mobil.
+            campaniilor tale, Tehnicianul, pe tracking și viteza site-ului pe mobil, și
+            Researcher-ul, pe piață și concurență.
           </p>
           <p className="mt-2 text-foreground-muted">
             Ideile care nu se susțin financiar se taie înainte să ajungă la tine. Dacă tracking-ul

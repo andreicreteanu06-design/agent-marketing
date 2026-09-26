@@ -313,12 +313,14 @@ export type FinancialStatus = "profitable" | "unprofitable" | "no_benchmark" | "
 export type MessageSource = "llm" | "template";
 
 export interface CouncilOpinion {
-  member: "strategist" | "cfo" | "technician";
+  member: "strategist" | "cfo" | "technician" | "researcher";
   title: string;
   opinion: string;
   source: MessageSource;
   model: string | null;
   fallback_reason: string | null;
+  /** Pozitie pe date demonstrative: se arata marcata, nu intra in decizie. */
+  demo?: boolean;
 }
 
 export interface CouncilRuling {
@@ -336,6 +338,8 @@ export interface CouncilRuling {
   veto: string | null;
   /** Ideile care ar fi trecut de brand si de CFO, oprite de veto-ul Tehnicianului. */
   vetoed: string[];
+  /** Contextul pietei pentru intrebare (Researcher-ul), doar din surse reale. */
+  market_context?: string | null;
 }
 
 /** green = verde, amber = la limita, red = rosu, unknown = fara date (nu se ghiceste). */
@@ -419,6 +423,48 @@ export interface QueenChatReply {
   generated_at: string;
   /** Raportul Tehnicianului; null cand consiliul a deliberat fara el. */
   technical: TechnicianDirective | null;
+  /** Contextul pietei (Researcher-ul); null cand consiliul a deliberat fara el. */
+  market?: MarketDirective | null;
+}
+
+/** Contextul pietei (ppc_agent_server/services/researcher.py). is_demo = ilustratie, nu fapte. */
+export interface MarketDirective {
+  client_account_id: number;
+  source: "live" | "demo";
+  is_demo: boolean;
+  market: string;
+  period_days: number;
+  competitor_activity: {
+    pressure: "rising" | "stable" | "easing" | "unknown";
+    evidence: string;
+    implication: string;
+    cpc_change: number | null;
+    competitors_before: number | null;
+    competitors_now: number | null;
+    client_share_change: number | null;
+    top_mover: string | null;
+  };
+  market_trend: {
+    direction: "growing" | "flat" | "declining" | "unknown";
+    season: "peak" | "rising" | "cooling" | "low" | "normal" | "unknown";
+    change: number | null;
+    year_over_year: number | null;
+    evidence: string;
+    window: string;
+  };
+  social_sentiment: {
+    rising: { theme: string; example: string; growth: number; mentions: number }[];
+    evidence: string;
+  };
+  /** Cautarea reala pe web: nisa si orasul clientului, fragmentele gasite (cu site-ul). */
+  niche: string;
+  location: string;
+  web_status: "ok" | "empty" | "failed" | "off";
+  web_findings: { query: string; title: string; snippet: string; source: string }[];
+  opportunity: string;
+  summary: string;
+  notes: string[];
+  generated_at: string;
 }
 
 /** Limita serverului (ppc_agent_server/services/council.py, MAX_QUESTION_CHARS). */
@@ -426,7 +472,8 @@ export const QUEEN_MAX_QUESTION_CHARS = 1000;
 
 /**
  * O intrebare pentru Regina. Serverul isi consulta consiliul (strategia de brand,
- * CFO-ul si Tehnicianul) inainte sa raspunda - cateva secunde cand vocea LLM e configurata.
+ * CFO-ul, Tehnicianul si Researcher-ul) inainte sa raspunda - cateva secunde cand vocea
+ * LLM e configurata.
  */
 export function askQueen(token: string, message: string): Promise<QueenChatReply> {
   return apiFetch<QueenChatReply>("/api/v1/queen/chat", {
