@@ -7,6 +7,9 @@
 # Slim, fara Playwright (crawler-ul e httpx, cu scut SSRF), fara compilatoare in
 # imaginea finala, torch doar CPU (build-ul implicit de pe PyPI aduce CUDA - cativa
 # GB pe care un server fara GPU nu-i foloseste), utilizator fara privilegii.
+#
+# Exceptia: stadiul "worker" (la final) adauga Playwright + Chromium, DOAR pentru
+# worker-ul ARQ - monitorizarea sintetica a tracking-ului (jobs/synthetic.py).
 
 ARG PYTHON_VERSION=3.13
 
@@ -65,3 +68,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 # --proxy-headers: IP-ul real al clientului (limitarea de login) vine din
 # X-Forwarded-For doar de la proxy-urile din FORWARDED_ALLOW_IPS.
 CMD ["uvicorn", "ppc_agent_server.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+
+# --- 3. worker: acelasi runtime + Chromium, doar aici -----------------------------
+# API-ul si agentul SEO/GEO raman pe "runtime" (fara browser); docker-compose.yml
+# construieste worker-ul cu "target: worker".
+FROM runtime AS worker
+USER root
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY requirements-worker.txt constraints.txt /tmp/worker/
+# --only-shell: Chromium headless, fara browserul complet (cateva sute de MB mai putin).
+RUN pip install --no-cache-dir -c /tmp/worker/constraints.txt -r /tmp/worker/requirements-worker.txt \
+ && playwright install --with-deps --only-shell chromium \
+ && rm -rf /tmp/worker /var/lib/apt/lists/*
+USER app
+CMD ["arq", "ppc_agent_server.jobs.worker.WorkerSettings"]

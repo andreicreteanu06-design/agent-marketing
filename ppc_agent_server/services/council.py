@@ -758,12 +758,15 @@ def _veto_decision(topic: CouncilTopic, technical: TechnicianDirective) -> str |
     """Decizia cand veto-ul Tehnicianului atinge intrebarea; ``None`` cand n-o atinge."""
     reason = technical.veto_reason
     if technical.veto == "money":
-        # Pixelul picat nu opreste vanzarile; un site stricat da. Reclamele se opresc
-        # doar in al doilea caz - clientul vede diferenta in comenzile lui reale.
-        pause = (
-            "Dacă s-au oprit și comenzile reale, problema e pe site: atunci oprim reclamele "
-            "până se repară."
-        )
+        # Un site cazut sau un CTA rupt opresc vanzarile: reclamele se opresc. Un
+        # tracking picat nu - acolo, doar daca s-au oprit si comenzile reale.
+        if technical.veto_code in ("SITE_UNAVAILABLE", "CRITICAL_JOURNEY_BROKEN"):
+            pause = "Oprim reclamele până se repară: fiecare click plătit ajunge într-un drum rupt."
+        else:
+            pause = (
+                "Dacă s-au oprit și comenzile reale, problema e pe site: atunci oprim reclamele "
+                "până se repară."
+            )
         if topic in ("budget", "channel"):
             return (
                 f"Nu acum. {reason} Întâi se repară tracking-ul, apoi judecăm pe cifre reale. "

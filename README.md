@@ -615,29 +615,70 @@ adevarate si daca site-ul poate converti traficul platit:
 | Verificare | Din ce date | Rosu cand |
 |------------|-------------|-----------|
 | Tracking-ul conversiilor | serii zilnice pe 30 de zile: conversiile Google Ads (`SearchTermConversion`, cu click-urile zilei) si comenzile/apelurile din webhook-uri (`ConversionEvent`, pe sursa) | conversiile tac de cel putin 3 zile, desi ritmul de dinainte cerea cel putin 3 (Poisson, ~5%) si click-urile au continuat; sau 300+ click-uri fara nicio conversie |
-| Viteza pe mobil | ultima masuratoare PageSpeed Insights (strategia mobil), facuta noaptea de agentul SEO/GEO si salvata in `SiteSpeedSample` | LCP peste 4 s, CLS peste 0,25, TBT peste 600 ms sau scor sub 50 (pragurile Google); intre praguri: galben |
+| Viteza pe mobil | mediana a 3 rulari PageSpeed Insights (strategia mobil, in paralel), facute noaptea si salvate in `SiteSpeedSample`, plus datele de teren CrUX (p75) cand Google le are | LCP peste 4 s, CLS peste 0,25, TBT peste 600 ms sau scor sub 50 (pragurile Google); intre praguri: galben |
+| Testul sintetic E2E | un Chromium real (Playwright, doar in worker) parcurge site-ul: consimtamant, CTA, evenimentele GA4/Meta din contract - `TrackingEvidence` | site-ul nu da 2xx, CTA-ul lipseste sau nu e interactiv, ori un eveniment din contract nu primeste 2xx de la platforma |
 
 Cand si click-urile au scazut, vina nu e a tracking-ului (reclamele livreaza mai
 putin) - starea ramane necunoscuta, nu rosie. Fara date, starea e `unknown`, nu
 verde. Pixelul Meta si GA4 nu trimit inca serii zilnice in platforma, deci nu se
 "verifica": raportul o spune intr-o nota.
 
-**Veto-ul** e calculat inaintea oricarui LLM: tracking picat -> nicio idee care
-citeste conversiile (buget, canal nou, teste platite, reclame "care pierd",
-cuvinte negative - ar fi luate pe cifre false - si textele noi ale Reginei: un
-test A/B fara conversii masurate n-are castigator); daca s-au oprit si comenzile
-reale, problema e pe site si reclamele se opresc pana la reparatie. Site lent pe
-mobil -> nicio cheltuiala in plus. Excluderile trec. Raspunsul Reginei spune
-veto-ul si prima reparatie, oricare ar fi fost intrebarea.
+**Veto-ul (Smart Veto Engine)** e calculat inaintea oricarui LLM si se sprijina
+DOAR pe dovezi - un fals pozitiv ar opri reclamele unui client sanatos:
+
+| Cod | Cand | Ce opreste |
+|-----|------|------------|
+| `SITE_UNAVAILABLE` | testul sintetic n-a primit 2xx la navigarea initiala | orice decizie pe bani; reclamele se opresc |
+| `CRITICAL_JOURNEY_BROKEN` | CTA-ul din contract lipseste sau nu e interactiv | orice decizie pe bani; reclamele se opresc |
+| `ATTRIBUTION_BROKEN` | un eveniment din contract n-a ajuns la GA4/Meta cu 2xx | orice decizie pe bani (inclusiv textele noi: un test A/B fara conversii n-are castigator); reclamele se opresc doar daca s-au oprit si comenzile reale |
+| `MOBILE_LCP_CRITICAL` | mediana LCP peste 4 s la DOUA verificari la rand | orice cheltuiala in plus |
+
+Tacerea brusca din seriile de conversii, o singura masuratoare lenta, CLS/TBT slab
+sau consimtamantul care a blocat testul raman **avertismente** (`warnings`): se spun,
+nu opresc nimic. Un test E2E mai vechi de 3 zile nu mai sprijina niciun veto.
+Raspunsul Reginei spune veto-ul si prima reparatie, oricare ar fi fost intrebarea.
 
 Vocea lui (`ENGINEER_VOICE` din `humanizer.py`): inginer senior, extrem de scurt -
 diagnosticul, cauza, reparatia - cu aceleasi interdictii anti-AI ca a consultantului.
 Garda consiliului respinge si reparatiile pretinse ("am reparat tag-ul").
 
-Masuratoarea de viteza e un pas al mentenantei de noapte (`speed_check` in
-`run_client_maintenance_job`), doar pentru clientii cu domeniu in Setari.
-`SEOGEO_PAGESPEED_API_KEY` e optionala (fara ea, cota Google e mica, dar ajunge
-pentru o masuratoare pe client pe noapte).
+Masuratoarea de viteza si testul E2E sunt pasi ai mentenantei de noapte
+(`speed_check` si `tracking_contract` in `run_client_maintenance_job`, jobul ARQ per
+client), doar pentru clientii cu domeniu in Setari. `SEOGEO_PAGESPEED_API_KEY` e
+optionala (fara ea, cota Google e mica, dar ajunge pentru 3 rulari pe client pe noapte).
+
+**Monitorizarea sintetica** (`jobs/synthetic.py` + `services/tracking_contract.py`):
+Chromium mobil (390x844, service workers blocati), `domcontentloaded` (nu
+`networkidle`), click pe consimtamant (OneTrust, Cookiebot, Complianz, CookieYes sau
+selectorul clientului), click pe CTA, apoi pana la 8 s de asteptare a evenimentelor.
+`request`/`response`/`requestfailed` prind `*.google-analytics.com/g/collect` (`en`/`_en`,
+`tid`; si loturile POST) si `*.facebook.com/tr` (`ev`, `id`). Un eveniment trece NUMAI
+daca cererea a fost prinsa, e cel din contract si platforma a raspuns 2xx (204 e
+valid); altfel, motivul exact: `NETWORK_FAILURE`, `DATALAYER_MISSING`, `EVENT_MISMATCH`,
+`CONSENT_BLOCKED`. Pachetul de dovezi (`TrackingEvidence`): URL, momentul, statusul
+navigarii, CTA, `ga4_transport_ok`/`meta_transport_ok`, motivul si toate cererile prinse.
+
+Contractul se completeaza din Setari (`PATCH /api/v1/me/site`): `journey_path` (doar o
+cale din site, ca `/contact`), `journey_cta_selector`, `journey_consent_selector`,
+`ga4_expected_events` si `meta_expected_events` (cel mult 5, separate prin virgula).
+Fara evenimente scrise, o platforma conectata (GA4, cont Meta) se testeaza pe
+`page_view` / `PageView`.
+
+Doar worker-ul are browser: stadiul `worker` din `Dockerfile.backend`
+(`requirements-worker.txt` + `playwright install --with-deps --only-shell chromium`);
+API-ul si agentul SEO/GEO raman fara Playwright. Local: `pip install -r
+requirements-worker.txt` si `python -m playwright install --only-shell chromium`.
+
+Scutul SSRF al browserului (site-ul e al clientului, deci neincrezut): URL-ul de start
+se urmeaza intai prin transportul SSRF-safe (fiecare redirect verificat); in Chromium,
+fiecare cerere trece printr-o ruta care refuza IP-urile interne si numele care se
+rezolva intern (fail-closed); numele stivei (`postgres`, `redis`, `api`...) si ale
+metadatelor cloud nu se rezolva deloc (`--host-resolver-rules`); pagina finala se
+verifica si ea. Limita cunoscuta: redirect-urile HTTP din interiorul Chromium nu trec
+prin ruta (Playwright vede doar prima cerere a lantului) - un redirect spre un IP
+intern scris literal ar ajunge la el orb (nu i se pastreaza continutul). Urmatorul pas,
+cand conteaza: un proxy de iesire sau o politica de retea care blocheaza RFC1918 si
+link-local pentru containerul worker.
 
 #### Researcher-ul (CSO): contextul pietei
 

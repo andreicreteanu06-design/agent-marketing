@@ -1,0 +1,7 @@
+# Dependinte DOAR pentru worker-ul ARQ (Dockerfile.backend, stadiul "worker"):
+# monitorizarea sintetica a tracking-ului (ppc_agent_server/jobs/synthetic.py)
+# ruleaza un Chromium real. API-ul si agentul SEO/GEO nu le instaleaza.
+#
+# Instalare locala: pip install -r requirements-worker.txt
+#                  python -m playwright install --only-shell chromium
+playwright>=1.55,<2

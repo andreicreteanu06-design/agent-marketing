@@ -18,7 +18,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from ppc_agent_server.app import create_app
 from ppc_agent_server.auth import create_tenant
 from ppc_agent_server.db import init_db, set_engine
-from ppc_agent_server.jobs import tasks
+from ppc_agent_server.jobs import synthetic, tasks
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
@@ -64,6 +64,19 @@ def _no_pagespeed_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     Testele care verifica masuratoarea isi dau propriul ``measure``.
     """
     monkeypatch.setattr(tasks, "measure_mobile_speed", lambda url: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Testul sintetic de noapte porneste un Chromium - niciodata din alte teste.
+
+    Testele monitorizarii isi dau propriul ``record`` (sau pornesc browserul explicit).
+    """
+
+    async def _unavailable(contract: object) -> None:
+        raise ImportError("fara browser in teste")
+
+    monkeypatch.setattr(synthetic, "record_journey", _unavailable)
 
 
 @pytest.fixture(autouse=True)

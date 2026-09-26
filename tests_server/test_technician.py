@@ -24,6 +24,7 @@ from ppc_agent_server.models import (
     ConversionEventType,
     SearchTermConversion,
     SiteSpeedSample,
+    TrackingEvidence,
 )
 from ppc_agent_server.services.humanizer import ENGINEER_VOICE, ai_tells
 from ppc_agent_server.services.queen_signals import DbTechnicalSignals
@@ -32,6 +33,7 @@ from ppc_agent_server.services.technician import (
     DailyConversions,
     HealthStatus,
     MobileSpeed,
+    SyntheticEvidence,
     TechnicalSignals,
     TechnicianDirective,
     TrackingStream,
@@ -87,9 +89,43 @@ def _speed(
 
 
 def _signals(
-    *streams: TrackingStream, speed: MobileSpeed | None = None, domain: str = "https://autofix.ro"
+    *streams: TrackingStream,
+    speed: MobileSpeed | None = None,
+    domain: str = "https://autofix.ro",
+    previous: MobileSpeed | None = None,
+    evidence: SyntheticEvidence | None = None,
 ) -> TechnicalSignals:
-    return TechnicalSignals(domain=domain, today=TODAY, streams=streams, mobile_speed=speed)
+    return TechnicalSignals(
+        domain=domain,
+        today=TODAY,
+        streams=streams,
+        mobile_speed=speed,
+        previous_mobile_speed=previous,
+        evidence=evidence,
+    )
+
+
+def _evidence(
+    *,
+    status: int | None = 200,
+    cta_ok: bool | None = True,
+    ga4_ok: bool | None = True,
+    meta_ok: bool | None = None,
+    reason: str | None = None,
+    days_ago: int = 1,
+) -> SyntheticEvidence:
+    return SyntheticEvidence(
+        started_at=NOW - timedelta(days=days_ago),
+        url="https://autofix.ro/contact",
+        navigation_status=status,
+        cta_selector="#contact-btn",
+        cta_ok=cta_ok,
+        ga4_ok=ga4_ok,
+        meta_ok=meta_ok,
+        failure_reason=reason,
+        ga4_events=("page_view", "generate_lead"),
+        meta_events=("PageView", "Lead") if meta_ok is not None else (),
+    )
 
 
 def _report(signals: TechnicalSignals) -> TechnicianDirective:
@@ -100,12 +136,16 @@ def _report(signals: TechnicalSignals) -> TechnicianDirective:
 BROKEN_TAG = _series("google_ads", [2.0] * 21 + [0.0] * 4, [30] * 25)
 HEALTHY_TAG = _series("google_ads", [2.0] * 25, [30] * 25)
 SLOW = _speed(lcp=4800, tbt=820, score=38)
+#: Verificarea de dinainte, tot peste pragul critic de 4 s.
+SLOW_BEFORE = _speed(lcp=4600, tbt=700, score=41, age_days=8)
+#: Testul E2E: evenimentul GA4 n-a primit 2xx.
+GA4_DOWN = _evidence(ga4_ok=False, reason="NETWORK_FAILURE")
 
 
 # --- tracking-ul -------------------------------------------------------------------------
 
 
-def test_conversions_that_stop_while_clicks_keep_coming_mean_a_broken_tag() -> None:
+def test_conversions_that_stop_are_a_warning_not_a_veto() -> None:
     report = _report(_signals(BROKEN_TAG, speed=_speed()))
 
     [check] = report.tracking
@@ -116,11 +156,10 @@ def test_conversions_that_stop_while_clicks_keep_coming_mean_a_broken_tag() -> N
         "120 de click-uri. Înainte veneau 2 pe zi, deci lipsesc cel puțin 8 conversii."
     )
     assert check.fix is not None and "gtag" in check.fix and "GA4" in check.fix
-    assert (report.tracking_status, report.status, report.veto) == ("red", "red", "money")
-    assert report.veto_reason == (
-        "Tracking-ul e picat pe conversiile Google Ads: orice decizie pe bani s-ar lua pe "
-        "cifre false."
-    )
+    # O euristica nu e o dovada: fara test E2E picat, niciun veto - doar avertisment.
+    assert (report.tracking_status, report.veto, report.veto_code) == ("red", "none", None)
+    assert report.warnings[0].startswith("Conversiile Google Ads: Nicio conversie")
+    assert "Fără veto: doar testul E2E dovedește" in report.warnings[0]
     assert report.recommendations[0] == check.fix
 
 
@@ -212,13 +251,25 @@ def test_mobile_speed_is_judged_on_google_thresholds(
     assert _report(_signals(HEALTHY_TAG, speed=speed)).speed_status == status
 
 
-def test_a_slow_mobile_page_vetoes_extra_spend_with_the_fixes() -> None:
+def test_one_slow_check_is_only_a_warning() -> None:
     report = _report(_signals(HEALTHY_TAG, speed=SLOW))
 
-    assert (report.tracking_status, report.speed_status, report.veto) == ("green", "red", "spend")
+    assert (report.speed_status, report.veto, report.veto_code) == ("red", "none", None)
+    assert any("fără veto: veto-ul cere LCP peste 4 s la două" in w for w in report.warnings)
+
+
+def test_two_consecutive_critical_lcp_checks_veto_extra_spend() -> None:
+    report = _report(_signals(HEALTHY_TAG, speed=SLOW, previous=SLOW_BEFORE))
+
+    assert (report.speed_status, report.veto, report.veto_code) == (
+        "red",
+        "spend",
+        "MOBILE_LCP_CRITICAL",
+    )
     assert report.veto_reason == (
-        "Site-ul e lent pe mobil (LCP 4,8 s, TBT 820 ms, scor 38 din 100): trafic plătit în plus "
-        "ar plăti click-uri care pleacă înainte să vadă oferta."
+        "Site-ul e lent pe mobil la două verificări la rând (LCP 4,6 s, apoi 4,8 s; pragul "
+        "critic e 4 s): trafic plătit în plus ar plăti click-uri care pleacă înainte să vadă "
+        "oferta."
     )
     assert report.mobile_speed.evidence == (
         "Pe mobil, pagina e lentă: LCP 4,8 s (bun până la 2,5 s, slab peste 4 s), TBT 820 ms "
@@ -250,11 +301,61 @@ def test_speed_without_a_fresh_measurement_is_unknown_and_says_why() -> None:
     assert pending.status == "unknown"
 
 
-def test_broken_tracking_outranks_a_slow_site() -> None:
-    report = _report(_signals(BROKEN_TAG, speed=SLOW))
+def test_a_critical_lcp_below_the_threshold_once_does_not_veto() -> None:
+    fast_before = _speed(lcp=3900, age_days=8)
 
-    assert report.veto == "money"
-    assert "gtag" in report.recommendations[0]
+    report = _report(_signals(HEALTHY_TAG, speed=SLOW, previous=fast_before))
+
+    assert report.veto_code is None
+
+
+@pytest.mark.parametrize(
+    ("evidence", "code"),
+    [
+        (_evidence(status=503, reason="SITE_UNAVAILABLE"), "SITE_UNAVAILABLE"),
+        (_evidence(status=None, reason="SITE_UNAVAILABLE"), "SITE_UNAVAILABLE"),
+        (_evidence(cta_ok=False, reason="CRITICAL_JOURNEY_BROKEN"), "CRITICAL_JOURNEY_BROKEN"),
+        (GA4_DOWN, "ATTRIBUTION_BROKEN"),
+        (_evidence(meta_ok=False, reason="DATALAYER_MISSING"), "ATTRIBUTION_BROKEN"),
+    ],
+)
+def test_only_proven_failures_veto_money_decisions(
+    evidence: SyntheticEvidence, code: str
+) -> None:
+    report = _report(_signals(HEALTHY_TAG, speed=_speed(), evidence=evidence))
+
+    assert (report.veto, report.veto_code) == ("money", code)
+    assert report.tracking_status == "red"
+
+
+def test_a_passed_or_consent_blocked_or_stale_test_does_not_veto() -> None:
+    passed = _report(_signals(BROKEN_TAG, evidence=_evidence()))
+    blocked = _evidence(ga4_ok=None, reason="CONSENT_BLOCKED")
+    consent = _report(_signals(HEALTHY_TAG, evidence=blocked))
+    stale = _report(_signals(HEALTHY_TAG, evidence=_evidence(ga4_ok=False, days_ago=10)))
+
+    # Dovada E2E bate euristica: tracking-ul e verde, desi seriile arata o tacere.
+    assert (passed.veto, passed.tracking_status) == ("none", "green")
+    assert passed.synthetic == (
+        "Test E2E (24 septembrie): trecut. Evenimentele din contract au ajuns cu 2xx."
+    )
+    assert (consent.veto, consent.tracking_status) == ("none", "unknown")
+    assert any("Consimțământul a blocat testul E2E" in w for w in consent.warnings)
+    assert (stale.veto, stale.synthetic) == ("none", None)
+    assert any("mai vechi de 3 zile" in w for w in stale.warnings)
+
+
+def test_a_broken_journey_outranks_a_slow_site() -> None:
+    evidence = _evidence(cta_ok=False, reason="CRITICAL_JOURNEY_BROKEN")
+
+    report = _report(_signals(HEALTHY_TAG, speed=SLOW, previous=SLOW_BEFORE, evidence=evidence))
+
+    assert report.veto_code == "CRITICAL_JOURNEY_BROKEN"
+    assert report.veto_reason == (
+        "Drumul spre conversie e rupt: butonul «#contact-btn» lipsește sau nu se poate apăsa "
+        "pe https://autofix.ro/contact (test sintetic, 24 septembrie)."
+    )
+    assert report.recommendations[0].startswith("Verifică butonul «#contact-btn»")
     assert [fix.split(":")[0] for fix in report.recommendations[1:]] == ["LCP", "TBT"]
 
 
@@ -262,18 +363,23 @@ def test_broken_tracking_outranks_a_slow_site() -> None:
 
 
 def test_the_position_is_a_short_engineering_diagnosis() -> None:
-    summary = _report(_signals(BROKEN_TAG, speed=SLOW)).summary
+    summary = _report(_signals(BROKEN_TAG, speed=SLOW, evidence=GA4_DOWN)).summary
 
-    assert summary.startswith("Tracking: roșu. Nicio conversie în ultimele 4 zile")
+    assert summary.startswith(
+        "Tracking: roșu. Test E2E (24 septembrie): NETWORK_FAILURE pe https://autofix.ro/contact."
+    )
     assert "Mobil: roșu. Pe mobil, pagina e lentă" in summary
     assert "Veto pe orice decizie de buget până se repară tracking-ul." in summary
-    assert "Întâi: verifică tag-ul de conversie Google" in summary
+    assert "Întâi: verifică tag-urile GA4 pe https://autofix.ro/contact" in summary
 
 
 def test_no_deterministic_technician_text_sounds_generated() -> None:
     texts: list[str] = []
     for signals in (
         _signals(BROKEN_TAG, speed=SLOW),
+        _signals(BROKEN_TAG, speed=SLOW, previous=SLOW_BEFORE, evidence=GA4_DOWN),
+        _signals(HEALTHY_TAG, evidence=_evidence(status=503, reason="SITE_UNAVAILABLE")),
+        _signals(HEALTHY_TAG, evidence=_evidence(cta_ok=False)),
         _signals(HEALTHY_TAG, speed=_speed(lcp=3200, cls=0.2)),
         _signals(_series("gomag", [3.0] * 20 + [0.0] * 3), domain=""),
         _signals(),
@@ -313,13 +419,14 @@ def test_the_technician_prompt_speaks_like_a_senior_engineer_after_the_factual_r
 
 
 def test_broken_tracking_vetoes_every_money_decision_in_the_council() -> None:
-    reply = _council(technical=_signals(BROKEN_TAG, speed=_speed())).evaluate_client_query(
+    technical = _signals(BROKEN_TAG, speed=_speed(), evidence=GA4_DOWN)
+    reply = _council(technical=technical).evaluate_client_query(
         "Merită să cresc bugetul?", _directive()
     )
 
     ruling = reply.ruling
     assert reply.technical is not None
-    assert ruling.decision.startswith("Nu acum. Tracking-ul e picat pe conversiile Google Ads")
+    assert ruling.decision.startswith("Nu acum. Tracking-ul e picat pe GA4")
     assert ruling.veto == reply.technical.veto_reason
     assert any(idea.startswith("creșterea treptată") for idea in ruling.vetoed)
     assert not any(idea.startswith("creșterea") for idea in ruling.approved)
@@ -328,18 +435,30 @@ def test_broken_tracking_vetoes_every_money_decision_in_the_council() -> None:
     assert not any(idea.startswith("rescrierea") for idea in ruling.approved)
     assert "Propun rescrierea" not in reply.reply
     assert "atunci oprim reclamele până se repară" in ruling.decision
-    assert "Reparația de făcut întâi: verifică tag-ul de conversie Google" in reply.reply
+    assert "Reparația de făcut întâi: verifică tag-urile GA4" in reply.reply
     assert [opinion.member for opinion in reply.opinions] == ["strategist", "cfo", "technician"]
     assert reply.opinions[2].opinion == reply.technical.summary
 
 
+def test_a_broken_site_pauses_the_ads_outright() -> None:
+    technical = _signals(HEALTHY_TAG, evidence=_evidence(status=503, reason="SITE_UNAVAILABLE"))
+    reply = _council(technical=technical).evaluate_client_query(
+        "Merită să cresc bugetul?", _directive()
+    )
+
+    assert reply.ruling.decision.startswith("Nu acum. Site-ul nu e disponibil")
+    assert "Oprim reclamele până se repară" in reply.ruling.decision
+    assert "Dacă s-au oprit și comenzile reale" not in reply.ruling.decision
+
+
 def test_a_slow_mobile_site_blocks_extra_spend_but_not_rewrites() -> None:
-    reply = _council(technical=_signals(HEALTHY_TAG, speed=SLOW)).evaluate_client_query(
+    technical = _signals(HEALTHY_TAG, speed=SLOW, previous=SLOW_BEFORE)
+    reply = _council(technical=technical).evaluate_client_query(
         "Merită să cresc bugetul?", _directive()
     )
 
     ruling = reply.ruling
-    assert ruling.decision.startswith("Nu acum. Site-ul e lent pe mobil (LCP 4,8 s")
+    assert ruling.decision.startswith("Nu acum. Site-ul e lent pe mobil la două verificări")
     assert ruling.decision.endswith("Întâi viteza pe mobil, apoi bugetul.")
     # Reparatia incepe cu un acronim: ramane "LCP", nu devine "lCP".
     assert "Reparația de făcut întâi: LCP: comprimă imaginea principală" in reply.reply
@@ -348,7 +467,7 @@ def test_a_slow_mobile_site_blocks_extra_spend_but_not_rewrites() -> None:
 
 
 def test_new_ad_copy_waits_for_the_tracking_fix() -> None:
-    reply = _council(technical=_signals(BROKEN_TAG)).evaluate_client_query(
+    reply = _council(technical=_signals(HEALTHY_TAG, evidence=GA4_DOWN)).evaluate_client_query(
         "Ce texte noi să pun în reclame?", _directive()
     )
 
@@ -357,12 +476,12 @@ def test_new_ad_copy_waits_for_the_tracking_fix() -> None:
 
 
 def test_the_veto_is_told_even_when_the_question_is_about_the_audience() -> None:
-    reply = _council(technical=_signals(BROKEN_TAG)).evaluate_client_query(
+    reply = _council(technical=_signals(HEALTHY_TAG, evidence=GA4_DOWN)).evaluate_client_query(
         "Cine e clientul meu ideal?", _directive()
     )
 
     assert reply.ruling.decision.startswith("Publicul pe care merită să construiești")
-    assert "Tehnicianul a pus veto: tracking-ul e picat pe conversiile Google Ads" in reply.reply
+    assert "Tehnicianul a pus veto: tracking-ul e picat pe GA4" in reply.reply
 
 
 def test_without_a_veto_the_council_rules_as_before() -> None:
@@ -383,7 +502,8 @@ def test_without_a_veto_the_council_rules_as_before() -> None:
 
 def test_the_technician_speaks_in_the_council_with_only_technical_facts() -> None:
     voice = _CouncilVoice()
-    reply = _council(voice=voice, technical=_signals(BROKEN_TAG)).evaluate_client_query(
+    technical = _signals(BROKEN_TAG, evidence=GA4_DOWN)
+    reply = _council(voice=voice, technical=technical).evaluate_client_query(
         "Merită să cresc bugetul?", _directive()
     )
 
@@ -612,9 +732,28 @@ def _seed_stopped_conversions(session: Session, account_id: int) -> None:
     session.commit()
 
 
+def _seed_failed_e2e(session: Session, account_id: int) -> None:
+    """Testul sintetic de azi-noapte: generate_lead n-a primit 2xx de la GA4."""
+    session.add(
+        TrackingEvidence(
+            client_account_id=account_id,
+            url="https://autofix.ro/contact",
+            started_at=datetime.now(tz=UTC) - timedelta(hours=6),
+            navigation_status=200,
+            cta_selector="#contact-btn",
+            cta_ok=True,
+            ga4_transport_ok=False,
+            failure_reason="NETWORK_FAILURE",
+            evidence={"verdict": {"ga4": {"expected_events": ["page_view", "generate_lead"]}}},
+        )
+    )
+    session.commit()
+
+
 @pytest.fixture
 def broken(signed_in: Signed, session: Session) -> Iterator[Signed]:  # noqa: F811
     _seed_stopped_conversions(session, signed_in[3])
+    _seed_failed_e2e(session, signed_in[3])
     yield signed_in
 
 
@@ -632,7 +771,8 @@ def test_the_technician_report_route(broken: Signed) -> None:
         "money",
     )
     assert body["tracking"][0]["finding"] == "conversions_stopped"
-    assert body["summary"].startswith("Tracking: roșu.")
+    assert body["veto_code"] == "ATTRIBUTION_BROKEN"
+    assert body["summary"].startswith("Tracking: roșu. Test E2E")
     assert client.get("/api/v1/queen/technician").status_code == 401
 
 
@@ -646,7 +786,7 @@ def test_the_chat_carries_the_technician_veto(broken: Signed) -> None:
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["technical"]["veto"] == "money"
-    assert body["ruling"]["veto"].startswith("Tracking-ul e picat pe conversiile Google Ads")
+    assert body["ruling"]["veto"].startswith("Tracking-ul e picat pe GA4")
     assert body["reply"].startswith("Nu acum. Tracking-ul e picat")
     assert [opinion["member"] for opinion in body["opinions"]] == [
         "strategist",

@@ -49,6 +49,7 @@ from ppc_agent_server.models import (
     ProposedChange,
     SearchTermConversion,
     SiteSpeedSample,
+    TrackingEvidence,
 )
 from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
 from ppc_agent_server.services.market_demo import demo_market_signals
@@ -62,6 +63,7 @@ from ppc_agent_server.services.researcher import (
 from ppc_agent_server.services.technician import (
     DailyConversions,
     MobileSpeed,
+    SyntheticEvidence,
     TechnicalSignals,
     TrackingStream,
 )
@@ -442,35 +444,66 @@ class DbTechnicalSignals:
                 )
             )
 
-        sample = self._session.exec(
+        # Ultimele doua masuratori: veto-ul pe LCP cere doua critice la rand.
+        samples = self._session.exec(
             select(SiteSpeedSample)
             .where(SiteSpeedSample.client_account_id == client_account_id)
             .order_by(SiteSpeedSample.measured_at.desc())  # type: ignore[attr-defined]
+            .limit(2)
+        ).all()
+        speeds = [_mobile_speed(sample) for sample in samples]
+        latest = self._session.exec(
+            select(TrackingEvidence)
+            .where(TrackingEvidence.client_account_id == client_account_id)
+            .order_by(TrackingEvidence.started_at.desc())  # type: ignore[attr-defined]
         ).first()
         notes: list[str] = []
-        if account.meta_ad_account_id:
+        if account.meta_ad_account_id and (latest is None or latest.meta_transport_ok is None):
             notes.append(
-                "Pixelul Meta nu trimite încă o serie zilnică de conversii în platformă: nu îl "
-                "pot verifica direct, doar prin comenzile și apelurile atribuite reclamelor."
+                "Pixelul Meta nu e încă în testul E2E: nu îl pot verifica direct, doar prin "
+                "comenzile și apelurile atribuite reclamelor."
             )
         return TechnicalSignals(
             domain=account.target_domain.strip(),
             today=today,
             streams=streams,
-            mobile_speed=(
-                MobileSpeed(
-                    url=sample.url,
-                    measured_at=sample.measured_at,
-                    performance_score=sample.performance_score,
-                    lcp_ms=sample.lcp_ms,
-                    cls=sample.layout_shift,
-                    tbt_ms=sample.tbt_ms,
-                )
-                if sample is not None
-                else None
-            ),
+            mobile_speed=speeds[0] if speeds else None,
+            previous_mobile_speed=speeds[1] if len(speeds) > 1 else None,
+            evidence=_synthetic_evidence(latest) if latest is not None else None,
             notes=notes,
         )
+
+
+def _mobile_speed(sample: SiteSpeedSample) -> MobileSpeed:
+    return MobileSpeed(
+        url=sample.url,
+        measured_at=sample.measured_at,
+        performance_score=sample.performance_score,
+        lcp_ms=sample.lcp_ms,
+        cls=sample.layout_shift,
+        tbt_ms=sample.tbt_ms,
+        field_lcp_ms=sample.field_lcp_ms,
+    )
+
+
+def _synthetic_evidence(row: TrackingEvidence) -> SyntheticEvidence:
+    verdict = row.evidence.get("verdict") or {}
+
+    def _expected(platform: str) -> tuple[str, ...]:
+        return tuple((verdict.get(platform) or {}).get("expected_events") or ())
+
+    return SyntheticEvidence(
+        started_at=row.started_at,
+        url=row.url,
+        navigation_status=row.navigation_status,
+        cta_selector=row.cta_selector,
+        cta_ok=row.cta_ok,
+        ga4_ok=row.ga4_transport_ok,
+        meta_ok=row.meta_transport_ok,
+        failure_reason=row.failure_reason,
+        ga4_events=_expected("ga4"),
+        meta_events=_expected("meta"),
+    )
 
 
 class ClientMarketSignals:

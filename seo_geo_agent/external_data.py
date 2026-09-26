@@ -85,6 +85,26 @@ def _rounded(audits: dict[str, Any], key: str, *, digits: int = 0) -> float | No
     return round(float(value), digits) if digits else float(round(value))
 
 
+def _field_data(payload: dict[str, Any]) -> dict[str, float | None]:
+    """Datele de teren CrUX (utilizatori reali, percentila 75), cand Google le are.
+
+    ``loadingExperience`` lipseste pentru site-urile cu trafic mic. CLS vine din CrUX
+    inmultit cu 100 (``10`` = ``0.10``).
+    """
+    metrics = (payload.get("loadingExperience") or {}).get("metrics") or {}
+
+    def _p75(key: str) -> float | None:
+        value = (metrics.get(key) or {}).get("percentile")
+        return float(value) if isinstance(value, int | float) else None
+
+    cls = _p75("CUMULATIVE_LAYOUT_SHIFT_SCORE")
+    return {
+        "field_lcp_ms": _p75("LARGEST_CONTENTFUL_PAINT_MS"),
+        "field_cls": round(cls / 100, 3) if cls is not None else None,
+        "field_inp_ms": _p75("INTERACTION_TO_NEXT_PAINT"),
+    }
+
+
 async def fetch_pagespeed_insights(
     url: str,
     *,
@@ -103,7 +123,8 @@ async def fetch_pagespeed_insights(
     Cheile ``largest_contentful_paint``/``cumulative_layout_shift``/
     ``total_blocking_time`` sunt textul afișat de Google ("2,9 s"); ``lcp_ms``,
     ``cls`` și ``tbt_ms`` sunt aceleași metrici ca numere (``None`` când
-    lipsesc) - le folosește Tehnicianul serverului PPC pentru praguri.
+    lipsesc) - le folosește Tehnicianul serverului PPC pentru praguri; ``field_*`` sunt
+    datele de teren CrUX (p75), ``None`` când Google nu le are.
     """
     params: dict[str, str] = {"url": url, "strategy": strategy, "category": "performance"}
     if api_key:
@@ -139,6 +160,7 @@ async def fetch_pagespeed_insights(
             "lcp_ms": _rounded(audits, "largest-contentful-paint"),
             "cls": _rounded(audits, "cumulative-layout-shift", digits=3),
             "tbt_ms": _rounded(audits, "total-blocking-time"),
+            **_field_data(payload),
         }
     except (KeyError, TypeError) as exc:
         logger.warning("fetch_pagespeed_insights: răspuns neașteptat pentru %s: %s", url, exc)

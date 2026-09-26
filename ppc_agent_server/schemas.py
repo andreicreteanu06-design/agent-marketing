@@ -279,6 +279,10 @@ class ClientCredentialsUpdateResponse(BaseModel):
 _HOSTNAME = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+")
 
 
+#: Numele unui eveniment GA4/Meta: litere, cifre si "_" (ca in platforme).
+_EVENT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}")
+
+
 class SiteSettingsUpdate(BaseModel):
     """Corpul cererii ``PATCH /api/v1/me/site`` - site-ul clientului, din Setari.
 
@@ -316,6 +320,47 @@ class SiteSettingsUpdate(BaseModel):
     @classmethod
     def _strip(cls, value: str | None) -> str | None:
         return None if value is None else value.strip()
+
+    # Contractul testului sintetic de tracking (jobs/synthetic.py). Selectorii si
+    # evenimentele ajung intr-un browser: se valideaza strict, un sir gol sterge.
+    journey_path: str | None = Field(default=None, max_length=300)
+    journey_cta_selector: str | None = Field(default=None, max_length=200)
+    journey_consent_selector: str | None = Field(default=None, max_length=200)
+    ga4_expected_events: str | None = Field(default=None, max_length=200)
+    meta_expected_events: str | None = Field(default=None, max_length=200)
+
+    @field_validator("journey_path")
+    @classmethod
+    def _same_site_path(cls, value: str | None) -> str | None:
+        # Doar o cale pe site-ul clientului: browserul nu primeste alt host de aici.
+        if value is None or not value.strip():
+            return None if value is None else ""
+        path = value.strip()
+        if not path.startswith("/") or path.startswith("//") or any(c.isspace() for c in path):
+            raise ValueError("Pagina testată trebuie să fie o cale din site, ca «/contact».")
+        return path
+
+    @field_validator("journey_cta_selector", "journey_consent_selector")
+    @classmethod
+    def _one_line_selector(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if len(value.splitlines()) > 1:
+            raise ValueError("Selectorul trebuie să fie pe un singur rând, ca «#contact-btn».")
+        return value.strip()
+
+    @field_validator("ga4_expected_events", "meta_expected_events")
+    @classmethod
+    def _event_names(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        events = [part.strip() for part in value.split(",") if part.strip()]
+        if len(events) > 5 or not all(_EVENT_NAME.fullmatch(event) for event in events):
+            raise ValueError(
+                "Evenimentele: cel mult 5 nume, separate prin virgulă, ca "
+                "«page_view, generate_lead»."
+            )
+        return ", ".join(events)
 
 
 # --- Integrari Google (Search Console, Analytics) ---

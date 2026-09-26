@@ -18,11 +18,19 @@ adevarate si daca site-ul poate converti traficul platit:
    sunt ale Google: LCP bun pana la 2,5 s, slab peste 4 s; CLS 0,1 si 0,25; TBT
    (proxy-ul de laborator pentru INP) 200 si 600 ms; scorul 90 si 50.
 
-Veto-ul (:data:`VetoScope`): tracking picat -> ``money``, nicio decizie care
-citeste conversiile (buget, canal nou, teste platite, reclame "care pierd",
-cuvinte negative) - s-ar lua pe cifre false. Site lent pe mobil -> ``spend``,
-nicio cheltuiala in plus (buget, canal nou, teste platite): ar plati click-uri
-care pleaca inainte sa vada oferta. Rescrierile si excluderile trec oricum.
+Veto-ul (Smart Veto Engine) se sprijina DOAR pe dovezi, nu pe euristici - un
+fals pozitiv ar opri reclamele unui client sanatos. Se declanseaza numai pentru:
+
+- ``SITE_UNAVAILABLE``: testul sintetic (Playwright, ``jobs/synthetic.py``) n-a
+  primit 2xx la navigarea initiala;
+- ``CRITICAL_JOURNEY_BROKEN``: CTA-ul din contract lipseste sau nu e interactiv;
+- ``ATTRIBUTION_BROKEN``: evenimentele din contract n-au ajuns la GA4/Meta cu 2xx;
+- ``MOBILE_LCP_CRITICAL``: mediana LCP de laborator peste 4 s la DOUA verificari
+  consecutive (una singura = avertisment).
+
+Primele trei -> ``money`` (nicio decizie pe bani), ultimul -> ``spend`` (nicio
+cheltuiala in plus). Seriile de conversii de mai sus (tacerea brusca) si metricile
+slabe izolate raman AVERTISMENTE: se spun, dar nu opresc nimic.
 
 Fara aleator si fara LLM: aceleasi date dau acelasi raport, iar fiecare verdict
 isi arata dovada in cifre. Fara date, starea e ``unknown`` - nu se ghiceste.
@@ -54,6 +62,9 @@ SpeedMetricKey = Literal["lcp", "cls", "tbt", "performance_score"]
 #: ``money``: nicio decizie pe bani (tracking picat); ``spend``: nicio cheltuiala
 #: in plus (site lent pe mobil); ``none``: fara veto.
 VetoScope = Literal["none", "spend", "money"]
+VetoCode = Literal[
+    "SITE_UNAVAILABLE", "CRITICAL_JOURNEY_BROKEN", "ATTRIBUTION_BROKEN", "MOBILE_LCP_CRITICAL"
+]
 
 #: Atatea zile la rand fara nicio conversie, minim, ca sa vorbim de o oprire.
 SILENCE_MIN_DAYS = 3
@@ -70,6 +81,10 @@ TRAFFIC_KEPT_RATIO = 0.5
 NEVER_CONVERTED_MIN_CLICKS = 300
 #: O masuratoare PageSpeed mai veche de atat nu mai spune cum e site-ul azi.
 SPEED_MAX_AGE_DAYS = 14
+#: Un test sintetic mai vechi de atat nu mai poate sprijini un veto.
+EVIDENCE_MAX_AGE_DAYS = 3
+#: Mediana LCP de laborator peste asta, la doua verificari la rand = veto.
+LCP_CRITICAL_MS = 4000
 
 STATUS_WORDS: dict[HealthStatus, str] = {
     "green": "verde",
@@ -113,6 +128,25 @@ class MobileSpeed:
     lcp_ms: int | None
     cls: float | None
     tbt_ms: int | None
+    #: Date de teren CrUX (p75), cand Google le are.
+    field_lcp_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticEvidence:
+    """Ultimul test sintetic E2E (``TrackingEvidence``): ce s-a dovedit, nu ce s-a ghicit."""
+
+    started_at: datetime
+    url: str
+    navigation_status: int | None
+    cta_selector: str
+    #: ``None`` = nu era in contract / nejudecat.
+    cta_ok: bool | None
+    ga4_ok: bool | None
+    meta_ok: bool | None
+    failure_reason: str | None
+    ga4_events: tuple[str, ...] = ()
+    meta_events: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +160,9 @@ class TechnicalSignals:
     streams: Sequence[TrackingStream]
     mobile_speed: MobileSpeed | None
     notes: Sequence[str] = ()
+    #: Masuratoarea de dinainte - LCP critic cere doua la rand.
+    previous_mobile_speed: MobileSpeed | None = None
+    evidence: SyntheticEvidence | None = None
 
 
 class TechnicalSignalsSource(Protocol):
@@ -185,6 +222,12 @@ class TechnicianDirective(BaseModel):
     mobile_speed: MobileSpeedCheck
     veto: VetoScope
     veto_reason: str | None
+    #: Motivul exact al veto-ului; ``None`` = fara veto.
+    veto_code: VetoCode | None = None
+    #: Ce merita urmarit, dar nu e dovada: fara veto.
+    warnings: list[str] = []
+    #: Rezumatul ultimului test sintetic E2E; ``None`` = n-a rulat sau e prea vechi.
+    synthetic: str | None = None
     #: Pozitia Tehnicianului, in vocea lui (scurta, de inginer).
     summary: str
     #: Reparatiile, cele care ridica veto-ul primele.
@@ -232,6 +275,11 @@ def _day(value: date) -> str:
 def _decimal(value: float, digits: int = 1) -> str:
     """2.14 -> "2,1"; 3.0 -> "3"."""
     return f"{value:.{digits}f}".replace(".", ",").rstrip("0").removesuffix(",")
+
+
+def _capital(text: str) -> str:
+    """Prima litera mare, restul neatins ("conversiile Google Ads" -> "Conversiile Google Ads")."""
+    return text[:1].upper() + text[1:]
 
 
 def _days(count: int) -> str:
@@ -293,7 +341,7 @@ def check_tracking(stream: TrackingStream, *, today: date) -> TrackingCheck:
             return _check(
                 "red",
                 "never_converted",
-                f"{_clicks(clicks).capitalize()} în ultimele {window} și nicio conversie "
+                f"{_capital(_clicks(clicks))} în ultimele {window} și nicio conversie "
                 "înregistrată: ori tag-ul nu e instalat, ori formularul nu trimite.",
                 silent=silent,
             )
@@ -542,6 +590,99 @@ def _join(items: Sequence[str]) -> str:
     return f"{', '.join(items[:-1])} și {items[-1]}"
 
 
+_PLATFORM_NAMES = {"ga4": "GA4", "meta": "Pixelul Meta"}
+_SCOPES: dict[VetoCode, VetoScope] = {
+    "SITE_UNAVAILABLE": "money",
+    "CRITICAL_JOURNEY_BROKEN": "money",
+    "ATTRIBUTION_BROKEN": "money",
+    "MOBILE_LCP_CRITICAL": "spend",
+}
+
+
+def _fresh_evidence(signals: TechnicalSignals) -> SyntheticEvidence | None:
+    evidence = signals.evidence
+    if evidence is None:
+        return None
+    if (signals.today - evidence.started_at.date()).days > EVIDENCE_MAX_AGE_DAYS:
+        return None
+    return evidence
+
+
+def _lcp_critical_twice(signals: TechnicalSignals) -> tuple[int, int] | None:
+    """(LCP-ul de dinainte, cel de acum) cand amandoua sunt critice, altfel ``None``."""
+    latest, previous = signals.mobile_speed, signals.previous_mobile_speed
+    if latest is None or previous is None or latest.lcp_ms is None or previous.lcp_ms is None:
+        return None
+    if (signals.today - latest.measured_at.date()).days > SPEED_MAX_AGE_DAYS:
+        return None
+    if latest.lcp_ms > LCP_CRITICAL_MS and previous.lcp_ms > LCP_CRITICAL_MS:
+        return previous.lcp_ms, latest.lcp_ms
+    return None
+
+
+def _broken_platforms(evidence: SyntheticEvidence) -> list[tuple[str, tuple[str, ...]]]:
+    platforms = (
+        ("ga4", evidence.ga4_ok, evidence.ga4_events),
+        ("meta", evidence.meta_ok, evidence.meta_events),
+    )
+    return [(_PLATFORM_NAMES[key], events) for key, ok, events in platforms if ok is False]
+
+
+def _veto(
+    signals: TechnicalSignals, evidence: SyntheticEvidence | None
+) -> tuple[VetoCode | None, str | None, str | None]:
+    """(codul, motivul pentru client, prima reparatie) - doar pe dovezi."""
+    if evidence is not None:
+        day = _day(evidence.started_at.date())
+        status = evidence.navigation_status
+        if status is None or not 200 <= status < 300:
+            got = f"HTTP {status}" if status is not None else "niciun răspuns"
+            return (
+                "SITE_UNAVAILABLE",
+                f"Site-ul nu e disponibil: testul sintetic din {day} a primit {got} la "
+                f"{evidence.url}. Reclamele trimit clienți plătiți spre o pagină care nu merge.",
+                "Verifică serverul, certificatul și DNS-ul site-ului, apoi pagina "
+                f"{evidence.url} de pe un telefon.",
+            )
+        if evidence.cta_ok is False:
+            return (
+                "CRITICAL_JOURNEY_BROKEN",
+                f"Drumul spre conversie e rupt: butonul «{evidence.cta_selector}» lipsește sau nu "
+                f"se poate apăsa pe {evidence.url} (test sintetic, {day}).",
+                f"Verifică butonul «{evidence.cta_selector}» pe {evidence.url}: dacă designul s-a "
+                "schimbat, actualizează selectorul în Setări; dacă lipsește, repune-l.",
+            )
+        broken = _broken_platforms(evidence)
+        if broken:
+            names = _join([name for name, _ in broken])
+            events = _join([f"«{event}»" for _, found in broken for event in found])
+            return (
+                "ATTRIBUTION_BROKEN",
+                f"Tracking-ul e picat pe {names}: evenimentele {events} n-au ajuns la platformă "
+                f"cu răspuns 2xx (test E2E, {day}). Orice decizie pe bani s-ar lua pe cifre false.",
+                f"Verifică tag-urile {names} pe {evidence.url} (GTM, consimțământ, evenimentele "
+                f"{events}), apoi fă o conversie de test cap-coadă.",
+            )
+    lcp = _lcp_critical_twice(signals)
+    if lcp is not None:
+        before, now = (_metric_value("lcp", value) for value in lcp)
+        return (
+            "MOBILE_LCP_CRITICAL",
+            f"Site-ul e lent pe mobil la două verificări la rând (LCP {before}, apoi {now}; "
+            "pragul critic e 4 s): trafic plătit în plus ar plăti click-uri care pleacă înainte "
+            "să vadă oferta.",
+            None,
+        )
+    return None, None, None
+
+
+def _synthetic_line(evidence: SyntheticEvidence) -> str:
+    day = _day(evidence.started_at.date())
+    if evidence.failure_reason is None:
+        return f"Test E2E ({day}): trecut. Evenimentele din contract au ajuns cu 2xx."
+    return f"Test E2E ({day}): {evidence.failure_reason} pe {evidence.url}."
+
+
 def evaluate_technical_health(
     client_account_id: int, signals: TechnicalSignals, *, generated_at: datetime
 ) -> TechnicianDirective:
@@ -550,26 +691,39 @@ def evaluate_technical_health(
     tracking_status = _tracking_status(tracking)
     speed = check_mobile_speed(signals.mobile_speed, today=signals.today, domain=signals.domain)
     broken = [check for check in tracking if check.status == "red"]
+    evidence = _fresh_evidence(signals)
+    if evidence is not None:
+        # Dovada bate euristica: starea tracking-ului vine din testul E2E.
+        if evidence.failure_reason is None:
+            tracking_status = "green"
+        elif evidence.failure_reason == "CONSENT_BLOCKED":
+            tracking_status = "unknown"
+        else:
+            tracking_status = "red"
 
-    veto: VetoScope = "none"
-    veto_reason: str | None = None
-    if broken:
-        veto = "money"
-        veto_reason = (
-            f"Tracking-ul e picat pe {_join([check.label for check in broken])}: orice decizie "
-            "pe bani s-ar lua pe cifre false."
-        )
-    elif speed.status == "red":
-        veto = "spend"
-        readings = ", ".join(
-            _reading(metric) for metric in speed.metrics if metric.rating == "poor"
-        )
-        veto_reason = (
-            f"Site-ul e lent pe mobil ({readings}): trafic plătit în plus ar plăti click-uri care "
-            "pleacă înainte să vadă oferta."
-        )
+    code, veto_reason, first_fix = _veto(signals, evidence)
+    veto: VetoScope = _SCOPES[code] if code is not None else "none"
 
-    recommendations = [check.fix for check in broken if check.fix]
+    warnings = [
+        f"{_capital(check.label)}: {check.evidence} Fără veto: doar testul E2E dovedește "
+        "tracking-ul stricat."
+        for check in broken
+    ]
+    if speed.status == "red" and code != "MOBILE_LCP_CRITICAL":
+        warnings.append(
+            f"{speed.evidence} Avertisment, fără veto: veto-ul cere LCP peste 4 s la două "
+            "verificări la rând."
+        )
+    if evidence is not None and evidence.failure_reason == "CONSENT_BLOCKED":
+        warnings.append(
+            "Consimțământul a blocat testul E2E: tag-urile n-au putut fi verificate. Adaugă în "
+            "Setări selectorul butonului de acceptare."
+        )
+    if signals.evidence is not None and evidence is None:
+        warnings.append("Ultimul test E2E e mai vechi de 3 zile: nu mai sprijină niciun veto.")
+
+    recommendations = [first_fix] if first_fix else []
+    recommendations.extend(check.fix for check in broken if check.fix)
     if not signals.streams:
         recommendations.append(
             "Conectează o sursă de conversii (contul Google Ads sau webhook-ul magazinului): fără "
@@ -589,6 +743,8 @@ def evaluate_technical_health(
             "trimise prin webhook."
         )
     status = max((tracking_status, speed.status), key=_SEVERITY.__getitem__)
+    if signals.evidence is None:
+        notes.append("Testul sintetic E2E n-a rulat încă: rulează noaptea, în worker.")
     directive = TechnicianDirective(
         client_account_id=client_account_id,
         status=status,
@@ -598,6 +754,9 @@ def evaluate_technical_health(
         mobile_speed=speed,
         veto=veto,
         veto_reason=veto_reason,
+        veto_code=code,
+        warnings=warnings,
+        synthetic=_synthetic_line(evidence) if evidence is not None else None,
         summary="",
         recommendations=recommendations,
         notes=notes,
@@ -609,10 +768,11 @@ def evaluate_technical_health(
 
 # --- vocea (pozitia determinista, faptele, promptul) ----------------------------------
 
-_VETO_LINES: dict[VetoScope, str] = {
-    "money": "Veto pe orice decizie de buget până se repară tracking-ul.",
-    "spend": "Veto pe orice cheltuială în plus până se repară viteza pe mobil.",
-    "none": "",
+_VETO_LINES: dict[VetoCode, str] = {
+    "SITE_UNAVAILABLE": "Veto: site-ul nu răspunde. Nicio decizie pe bani până revine.",
+    "CRITICAL_JOURNEY_BROKEN": "Veto: drumul spre conversie e rupt. Nicio decizie pe bani.",
+    "ATTRIBUTION_BROKEN": "Veto pe orice decizie de buget până se repară tracking-ul.",
+    "MOBILE_LCP_CRITICAL": "Veto pe orice cheltuială în plus până se repară viteza pe mobil.",
 }
 
 
@@ -621,7 +781,9 @@ def technician_position(directive: TechnicianDirective) -> str:
     tracking = directive.tracking
     broken = [check for check in tracking if check.status == "red"]
     word = STATUS_WORDS[directive.tracking_status]
-    if broken:
+    if directive.synthetic is not None:
+        parts = [f"Tracking: {word}. {directive.synthetic}"]
+    elif broken:
         parts = [f"Tracking: {word}.", *(check.evidence for check in broken[:2])]
     elif directive.tracking_status == "green":
         parts = [f"Tracking: {word}. Conversiile ajung."]
@@ -631,8 +793,10 @@ def technician_position(directive: TechnicianDirective) -> str:
         parts = [f"Tracking: {word}. Nicio sursă de conversii conectată."]
     speed = directive.mobile_speed
     parts.append(f"Mobil: {STATUS_WORDS[speed.status]}. {speed.evidence}")
-    if directive.veto != "none":
-        parts.append(_VETO_LINES[directive.veto])
+    if directive.veto_code is not None:
+        parts.append(_VETO_LINES[directive.veto_code])
+    elif directive.warnings:
+        parts.append(f"Avertisment, fără veto: {directive.warnings[0]}")
     if directive.recommendations:
         first = directive.recommendations[0]
         parts.append(f"Întâi: {first if first[1:2].isupper() else first[:1].lower() + first[1:]}")
@@ -646,7 +810,7 @@ def technician_facts(directive: TechnicianDirective) -> str:
         f"{STATUS_WORDS[directive.tracking_status]}."
     ]
     for check in directive.tracking:
-        line = f"{check.label.capitalize()}: {STATUS_WORDS[check.status]}. {check.evidence}"
+        line = f"{_capital(check.label)}: {STATUS_WORDS[check.status]}. {check.evidence}"
         lines.append(line)
     if not directive.tracking:
         lines.append("Nicio sursă de conversii conectată.")
@@ -660,7 +824,10 @@ def technician_facts(directive: TechnicianDirective) -> str:
         f"{metric.label}: {metric.value}; pragul Google: {metric.threshold}."
         for metric in speed.metrics
     )
+    if directive.synthetic is not None:
+        lines.append(directive.synthetic)
     lines.append(f"Veto (obligatoriu): {directive.veto_reason or 'niciunul'}")
+    lines.extend(f"Avertisment (fără veto): {warning}" for warning in directive.warnings)
     lines.extend(f"Reparație: {fix}" for fix in directive.recommendations)
     lines.extend(directive.notes)
     return "\n".join(f"- {line}" for line in lines)

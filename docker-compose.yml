@@ -122,8 +122,15 @@ services:
       redis:
         condition: service_healthy
 
+  # Singurul container cu Chromium (stadiul "worker" din Dockerfile.backend): testele
+  # sintetice de tracking ruleaza aici, niciodata in API.
   worker:
     <<: *backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: worker
+    image: ac-media/worker:latest
     command: ["arq", "ppc_agent_server.jobs.worker.WorkerSettings"]
     environment:
       <<: *backend-env

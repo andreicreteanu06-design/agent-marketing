@@ -49,6 +49,9 @@ def test_pagespeed_returns_numeric_core_web_vitals_next_to_the_display_text() ->
         "lcp_ms": 4830.0,
         "cls": 0.312,
         "tbt_ms": 820.0,
+        "field_lcp_ms": None,
+        "field_cls": None,
+        "field_inp_ms": None,
     }
     [request] = seen
     assert request.url.host == "www.googleapis.com"
@@ -64,3 +67,23 @@ def test_a_missing_metric_is_none_not_zero() -> None:
 
     assert result is not None
     assert (result["lcp_ms"], result["cls"], result["tbt_ms"]) == (None, None, None)
+
+
+def test_crux_field_data_is_read_when_google_has_it() -> None:
+    payload = _lighthouse({})
+    payload["loadingExperience"] = {
+        "metrics": {
+            "LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 3100},
+            "CUMULATIVE_LAYOUT_SHIFT_SCORE": {"percentile": 12},
+            "INTERACTION_TO_NEXT_PAINT": {"percentile": 240},
+        }
+    }
+
+    result = _fetch(payload, [])
+
+    assert result is not None
+    assert (result["field_lcp_ms"], result["field_cls"], result["field_inp_ms"]) == (
+        3100.0,
+        0.12,
+        240.0,
+    )

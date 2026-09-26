@@ -226,6 +226,15 @@ class ClientAccount(SQLModel, table=True):
     # Numele brandului, pentru verificarea GEO de entity salience din audit.
     # Gol = se deduce din domeniu (vezi seo_geo_agent/audit/geo_reporters.py).
     brand_name: str = ""
+    # Contractul de tracking pentru testul sintetic (jobs/synthetic.py): pagina din
+    # site, CTA-ul pe care se da click, butonul de consimtamant (gol = cele uzuale) si
+    # evenimentele asteptate, separate prin virgula (gol = page_view / PageView, cand
+    # platforma e conectata). Se completeaza din Setari (PATCH /api/v1/me/site).
+    journey_path: str = ""
+    journey_cta_selector: str = ""
+    journey_consent_selector: str = ""
+    ga4_expected_events: str = ""
+    meta_expected_events: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
@@ -544,7 +553,38 @@ class SiteSpeedSample(SQLModel, table=True):
     layout_shift: float | None = None
     #: Total Blocking Time, in milisecunde (proxy-ul de laborator pentru INP).
     tbt_ms: int | None = None
+    #: Cate rulari PageSpeed reusite dau mediana de mai sus (se cer 3).
+    runs: int = 1
+    #: Date de teren CrUX (utilizatori reali, percentila 75), cand Google le are.
+    field_lcp_ms: int | None = None
+    field_cls: float | None = None
+    field_inp_ms: int | None = None
     measured_at: datetime = Field(default_factory=_now, index=True)
+
+
+class TrackingEvidence(SQLModel, table=True):
+    """Pachetul de dovezi al unui test sintetic de tracking (Playwright, in worker).
+
+    Scris de ``jobs/synthetic.py``, citit de Tehnician: veto-ul pe atribuire se
+    sprijina pe transportul dovedit (cerere prinsa + eveniment din contract +
+    raspuns 2xx), nu pe prezenta unui script in HTML. ``*_transport_ok`` ``None`` =
+    platforma nu era in contract sau n-a putut fi judecata (consimtamant).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    url: str
+    started_at: datetime = Field(default_factory=_now, index=True)
+    finished_at: datetime = Field(default_factory=_now)
+    navigation_status: int | None = None
+    cta_selector: str = ""
+    cta_ok: bool | None = None
+    ga4_transport_ok: bool | None = None
+    meta_transport_ok: bool | None = None
+    #: Motivul exact al esecului (``tracking_contract.FailureReason``); ``None`` = trecut.
+    failure_reason: str | None = None
+    #: Verdictul complet si cererile prinse (platforma, eveniment, ID, status).
+    evidence: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class WeeklyReport(SQLModel, table=True):
