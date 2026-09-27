@@ -76,6 +76,10 @@ class ChangeStatus(enum.StrEnum):
     REJECTED = "rejected"
     EXECUTED = "executed"
     FAILED = "failed"
+    #: Oprita de consiliu in tura de noapte (veto-ul Tehnicianului, restrictia
+    #: CFO-ului din ``MemoryStream``), inainte sa ajunga la client: nu se aproba si
+    #: nu se executa. Motivul e in ``error_message`` - vezi ``services/council_guard.py``.
+    BLOCKED = "blocked"
 
 
 class AdQueueStatus(enum.StrEnum):
@@ -313,9 +317,10 @@ class ProposedChange(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
     decided_at: datetime | None = None
     decided_by: str | None = None
-    #: De ce a picat executia, cand ``status`` e ``FAILED``. Textul ajunge in
-    #: interfata: omul trebuie sa stie daca reincercarea are sens (token expirat)
-    #: sau nu (resursa nu mai exista pe platforma).
+    #: De ce a picat executia, cand ``status`` e ``FAILED`` - sau de ce a oprit-o
+    #: consiliul, cand e ``BLOCKED``. Textul ajunge in interfata: omul trebuie sa
+    #: stie daca reincercarea are sens (token expirat) sau nu (resursa nu mai exista
+    #: pe platforma, tracking-ul e picat).
     error_message: str | None = None
     #: Ce a intors platforma cand propunerea s-a aplicat - la o lansare, id-urile
     #: obiectelor create. Separat de ``after``, care ramane exact ce s-a aprobat.
@@ -607,6 +612,10 @@ class MemoryStream(SQLModel, table=True):
     observation: str = ""
     #: Ce a decis, scris ca fapta lui ("a taiat ...", "a pus veto ...").
     decision: str
+    #: Decizia, pentru masini: codul veto-ului Tehnicianului (``ATTRIBUTION_BROKEN``...)
+    #: sau felul ideii taiate de CFO (``budget``, ``channel``...). Jobul PPC de noapte
+    #: il citeste (``services/council_guard.py``); ``None`` = doar pentru oameni.
+    code: str | None = None
 
 class WeeklyReport(SQLModel, table=True):
     """Raportul saptamanal al unui client, salvat exact cum l-a servit API-ul.

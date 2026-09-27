@@ -36,7 +36,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 
 import httpx
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from ppc_agent.errors import PpcAgentError
 from ppc_agent_server.hybrid_queries import DEFAULT_WINDOW_DAYS, load_paid_terms, window_start
@@ -610,6 +610,7 @@ class DbMemory:
                 topic=row.topic,
                 decision=row.decision,
                 observation=row.observation,
+                code=row.code,
             )
             for row in rows
         ]
@@ -626,6 +627,27 @@ class DbMemory:
         )
         entries.sort(key=lambda entry: _utc(entry.at), reverse=True)
         return entries[:limit]
+
+    def decisions(self, client_account_id: int, since: datetime) -> list[MemoryEntry]:
+        """Deciziile cu cod (veto, taieturi) de la ``since`` - pentru jobul PPC de noapte."""
+        rows = self._session.exec(
+            select(MemoryStream)
+            .where(MemoryStream.client_account_id == client_account_id)
+            .where(MemoryStream.timestamp >= since)
+            .where(col(MemoryStream.code).is_not(None))
+            .order_by(MemoryStream.timestamp.desc())  # type: ignore[attr-defined]
+        ).all()
+        return [
+            MemoryEntry(
+                at=row.timestamp,
+                role=_role(row.agent_role),
+                topic=row.topic,
+                decision=row.decision,
+                observation=row.observation,
+                code=row.code,
+            )
+            for row in rows
+        ]
 
     def remember(self, client_account_id: int, entries: Sequence[MemoryEntry]) -> None:
         """Scrie intrarile noi; aceeasi decizie a aceluiasi rol, din ultimele 7 zile, se sare."""
@@ -647,6 +669,7 @@ class DbMemory:
                     topic=entry.topic,
                     observation=entry.observation,
                     decision=entry.decision,
+                    code=entry.code,
                 )
             )
         self._session.commit()

@@ -527,6 +527,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `GET /api/v1/proposals/{client_id}` | Modificarile in asteptare (`status=pending`) ale unui client |
 | `POST /api/v1/proposals/{id}/execute` | Poarta HITL (agentie) — `confirm=true` obligatoriu, trece prin `AbsoluteSpendLimiter`; **simulat**, nu atinge nicio platforma |
 | `GET /api/v1/proposals/pending` | Propunerile in asteptare ale clientului autentificat (JWT de client) |
+| `GET /api/v1/proposals/blocked` | Propunerile oprite de consiliu in tura de noapte, cu motivul (`error_message`) |
 | `POST /api/v1/proposals/{id}/approve` | Aproba **si aplica** pe platforma — vezi mai jos ce se aplica efectiv |
 | `POST /api/v1/proposals/{id}/reject` | Respinge; nu atinge nicio platforma |
 | `POST /api/v1/campaigns/propose_launch` | Propune lansarea unei campanii Meta noi; nu creeaza nimic pana la aprobare |
@@ -609,6 +610,20 @@ pretinsa ("am marit bugetul"), nicio cheltuiala promisa, nicio garantie. Un memb
 respins sau picat e inlocuit cu pozitia lui determinista; fara Ollama raspunde
 consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
 niciun LLM nu e apelat - raspunsul spune ce lipseste, nu da sfaturi generice.
+
+**Consiliul in tura de noapte** (`services/council_guard.py`): deciziile din chat se
+aplica in campanii. Jobul de propuneri citeste memoria consiliului (`MemoryStream`,
+ultimele 7 zile, dupa codul deciziei) si raportul Tehnicianului de acum:
+
+| Restrictie | Cand | Ce face jobul de noapte |
+|------------|------|-------------------------|
+| Veto pe bani | Tehnicianul: tracking picat, site cazut, drum de conversie rupt | Opreste (`blocked`) bugetele Thompson si consolidarile Meta - toate pe conversii; opreste lansarile si planurile de buget din asteptare. Negativele (pe intentie) merg mai departe |
+| Bugetul nu creste | CFO-ul a taiat o idee care cere bani, sau site lent pe mobil | Kelly nu mai urca peste `max_daily_spend`: bugetele se reduc proportional; lansarile din asteptare se opresc |
+
+Un veto din memorie se ridica inainte de 7 zile doar pe o dovada de dupa el (testul
+E2E trecut, un LCP bun). Un veto pe care Tehnicianul il vede acum se aplica si fara
+memorie. De aceea viteza si testul E2E ruleaza, noaptea, inaintea propunerilor. Ce se
+opreste ramane in DB, cu motivul, `decided_by="consiliu"`.
 
 **Psihologia cumparatorului** (`services/cognitive.py`, determinist, in
 `BrandStrategyDirective.cognitive_profile`) da argumentului de brand un "de ce":

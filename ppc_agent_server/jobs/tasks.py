@@ -9,13 +9,14 @@ inline (``InlineJobQueue``, Faza E), fie intr-un proces worker ARQ separat
 from __future__ import annotations
 
 import asyncio
+import logging
 import statistics
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select, update
 
 from ppc_agent.alignment.pipeline import run_alignment
 from ppc_agent.config import AppConfig, BudgetConfig, Settings
@@ -35,6 +36,7 @@ from ppc_agent_server.models import (
     AdPerformanceRecord,
     AdQueueItem,
     ChangeOp,
+    ChangeStatus,
     ClientAccount,
     CreativeArtifact,
     Platform,
@@ -42,9 +44,24 @@ from ppc_agent_server.models import (
     SiteSpeedSample,
 )
 from ppc_agent_server.security import decrypt_secret
+from ppc_agent_server.services.council_guard import (
+    COUNCIL_MEMORY_DAYS,
+    DECIDED_BY,
+    MONEY_MODULES,
+    CouncilConstraints,
+    GuardedChange,
+    blocked_message,
+    council_constraints,
+    council_context,
+    guard_changes,
+)
+from ppc_agent_server.services.queen_signals import DbMemory, DbTechnicalSignals
+from ppc_agent_server.services.technician import evaluate_technical_health
 from ppc_agent_server.tracking.pipeline import to_ad_performance_state
 from seo_geo_agent.external_data import fetch_pagespeed_insights
 from seo_geo_agent.settings import get_seo_geo_settings
+
+logger = logging.getLogger("ppc_agent_server.jobs.tasks")
 
 AdPlatform = Literal["google", "tiktok"]
 _MOCK_CUSTOMER_ID = "mock-customer"
@@ -227,6 +244,78 @@ def _to_db_row(client_account_id: int, change: CliProposedChange) -> ProposedCha
     )
 
 
+def _guarded_row(
+    client_account_id: int, guarded: GuardedChange, constraints: CouncilConstraints, now: datetime
+) -> ProposedChange:
+    """Randul DB al unei propuneri trecute prin garda consiliului: ``pending`` sau ``blocked``."""
+    row = _to_db_row(client_account_id, guarded.change)
+    block = constraints.money_veto
+    if guarded.blocked is not None and block is not None:
+        row.status = ChangeStatus.BLOCKED
+        row.decided_at = now
+        row.decided_by = DECIDED_BY
+        row.error_message = guarded.blocked
+        row.before = {**row.before, "council": council_context(block)}
+    return row
+
+
+def _council_constraints(session: Session, client_account_id: int) -> CouncilConstraints:
+    """Restrictiile consiliului in noaptea asta: memoria (7 zile) + Tehnicianul de acum."""
+    now = datetime.now(tz=UTC)
+    memory = DbMemory(session).decisions(
+        client_account_id, now - timedelta(days=COUNCIL_MEMORY_DAYS)
+    )
+    signals = DbTechnicalSignals(session).load(client_account_id)
+    technical = evaluate_technical_health(client_account_id, signals, generated_at=now)
+    return council_constraints(memory, technical, signals, now=now)
+
+
+def _block_pending(
+    session: Session, client_account_id: int, constraints: CouncilConstraints, now: datetime
+) -> int:
+    """Opreste propunerile inca in asteptare pe care restrictiile nu le mai permit.
+
+    Orice restrictie: lansarile de campanii (cheltuiala noua). Veto-ul pe bani: si
+    planurile de buget si consolidarile din noptile trecute, calculate pe conversii.
+    Tranzitia e conditionata (``WHERE status = pending``), ca la aprobare: o propunere
+    aprobata chiar acum de client nu e suprascrisa.
+    """
+    block = constraints.growth_block
+    if block is None:
+        return 0
+    query = select(ProposedChange).where(
+        ProposedChange.client_account_id == client_account_id,
+        ProposedChange.status == ChangeStatus.PENDING,
+    )
+    pending = session.exec(query).all()
+    blocked = 0
+    for proposal in pending:
+        money_based = proposal.source_module in MONEY_MODULES
+        if proposal.op is ChangeOp.CREATE_CAMPAIGN:
+            reason = block
+        elif money_based and constraints.money_veto is not None:
+            reason = constraints.money_veto
+        else:
+            continue
+        result = session.exec(
+            update(ProposedChange)
+            .where(
+                col(ProposedChange.id) == proposal.id,
+                col(ProposedChange.status) == ChangeStatus.PENDING,
+            )
+            .values(
+                status=ChangeStatus.BLOCKED,
+                decided_at=now,
+                decided_by=DECIDED_BY,
+                error_message=blocked_message(reason),
+                before={**proposal.before, "council": council_context(reason)},
+            )
+        )
+        blocked += result.rowcount
+    session.commit()
+    return blocked
+
+
 def _consult_queen(session: Session, client_account_id: int) -> dict[str, Any]:
     """Directiva Reginei, transformata in rescrieri in asteptare.
 
@@ -250,6 +339,11 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
     reclamele care nu vorbesc clientului ideal primesc propuneri de rescriere
     (``UPDATE``), oricat de stabil ar parea CPA-ul lor.
 
+    Dupa Kelly/Thompson, garda consiliului (``services/council_guard.py``): un veto
+    al Tehnicianului sau o taietura a CFO-ului (memoria consiliului, 7 zile, plus
+    raportul tehnic de acum) suprascrie algoritmii. Ce opreste se scrie tot in DB,
+    ca ``blocked``, cu motivul in ``error_message`` - clientul vede de ce.
+
     Nimic nu se executa - propunerile raman ``pending`` pana la o cerere
     explicita ``POST /api/v1/proposals/{id}/execute`` cu ``confirm=true``
     (poarta HITL neschimbata, vezi ``routers/proposals.py``).
@@ -267,6 +361,7 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
         factory = ProviderFactory(config)
 
         brand_alignment = _consult_queen(session, client_account_id)
+        constraints = _council_constraints(session, client_account_id)
 
         ingestion = run_ingestion(factory, account.target_domain, config)
         decision = run_plan(factory, config)
@@ -278,18 +373,39 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
             liquidity=alignment.liquidity_plan,
             kelly=decision.kelly,
         )
+        guarded = guard_changes(changes, constraints, spend_cap=config.budget.max_daily_spend)
+        allowed = [item for item in guarded if item.blocked is None]
 
-        total = sum((change.projected_daily_spend for change in changes), Decimal("0"))
+        total = sum((item.change.projected_daily_spend for item in allowed), Decimal("0"))
         AbsoluteSpendLimiter(decision.kelly.sized_daily_cap).check(total)
 
-        rows = [_to_db_row(client_account_id, change) for change in changes]
+        now = datetime.now(tz=UTC)
+        rows = [_guarded_row(client_account_id, item, constraints, now) for item in guarded]
         session.add_all(rows)
         session.commit()
-        return {
-            "created": len(rows),
+        result: dict[str, Any] = {
+            "created": len(allowed),
             "total_projected_daily_spend": str(total),
             "brand_alignment": brand_alignment,
         }
+        if constraints.active:
+            council = {
+                "note": constraints.note(),
+                "blocked": len(guarded) - len(allowed),
+                "capped": sum(1 for item in guarded if item.capped_from is not None),
+                "blocked_pending": _block_pending(session, client_account_id, constraints, now),
+            }
+            logger.warning(
+                "[Consiliu] client %s: %d propuneri oprite, %d plafonate, %d în așteptare "
+                "oprite. %s",
+                client_account_id,
+                council["blocked"],
+                council["capped"],
+                council["blocked_pending"],
+                council["note"],
+            )
+            result["council"] = council
+        return result
 
 
 def run_fatigue_check_job(*, client_account_id: int) -> dict[str, Any]:
@@ -483,21 +599,23 @@ def run_speed_check_job(
 
 
 def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
-    """Mentenanta de noapte pentru UN client: sincronizare, propuneri, oboseala, viteza, E2E.
+    """Mentenanta de noapte pentru UN client: sincronizare, viteza, E2E, propuneri, oboseala.
 
     Micro-jobul pe care cron-ul ARQ il programeaza pentru fiecare client
     (``jobs/worker.py``), cu timeout-ul lui: un client lent sau o platforma
     care nu raspunde nu mai tine pe loc restul conturilor. Pasii raman izolati
     intre ei - un pas care pica (ex. ``SpendLimitExceeded`` la propose) isi
-    raporteaza eroarea, iar urmatorul ruleaza oricum.
+    raporteaza eroarea, iar urmatorul ruleaza oricum. Viteza si testul E2E ruleaza
+    INAINTE de propuneri: garda consiliului judeca pe dovezile din noaptea asta
+    (un pixel picat azi opreste bugetele azi; unul reparat azi le deblocheaza azi).
     """
     result: dict[str, Any] = {}
     for step_name, job in (
         ("sync", run_metrics_sync_job),
-        ("propose", run_propose_job),
-        ("fatigue_check", run_fatigue_check_job),
         ("speed_check", run_speed_check_job),
         ("tracking_contract", run_tracking_contract_job),
+        ("propose", run_propose_job),
+        ("fatigue_check", run_fatigue_check_job),
     ):
         try:
             result[step_name] = job(client_account_id=client_account_id)

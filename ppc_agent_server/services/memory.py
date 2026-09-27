@@ -67,6 +67,9 @@ class MemoryEntry:
     decision: str
     observation: str = ""
     outcome: MemoryOutcome = "decided"
+    #: Decizia, pentru masini: codul veto-ului (``ATTRIBUTION_BROKEN``...) sau felul
+    #: ideii taiate de CFO (``budget``...) - citit de jobul PPC de noapte.
+    code: str | None = None
 
 
 class MemorySource(Protocol):

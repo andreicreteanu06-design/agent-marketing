@@ -184,6 +184,26 @@ def list_my_pending_proposals(
     )
 
 
+@router.get("/blocked", response_model=list[ProposedChangeRead])
+def list_my_blocked_proposals(
+    client_user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[ProposedChange]:
+    """Propunerile oprite de consiliu in tura de noapte, cu motivul (``error_message``).
+
+    Veto-ul Tehnicianului sau restrictia CFO-ului (``services/council_guard.py``): de
+    aici afla clientul de ce nu s-a lansat o campanie sau n-a crescut un buget.
+    """
+    return list(
+        session.exec(
+            select(ProposedChange)
+            .where(ProposedChange.client_account_id == client_user.client_account_id)
+            .where(ProposedChange.status == ChangeStatus.BLOCKED)
+            .order_by(ProposedChange.created_at.desc())  # type: ignore[attr-defined]
+        ).all()
+    )
+
+
 @router.post("/{proposal_id}/approve", response_model=ProposedChangeRead)
 def approve_proposal(
     proposal_id: int,

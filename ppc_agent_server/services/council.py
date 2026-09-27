@@ -501,6 +501,11 @@ def classify_question(question: str, *, active_platforms: set[str]) -> QuestionT
 # --- decizia consiliului (determinista) ----------------------------------------
 
 
+IdeaKind = Literal[
+    "budget", "channel", "loser", "negatives", "rewrite", "paid_targeting", "free_targeting"
+]
+
+
 class CouncilRuling(BaseModel):
     """Ce a decis consiliul - calculat inainte de orice LLM, obligatoriu pentru toti."""
 
@@ -514,6 +519,8 @@ class CouncilRuling(BaseModel):
     approved: list[str]
     #: Ideile creative taiate de CFO, fiecare cu motivul.
     cut: list[str]
+    #: Felul fiecarei idei taiate, in aceeasi ordine - pentru masini (memoria, jobul de noapte).
+    cut_kinds: list[IdeaKind] = Field(default_factory=list)
     #: De ce a pus Tehnicianul veto (tracking picat, site lent pe mobil); ``None`` = fara.
     veto: str | None = None
     #: Ideile care ar fi trecut de brand si de CFO, oprite de veto-ul Tehnicianului.
@@ -559,9 +566,6 @@ def _avatar_line(directive: BrandStrategyDirective) -> str:
     return f"«{avatar.name}» ({detail})"
 
 
-IdeaKind = Literal[
-    "budget", "channel", "loser", "negatives", "rewrite", "paid_targeting", "free_targeting"
-]
 #: Ce idei conteaza intai pentru fiecare fel de intrebare - raspunsul le ia de sus.
 _RELEVANCE: dict[CouncilTopic, tuple[IdeaKind, ...]] = {
     "budget": (
@@ -734,7 +738,7 @@ def rule_on_question(
     ideas = sorted(_ideas(question, directive, finances), key=lambda idea: order.index(idea.kind))
     scope: VetoScope = technical.veto if technical is not None else "none"
     blocked = _VETOED_KINDS[scope]
-    cut = [idea.text for idea in ideas if not idea.approved]
+    cut = [idea for idea in ideas if not idea.approved]
     channel = PLATFORM_NAMES.get(question.new_channel or "", question.new_channel or "")
     return CouncilRuling(
         topic=question.topic,
@@ -743,7 +747,8 @@ def rule_on_question(
         brand_status=directive.status,
         decision=_decision(question, directive, finances, channel, bool(cut), technical, market),
         approved=[idea.text for idea in ideas if idea.approved and idea.kind not in blocked],
-        cut=cut,
+        cut=[idea.text for idea in cut],
+        cut_kinds=[idea.kind for idea in cut],
         veto=technical.veto_reason if technical is not None and scope != "none" else None,
         vetoed=[idea.text for idea in ideas if idea.approved and idea.kind in blocked],
         market_context=_market_context(question, market),
@@ -1370,10 +1375,11 @@ def memories_from_reply(
         cut = f"a tăiat {what}, pentru că {why}" if why else f"a tăiat {what}"
         # Verdictul fara concluzia repetata: doar cifrele ("CPA-ul e 175 RON ...").
         figures = compress(finances.verdict).partition(": ")[2] or compress(finances.verdict)
-        entries.append(MemoryEntry(at, "cfo", topic, cut, figures))
+        kind = ruling.cut_kinds[0] if ruling.cut_kinds else None
+        entries.append(MemoryEntry(at, "cfo", topic, cut, figures, code=kind))
     if technical is not None and technical.veto_code is not None and technical.veto_reason:
         veto = f"a pus veto: {_lower_first(compress(technical.veto_reason))}"
-        entries.append(MemoryEntry(at, "cto", topic, veto))
+        entries.append(MemoryEntry(at, "cto", topic, veto, code=technical.veto_code))
     if product is not None and ruling.offer is not None:
         decision = _CPO_DECISIONS[product.status].format(focus=product.focus or "")
         why = compress(product.verdict).partition(": ")[2] if product.status in _CPO_WHY else ""
