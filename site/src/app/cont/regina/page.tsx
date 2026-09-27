@@ -14,6 +14,7 @@ const COUNCIL = [
   "CFO · rentabilitate",
   "Tehnician · tracking și viteză",
   "Researcher · piață",
+  "CPO · ofertă",
   "Decizie deterministă",
 ];
 

@@ -313,7 +313,7 @@ export type FinancialStatus = "profitable" | "unprofitable" | "no_benchmark" | "
 export type MessageSource = "llm" | "template";
 
 export interface CouncilOpinion {
-  member: "strategist" | "cfo" | "technician" | "researcher";
+  member: "strategist" | "cfo" | "technician" | "researcher" | "cpo";
   title: string;
   opinion: string;
   source: MessageSource;
@@ -340,6 +340,8 @@ export interface CouncilRuling {
   vetoed: string[];
   /** Contextul pietei pentru intrebare (Researcher-ul), doar din surse reale. */
   market_context?: string | null;
+  /** Verdictul CPO-ului pe oferta, cand intervine (CPA peste tinta, pozitionare de ascutit). */
+  offer?: string | null;
 }
 
 /** green = verde, amber = la limita, red = rosu, unknown = fara date (nu se ghiceste). */
@@ -427,6 +429,33 @@ export interface QueenChatReply {
   market?: MarketDirective | null;
   /** Contextul Istoric pe care l-a primit consiliul (memoria), cate un rand. */
   history?: string[];
+  /** Verdictul CPO-ului pe oferta: pozitionarea, povestea, mutarile dupa RICE. */
+  product?: ProductDirective | null;
+}
+
+/** Oferta si pozitionarea (ppc_agent_server/services/cpo.py), calculate determinist. */
+export interface ProductDirective {
+  client_account_id: number;
+  status: "fit" | "message_gap" | "positioning_gap" | "offer_gap" | "pivot" | "unknown";
+  /** CFO-ul a gasit CPA-ul peste tinta: CPO-ul a judecat oferta. */
+  cpa_alarm: boolean;
+  verdict: string;
+  focus: string | null;
+  best_fit: string | null;
+  positioning: string;
+  story: string;
+  /** Mutarile de oferta, ordonate dupa RICE (Reach x Impact x Confidence / Effort). */
+  moves: {
+    kind: "pivot" | "reposition" | "offer_test" | "message";
+    text: string;
+    reach: number;
+    impact: number;
+    confidence: number;
+    effort: number;
+    rice: number;
+  }[];
+  summary: string;
+  generated_at: string;
 }
 
 /** Contextul pietei (ppc_agent_server/services/researcher.py). is_demo = ilustratie, nu fapte. */
@@ -474,8 +503,8 @@ export const QUEEN_MAX_QUESTION_CHARS = 1000;
 
 /**
  * O intrebare pentru Regina. Serverul isi consulta consiliul (strategia de brand,
- * CFO-ul, Tehnicianul si Researcher-ul) inainte sa raspunda - cateva secunde cand vocea
- * LLM e configurata.
+ * CFO-ul, Tehnicianul, Researcher-ul si CPO-ul) inainte sa raspunda - cateva secunde
+ * cand vocea LLM e configurata.
  */
 export function askQueen(token: string, message: string): Promise<QueenChatReply> {
   return apiFetch<QueenChatReply>("/api/v1/queen/chat", {

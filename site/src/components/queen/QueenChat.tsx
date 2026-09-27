@@ -33,6 +33,7 @@ import {
   type CouncilTopic,
   type FinancialStatus,
   type HealthStatus,
+  type ProductDirective,
   type QueenChatReply,
   type TechnicianDirective,
 } from "@/lib/api";
@@ -85,7 +86,7 @@ const CHANNEL_NAME: Record<string, string> = {
 };
 
 /**
- * Pasii deliberarii: datele, apoi cei patru membri (pe server IN PARALEL, aici
+ * Pasii deliberarii: datele, apoi cei cinci membri (pe server IN PARALEL, aici
  * pe rand, ca sa se vada fiecare), apoi sinteza Reginei. Durata reala
  * nu se stie dinainte (un apel HTTP), deci fazele avanseaza pe un ceas si
  * ultima ramane activa pana vine raspunsul.
@@ -96,7 +97,8 @@ const DELIBERATION_STEPS: { label: string; phase: number }[] = [
   { label: "Agentul CFO analizează rentabilitatea", phase: 2 },
   { label: "Tehnicianul verifică tracking-ul și viteza pe mobil", phase: 3 },
   { label: "Researcher-ul citește piața și concurența", phase: 4 },
-  { label: "Sinteza: ce trece, ce se taie", phase: 5 },
+  { label: "CPO-ul judecă oferta și poziționarea", phase: 5 },
+  { label: "Sinteza: ce trece, ce se taie", phase: 6 },
 ];
 const DELIBERATION_HEADLINES = [
   "Regina își convoacă consiliul…",
@@ -104,9 +106,10 @@ const DELIBERATION_HEADLINES = [
   "CFO-ul calculează rentabilitatea…",
   "Tehnicianul verifică site-ul și tracking-ul…",
   "Researcher-ul scanează piața…",
+  "CPO-ul verifică dacă oferta se potrivește pieței…",
   "Regina taie ideile proaste și formulează răspunsul…",
 ];
-const PHASE_DELAYS_MS = [700, 1500, 2300, 3100, 3900];
+const PHASE_DELAYS_MS = [700, 1500, 2300, 3100, 3900, 4700];
 
 function time(iso: string): string {
   const date = new Date(iso);
@@ -278,6 +281,16 @@ function technicalBadge(
   return null;
 }
 
+/** Insigna CPO-ului: doar cand spune ceva despre oferta (un "fit" linistit nu cere atentie). */
+const PRODUCT_BADGE: Partial<
+  Record<ProductDirective["status"], { label: string; variant: "success" | "danger" | "warning" }>
+> = {
+  pivot: { label: "CPO: pivotare propusă", variant: "danger" },
+  offer_gap: { label: "CPO: oferta de testat", variant: "warning" },
+  positioning_gap: { label: "CPO: poziționare de ascuțit", variant: "warning" },
+  message_gap: { label: "CPO: oferta apărată", variant: "success" },
+};
+
 function trackingDetail(report: TechnicianDirective): string {
   const broken = report.tracking.find((check) => check.status === "red");
   const first = broken ?? report.tracking[0];
@@ -385,8 +398,7 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
             className={cn(
               "rounded-xl border bg-background/60 p-3.5",
               opinion.demo ? "border-dashed border-border-strong" : "border-border-subtle",
-              (opinion.member === "technician" || opinion.member === "researcher") &&
-                "md:col-span-2"
+              opinion.member !== "strategist" && opinion.member !== "cfo" && "md:col-span-2"
             )}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -403,6 +415,18 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
             >
               {opinion.opinion}
             </p>
+            {opinion.member === "cpo" && reply.product && reply.product.moves.length > 0 && (
+              <ol className="mt-2 space-y-1" aria-label="Mutările de ofertă, după RICE">
+                {reply.product.moves.map((move, index) => (
+                  <li key={move.kind} className="flex gap-2 text-[11px] text-foreground-muted">
+                    <span className="tabular-nums text-brand-cyan">{index + 1}.</span>
+                    <span>
+                      {move.text} · RICE {move.rice}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
             {opinion.member === "researcher" && reply.market?.web_status === "ok" && (
               <p className="mt-2 text-[11px] text-foreground-muted">
                 Căutat pe web: «{reply.market.niche}», {reply.market.location} · surse:{" "}
@@ -452,6 +476,12 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
             {ruling.market_context}
           </p>
         )}
+        {ruling.offer && (
+          <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/80">
+            <span className="text-foreground-muted">Oferta (CPO): </span>
+            {ruling.offer}
+          </p>
+        )}
       </div>
 
       {ruling.approved.length > 0 && (
@@ -494,6 +524,7 @@ function QueenMessage({ reply }: { reply: QueenChatReply }) {
   const detailsId = useId();
   const financial = FINANCIAL_BADGE[reply.financial_status];
   const technical = technicalBadge(reply.technical ?? null);
+  const product = reply.ruling.offer && reply.product ? PRODUCT_BADGE[reply.product.status] : undefined;
   const channel = reply.ruling.new_channel;
   const topic = channel
     ? `${TOPIC_LABEL.channel}: ${CHANNEL_NAME[channel] ?? channel}`
@@ -513,6 +544,7 @@ function QueenMessage({ reply }: { reply: QueenChatReply }) {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Badge variant={financial.variant}>{financial.label}</Badge>
             {technical && <Badge variant={technical.variant}>{technical.label}</Badge>}
+            {product && <Badge variant={product.variant}>{product.label}</Badge>}
             <Badge>{topic}</Badge>
             {reply.directive_status !== "ok" && <Badge>Client ideal: date insuficiente</Badge>}
           </div>
@@ -569,8 +601,8 @@ function QueenIntro() {
           <p>
             Sunt Regina, CMO-ul tău. Nu îți dau sfaturi generice: fiecare întrebare trece prin
             consiliul meu - propria analiză de brand, pe clientul tău ideal, CFO-ul, pe cifrele
-            campaniilor tale, Tehnicianul, pe tracking și viteza site-ului pe mobil, și
-            Researcher-ul, pe piață și concurență.
+            campaniilor tale, Tehnicianul, pe tracking și viteza site-ului pe mobil,
+            Researcher-ul, pe piață și concurență, și CPO-ul, pe ofertă și poziționare.
           </p>
           <p className="mt-2 text-foreground-muted">
             Ideile care nu se susțin financiar se taie înainte să ajungă la tine. Dacă tracking-ul

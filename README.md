@@ -686,8 +686,9 @@ link-local pentru containerul worker.
 reimplementat, fara cod copiat):
 
 - **Captura**: dupa fiecare raspuns, deciziile majore - ce a taiat CFO-ul, veto-ul
-  Tehnicianului, ce a notat Researcher-ul (doar date reale), decizia Reginei pe bani -
-  intra in `MemoryStream` (`client_account_id`, `timestamp`, `agent_role`, `topic`,
+  Tehnicianului, ce a notat Researcher-ul (doar date reale), verdictul CPO-ului pe
+  oferta ("a propus pivotarea ofertei spre ..."), decizia Reginei pe bani - intra in
+  `MemoryStream` (`client_account_id`, `timestamp`, `agent_role`, `topic`,
   `observation`, `decision`). O intrebare care nu decide nimic (publicul, fara nicio
   taietura) nu lasa urme. Propunerile respinse de client sau esuate la aplicare nu se
   copiaza: se citesc direct din `ProposedChange` (ultimele 30 de zile).
@@ -728,10 +729,11 @@ date reale de licitatie, consiliul spune ca le lipsesc, nu ghiceste.
 clientului (`market_focus`: cel mai lung grup de cuvinte repetat in cautari, fara
 "pret"/"program"/brand; orasul recunoscut, altfel Romania), apoi doua interogari
 DuckDuckGo (`ddgs`, fara cheie): "competitori <nisa> <oras>" si "trenduri <nisa>
-Romania <an>". Primele 5 surse distincte (titlu, fragment, site) ajung la LLM-ul
+Romania <an>". Researcher-ul nu stie cum se cauta: cere abilitatea `web_search` din
+registrul de abilitati (vezi mai jos). Primele 5 surse distincte (titlu, fragment, site) ajung la LLM-ul
 Researcher-ului, care are voie sa formuleze EXCLUSIV din ele: garda respinge orice
 cifra din afara lor, linkurile si sfaturile generice ("Silicon Valley", "growth
-hacking", "startup"). Cautarile ruleaza in paralel (`asyncio.to_thread`), cu timeout de
+hacking", "startup"). Cautarile ruleaza in paralel (fire separate), cu timeout de
 8 s; un timeout sau o limita DuckDuckGo nu opreste chatul - Researcher-ul spune ca n-a
 mers. Rezultatele se tin minte o zi, in proces. Datele demonstrative (licitatie,
 cerere) tot nu ajung la niciun LLM.
@@ -739,6 +741,36 @@ cerere) tot nu ajung la niciun LLM.
 Vocea lui (`ANALYST_VOICE` din `humanizer.py`): analist de intelligence comercial -
 cota de piata, miscarile competitorilor, ferestrele de oportunitate - asertiv, scurt,
 fiecare afirmatie cu cifra ei din fapte, fara speculatii despre intentiile concurentilor.
+
+#### CPO-ul (Chief Product Officer): oferta si pozitionarea
+
+Al cincilea scaun (`services/cpo.py`, determinist, idei din `menkesu/awesome-pm-skills`):
+apara oferta. Nu are surse proprii - judeca pe concluziile celorlalti (clientul ideal
+al Reginei, verdictul CFO-ului, piata Researcher-ului) si vorbeste ultimul.
+
+| Situatie | Verdictul CPO-ului |
+|----------|--------------------|
+| CPA peste tinta, reclamele nu ii vorbesc clientului ideal | `message_gap`: oferta nu e problema, mesajul e - intai rescrierea |
+| CPA peste tinta, reclamele ii vorbesc deja si tot pierd bani + un semnal real | `pivot`: spre durerea care creste in piata (Researcher, niciodata demo) sau spre segmentul best-fit |
+| La fel, fara semnal | `offer_gap`: oferta se testeaza, nu se schimba |
+| Un segment cumpara mult mai usor decat cauta (conversii/cautari >= 1,25, >= 20% din conversii) | `positioning_gap`: pozitionarea se poate ascuti (April Dunford) |
+
+Cu tracking-ul picat (veto-ul Tehnicianului), CPA-ul e fals: nu declanseaza nicio
+pivotare. Verdictul intra in `CouncilRuling.offer` (mereu la un CPA peste tinta, iar o
+pozitionare de ascutit la intrebarile despre public si texte), nu muta nicio idee si se
+scrie in memorie. Directiva (`CouncilReply.product`) mai are pozitionarea, povestea
+ofertei (problema, promisiunea, dovada) si mutarile ordonate dupa **RICE** (Reach =
+procentul din conversii atins, Impact 0,5-3, Confidence din cat de solide sunt datele,
+Effort in saptamani; estimarile de impact si efort sunt fixe pe tip de mutare).
+
+#### Registrul de abilitati (skills, pregatit pentru MCP)
+
+`ppc_agent_server/skills/`: uneltele cu retea nu mai stau in modulele agentilor. O
+abilitate e un `BaseAgentSkill` - `name`, `description`, `async execute(**kwargs)` - iar
+agentii o cer dupa nume: `await registry.execute("web_search", query="...")`. Numele si
+descrierea sunt exact ce cere un `tools/list` MCP. Azi e inregistrata `web_search`
+(DuckDuckGo, mutata din Researcher); PageSpeed si testul E2E cu Playwright raman in
+job-urile worker-ului pana cand un agent trebuie sa le ceara direct.
 
 #### Integrari Google: Search Console si GA4
 

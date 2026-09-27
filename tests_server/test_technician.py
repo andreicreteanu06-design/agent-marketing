@@ -436,7 +436,9 @@ def test_broken_tracking_vetoes_every_money_decision_in_the_council() -> None:
     assert "Propun rescrierea" not in reply.reply
     assert "atunci oprim reclamele până se repară" in ruling.decision
     assert "Reparația de făcut întâi: verifică tag-urile GA4" in reply.reply
-    assert [opinion.member for opinion in reply.opinions] == ["strategist", "cfo", "technician"]
+    assert [opinion.member for opinion in reply.opinions] == [
+        "strategist", "cfo", "technician", "cpo"
+    ]
     assert reply.opinions[2].opinion == reply.technical.summary
 
 
@@ -507,7 +509,7 @@ def test_the_technician_speaks_in_the_council_with_only_technical_facts() -> Non
         "Merită să cresc bugetul?", _directive()
     )
 
-    assert voice.roles == ["cfo", "chair", "strategist", "technician"]
+    assert voice.roles == ["cfo", "chair", "cpo", "strategist", "technician"]
     technician = voice.prompt("technician")
     assert "FAPTE TEHNICE" in technician
     assert "Stare tracking (calculată determinist, obligatorie): roșu." in technician
@@ -793,4 +795,5 @@ def test_the_chat_carries_the_technician_veto(broken: Signed) -> None:
         "cfo",
         "technician",
         "researcher",
+        "cpo",
     ]

@@ -29,6 +29,7 @@ from ppc_agent_server.services.council import (
     QueenCouncil,
     memories_from_reply,
 )
+from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT
 from ppc_agent_server.services.memory import (
     HISTORY_RULE,
     MemoryEntry,
@@ -192,6 +193,7 @@ def test_every_agent_prompt_asks_to_check_the_history() -> None:
         CHAIR_SYSTEM_PROMPT,
         TECHNICIAN_SYSTEM_PROMPT,
         RESEARCHER_SYSTEM_PROMPT,
+        CPO_SYSTEM_PROMPT,
     ):
         assert HISTORY_RULE in prompt
         # Regula e printre reguli, inaintea vocii.
@@ -203,7 +205,7 @@ def test_the_history_reaches_every_member_and_the_synthesis() -> None:
     _council(_Memory([CFO_CUT]), voice=voice).evaluate_client_query(BUDGET, _directive())
 
     line = "Acum 2 săptămâni, CFO-ul a tăiat creșterea bugetului"
-    for role in ("strategist", "cfo", "chair"):
+    for role in ("strategist", "cfo", "cpo", "chair"):
         prompt = voice.prompt(role)
         assert "CONTEXT ISTORIC (memoria consiliului):" in prompt
         assert line in prompt
@@ -213,7 +215,8 @@ def test_two_sessions_two_weeks_apart_the_queen_remembers() -> None:
     memory = _Memory()
 
     first = _council(memory).evaluate_client_query(BUDGET, _directive())
-    assert [entry.role for entry in memory.written] == ["cfo", "queen"]
+    # CFO-ul taie, CPO-ul apara oferta (CPA-ul mare vine din mesaj), Regina decide.
+    assert [entry.role for entry in memory.written] == ["cfo", "cpo", "queen"]
     later = _council(memory, now=NOW + timedelta(days=14)).evaluate_client_query(
         BUDGET, _directive()
     )
@@ -224,7 +227,7 @@ def test_two_sessions_two_weeks_apart_the_queen_remembers() -> None:
     assert remembered in later.reply
     assert later.history[0].startswith("Acum 2 săptămâni, CFO-ul a tăiat")
     # Si a doua sesiune se scrie; dedupe-ul pe 7 zile e in DbMemory (testat mai jos).
-    assert len(memory.written) == 4
+    assert len(memory.written) == 6
 
 
 def test_a_broken_memory_never_breaks_the_chat() -> None:

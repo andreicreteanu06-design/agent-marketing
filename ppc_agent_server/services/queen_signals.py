@@ -67,7 +67,6 @@ from ppc_agent_server.services.memory import (
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
 from ppc_agent_server.services.researcher import (
     MarketSignals,
-    WebSearch,
     market_focus,
     search_market_web,
 )
@@ -78,6 +77,7 @@ from ppc_agent_server.services.technician import (
     TechnicalSignals,
     TrackingStream,
 )
+from ppc_agent_server.skills import SkillRegistry, skill_registry
 from seo_geo_agent.audit.geo_reporters import brand_token_from_url
 from seo_geo_agent.services.intelligence import Window
 
@@ -522,8 +522,9 @@ class ClientMarketSignals:
 
     Licitatia, cererea si mentiunile: demonstrative (seed = brandul, stabile toata
     ziua, marcate ``source="demo"``) - nu exista inca API-uri pentru ele. Cautarea
-    pe web: reala, pe nisa si orasul din ``queries`` (cautarile clientului); fara
-    cautari, nu se cauta nimic. ``search`` e injectabil in teste.
+    pe web: reala, pe nisa si orasul din ``queries`` (cautarile clientului), prin
+    abilitatea ``web_search``; fara cautari, nu se cauta nimic. ``registry`` (registrul
+    de abilitati) e injectabil in teste.
     """
 
     def __init__(
@@ -531,11 +532,11 @@ class ClientMarketSignals:
         session: Session,
         *,
         today: Callable[[], date] = _utc_today,
-        search: WebSearch | None = None,
+        registry: SkillRegistry = skill_registry,
     ) -> None:
         self._session = session
         self._today = today
-        self._search = search
+        self._registry = registry
 
     def load(self, client_account_id: int, queries: Sequence[str] = ()) -> MarketSignals:
         account = self._session.get(ClientAccount, client_account_id)
@@ -554,7 +555,7 @@ class ClientMarketSignals:
                 "s-a căutat pe web.",
             )
         findings, status, note = asyncio.run(
-            search_market_web(niche, location, year=today.year, search=self._search)
+            search_market_web(niche, location, year=today.year, registry=self._registry)
         )
         return replace(
             signals, niche=niche, location=location, web=findings, web_status=status, web_note=note
@@ -641,7 +642,9 @@ class DbMemory:
         self._session.commit()
 
 
-_ROLES: dict[str, AgentRole] = {"queen": "queen", "cfo": "cfo", "cto": "cto", "cso": "cso"}
+_ROLES: dict[str, AgentRole] = {
+    "queen": "queen", "cfo": "cfo", "cto": "cto", "cso": "cso", "cpo": "cpo"
+}
 
 
 def _role(value: str) -> AgentRole:

@@ -54,6 +54,12 @@ ce se taie; adauga contextul (``CouncilRuling.market_context``), ca decizia sa
 nu se ia "in vid". Doar din surse reale: datele demonstrative se vad in
 deliberare, marcate, dar nu intra in decizie, in sinteza sau in raspuns.
 
+Al cincilea e CPO-ul (``cpo.py``): apara oferta. Cand CFO-ul gaseste CPA-ul peste
+tinta, CPO-ul spune daca vina e a mesajului (oferta ramane) sau a ofertei - si
+propune pivotarea doar spre un semnal real (durerea in crestere adusa de
+Researcher, segmentul care cumpara mai usor). Nu muta nicio idee; verdictul lui
+intra in decizie (``CouncilRuling.offer``) si in memorie.
+
 Modulul e pur: fara DB, fara HTTP. Banii vin printr-un :class:`FinancialSignalsSource`,
 datele tehnice printr-un :class:`~ppc_agent_server.services.technician.TechnicalSignalsSource`
 (implementarile din baza de date: ``queen_signals.py``).
@@ -74,6 +80,13 @@ from pydantic import BaseModel, Field
 
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.cognitive import CognitiveProfile
+from ppc_agent_server.services.cpo import (
+    CPO_SYSTEM_PROMPT,
+    OfferStatus,
+    ProductDirective,
+    cpo_facts,
+    evaluate_offer,
+)
 from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
 from ppc_agent_server.services.memory import (
     HISTORY_RULE,
@@ -126,7 +139,7 @@ logger = logging.getLogger("ppc_agent_server.services.council")
 CouncilTopic = Literal["budget", "channel", "profitability", "audience", "creative", "general"]
 FinancialStatus = Literal["profitable", "unprofitable", "no_benchmark", "insufficient_data"]
 AdVerdict = Literal["profitable", "unprofitable", "no_benchmark", "too_early"]
-CouncilMember = Literal["strategist", "cfo", "technician", "researcher"]
+CouncilMember = Literal["strategist", "cfo", "technician", "researcher", "cpo"]
 
 #: Sub atatea conversii, rentabilitatea e zgomot - acelasi prag ca la clientul ideal.
 MIN_CONVERSIONS_FOR_VERDICT = MIN_CONVERSIONS
@@ -505,6 +518,8 @@ class CouncilRuling(BaseModel):
     vetoed: list[str] = Field(default_factory=list)
     #: Contextul pietei pentru intrebare (Researcher-ul), doar din surse reale.
     market_context: str | None = None
+    #: Verdictul CPO-ului pe oferta, cand intervine (CPA peste tinta, pozitionare de ascutit).
+    offer: str | None = None
 
 
 #: De ce nu se cheltuie bani in plus - cate un motiv pe stare financiara.
@@ -702,6 +717,7 @@ def rule_on_question(
     finances: FinancialSnapshot,
     technical: TechnicianDirective | None = None,
     market: MarketDirective | None = None,
+    product: ProductDirective | None = None,
 ) -> CouncilRuling:
     """Decizia consiliului: ce sustine si ce taie, cu motivul fiecarei taieturi.
 
@@ -711,7 +727,8 @@ def rule_on_question(
     Peste amandoi, veto-ul Tehnicianului: ce ar fi trecut, dar sta pe cifre
     false (tracking picat) sau pe un site lent, se opreste. Ideile vin ordonate
     dupa cat de mult tin de intrebare. Piata (Researcher-ul) nu muta nicio idee:
-    da doar contextul, si doar din surse reale.
+    da doar contextul, si doar din surse reale. La fel CPO-ul: verdictul lui pe
+    oferta insoteste decizia, nu o schimba.
     """
     order = _RELEVANCE[question.topic]
     ideas = sorted(_ideas(question, directive, finances), key=lambda idea: order.index(idea.kind))
@@ -730,6 +747,7 @@ def rule_on_question(
         veto=technical.veto_reason if technical is not None and scope != "none" else None,
         vetoed=[idea.text for idea in ideas if idea.approved and idea.kind in blocked],
         market_context=_market_context(question, market),
+        offer=_offer_context(question, product),
     )
 
 
@@ -765,6 +783,17 @@ def _market_context(question: QuestionTopic, market: MarketDirective | None) -> 
     else:
         parts.append(market.opportunity)
     return " ".join(parts) or None
+
+
+def _offer_context(question: QuestionTopic, product: ProductDirective | None) -> str | None:
+    """Cand vorbeste CPO-ul: mereu la un CPA peste tinta (mesajul sau oferta?), iar o
+    pozitionare de ascutit doar la intrebarile despre public, texte sau in general."""
+    if product is None or product.status == "unknown":
+        return None
+    if product.cpa_alarm:
+        return product.verdict
+    sharpen = question.topic in ("audience", "creative", "general")
+    return product.verdict if product.status == "positioning_gap" and sharpen else None
 
 
 def _veto_decision(topic: CouncilTopic, technical: TechnicianDirective) -> str | None:
@@ -986,6 +1015,8 @@ def ruling_facts(ruling: CouncilRuling) -> str:
     lines.extend(f"Oprit de veto-ul Tehnicianului: {idea}." for idea in ruling.vetoed)
     if ruling.market_context:
         lines.append(f"Contextul pieței (Researcher): {ruling.market_context}")
+    if ruling.offer:
+        lines.append(f"Verdictul CPO-ului pe ofertă: {ruling.offer}")
     lines.append("Nimic nu se aplică fără aprobarea clientului.")
     return "\n".join(f"- {line}" for line in lines)
 
@@ -1014,6 +1045,8 @@ def template_council_reply(
         parts.append(f"Reparația de făcut întâi: {_lower_first(technical.recommendations[0])}")
     if ruling.market_context:
         parts.append(ruling.market_context)
+    if ruling.offer:
+        parts.append(f"CPO-ul spune că {_lower_first(ruling.offer)}")
     # Cu tracking-ul picat, rescrierea propusa de Regina e oprita: n-o mai recomandam.
     money_veto = technical is not None and technical.veto == "money"
     insight = None if money_veto else psychology_insight(directive)
@@ -1128,9 +1161,9 @@ CFO_SYSTEM_PROMPT = (
 CHAIR_SYSTEM_PROMPT = (
     "Ești Regina, Senior AI Chief Marketing Officer al agenției AC Media. Clientul "
     "(proprietarul afacerii) ți-a pus o întrebare; înainte să răspunzi ți-ai consultat "
-    "consiliul: propria analiză de brand, CFO-ul și, când există, Tehnicianul (tracking-ul "
-    "conversiilor și viteza site-ului pe mobil) și Researcher-ul (piața și concurența). Acum "
-    "scrii răspunsul final, în română.\n"
+    "consiliul: propria analiză de brand, CFO-ul, CPO-ul (oferta și poziționarea) și, când "
+    "există, Tehnicianul (tracking-ul conversiilor și viteza site-ului pe mobil) și "
+    "Researcher-ul (piața și concurența). Acum scrii răspunsul final, în română.\n"
     "Reguli stricte:\n"
     "1. DECIZIA CONSILIULUI e obligatorie: o comunici și o argumentezi, nu o schimbi.\n"
     "2. Când brandul și CFO-ul nu sunt de acord, câștigă CFO-ul: o idee creativă care nu se "
@@ -1138,7 +1171,8 @@ CHAIR_SYSTEM_PROMPT = (
     "de veto: dacă a pus veto, îl spui în primele două fraze, cu reparația din fapte, și nu "
     "recomanzi nimic din ce a oprit. Spui pe scurt ce s-a tăiat și de cine (de exemplu "
     "textele noi ale Reginei, oprite de Tehnician). Contextul pieței (Researcher-ul) explică "
-    "decizia, nu o schimbă.\n"
+    "decizia, nu o schimbă. Când CPO-ul a dat un verdict pe ofertă (dacă un CPA mare vine din "
+    "mesaj sau din ofertă), îl spui; o pivotare a ofertei rămâne o propunere.\n"
     "3. Folosești DOAR faptele și părerile primite. Orice cifră din răspuns trebuie să apară "
     "în ele; nu inventa cifre, procente, prețuri sau rezultate. Dacă datele lipsesc, spui asta.\n"
     "4. Prima frază răspunde direct la întrebare. Apoi argumentul de brand, cu motivația "
@@ -1169,6 +1203,7 @@ _MEMBER_PROMPTS: dict[CouncilMember, tuple[str, str]] = {
     "cfo": (CFO_SYSTEM_PROMPT, "FAPTE FINANCIARE"),
     "technician": (TECHNICIAN_SYSTEM_PROMPT, "FAPTE TEHNICE"),
     "researcher": (RESEARCHER_SYSTEM_PROMPT, "FAPTE DE PIAȚĂ"),
+    "cpo": (CPO_SYSTEM_PROMPT, "FAPTE DE PRODUS"),
 }
 
 
@@ -1196,6 +1231,7 @@ def build_chair_prompt(
     tech_facts: str | None = None,
     market_text: str | None = None,
     history_text: str = "",
+    product_facts: str | None = None,
 ) -> tuple[str, str]:
     """Promptul Reginei ca presedinte: parerile, toate faptele si decizia.
 
@@ -1214,6 +1250,12 @@ def build_chair_prompt(
         if market_text is not None
         else ""
     )
+    cpo = (
+        f"PĂREREA CPO-ULUI:\n{by_member.get('cpo', '')}\n\n"
+        f"FAPTE DE PRODUS:\n{product_facts}\n\n"
+        if product_facts is not None
+        else ""
+    )
     user = (
         f"{_question_block(question)}\n\n"
         f"PĂREREA TA DE BRAND:\n{by_member.get('strategist', '')}\n\n"
@@ -1222,6 +1264,7 @@ def build_chair_prompt(
         f"FAPTE FINANCIARE:\n{money_facts}\n\n"
         f"{technician}"
         f"{researcher}"
+        f"{cpo}"
         f"{_history_block(history_text)}"
         f"DECIZIA CONSILIULUI:\n{ruling_facts(ruling)}\n\n"
         "Scrie răspunsul tău final către client."
@@ -1236,6 +1279,7 @@ MEMBER_TITLES: dict[CouncilMember, str] = {
     "cfo": "CFO · rentabilitate",
     "technician": "Tehnicianul · tracking și viteză",
     "researcher": "Researcher · piața și concurența",
+    "cpo": "CPO · oferta și poziționarea",
 }
 
 
@@ -1276,6 +1320,8 @@ class CouncilReply(BaseModel):
     market: MarketDirective | None = None
     #: Contextul Istoric pe care l-a primit consiliul, cate un rand (memoria).
     history: list[str] = Field(default_factory=list)
+    #: Verdictul CPO-ului pe oferta: pozitionarea, povestea, mutarile dupa RICE.
+    product: ProductDirective | None = None
 
 
 def clean_question(query: str) -> str:
@@ -1308,11 +1354,13 @@ def memories_from_reply(
     market: MarketDirective | None,
     *,
     at: datetime,
+    product: ProductDirective | None = None,
 ) -> list[MemoryEntry]:
     """Deciziile majore ale unui raspuns, comprimate - ce merita tinut minte.
 
-    Majore: o taietura a CFO-ului, un veto, sau o intrebare despre bani (buget, canal
-    nou). O intrebare despre public sau texte fara nicio taietura nu lasa urme.
+    Majore: o taietura a CFO-ului, un veto, un verdict al CPO-ului pe oferta (a
+    intrat in decizie), sau o intrebare despre bani (buget, canal nou). O intrebare
+    despre public sau texte fara nicio taietura nu lasa urme.
     """
     topic = ruling.topic
     entries: list[MemoryEntry] = []
@@ -1326,6 +1374,10 @@ def memories_from_reply(
     if technical is not None and technical.veto_code is not None and technical.veto_reason:
         veto = f"a pus veto: {_lower_first(compress(technical.veto_reason))}"
         entries.append(MemoryEntry(at, "cto", topic, veto))
+    if product is not None and ruling.offer is not None:
+        decision = _CPO_DECISIONS[product.status].format(focus=product.focus or "")
+        why = compress(product.verdict).partition(": ")[2] if product.status in _CPO_WHY else ""
+        entries.append(MemoryEntry(at, "cpo", topic, decision, why))
     major = bool(entries) or bool(ruling.vetoed) or topic in ("budget", "channel")
     if not major:
         return []
@@ -1349,6 +1401,21 @@ def memories_from_reply(
     return entries
 
 
+#: Ce a decis CPO-ul, ca fapta a rolului ("CPO-ul a propus ..."): propuneri, nu actiuni.
+_CPO_DECISIONS: dict[OfferStatus, str] = {
+    "pivot": "a propus pivotarea ofertei spre «{focus}», după framework-ul de poziționare",
+    "positioning_gap": (
+        "a propus repoziționarea ofertei pe «{focus}», după framework-ul de poziționare"
+    ),
+    "offer_gap": "a pus oferta sub semnul întrebării și a cerut un test pentru «{focus}»",
+    "message_gap": "a apărat oferta: CPA-ul mare venea din mesajul reclamelor, nu din ofertă",
+    "fit": "a apărat oferta: reclamele care îi vorbesc clientului ideal nu pierdeau bani",
+    "unknown": "",
+}
+#: Verdictele al caror "de ce" merita tinut minte (dovada: CPA-ul, cotele).
+_CPO_WHY: frozenset[OfferStatus] = frozenset({"pivot", "positioning_gap", "offer_gap"})
+
+
 def _demo_market_opinion(market: MarketDirective) -> CouncilOpinion:
     """Pozitia Researcher-ului pe date demonstrative: afisata, marcata, fara LLM."""
     return CouncilOpinion(
@@ -1366,7 +1433,7 @@ def _demo_market_opinion(market: MarketDirective) -> CouncilOpinion:
 
 
 class QueenCouncil:
-    """Consiliul Reginei: Strategul, CFO-ul, Tehnicianul si Researcher-ul delibereaza.
+    """Consiliul Reginei: Strategul, CFO-ul, Tehnicianul, Researcher-ul si CPO-ul delibereaza.
 
     ``voice`` e LLM-ul (Hugging Face) care da glas membrilor; fara el, sau cand
     pica, raspunde consiliul determinist. Nimic din ce scrie un LLM nu se
@@ -1394,8 +1461,9 @@ class QueenCouncil:
     def evaluate_client_query(self, query: str, context: BrandStrategyDirective) -> CouncilReply:
         """Intrebarea clientului, trecuta prin consiliu.
 
-        Pasi: faptele (brand + bani + tehnic) -> decizia determinista, cu veto-ul
-        Tehnicianului -> parerile membrilor, in paralel -> sinteza Reginei. Orice
+        Pasi: faptele (brand + bani + tehnic + piata) -> verdictul CPO-ului pe oferta
+        (din concluziile celorlalti) -> decizia determinista, cu veto-ul Tehnicianului ->
+        parerile celor cinci membri, in paralel -> sinteza Reginei. Orice
         pas LLM care pica sau scrie ceva ce nu e in date e inlocuit cu varianta
         determinista, deci metoda nu pica din cauza modelului.
 
@@ -1408,7 +1476,15 @@ class QueenCouncil:
         topic = classify_question(question, active_platforms=_active_platforms(context, finances))
         technical = self._technical_report(client_account_id)
         market = self._market_report(client_account_id, context)
-        ruling = rule_on_question(topic, context, finances, technical, market)
+        # Cu tracking-ul picat, CPA-ul e fals: nu declanseaza nicio pivotare a ofertei.
+        money_veto = technical is not None and technical.veto == "money"
+        product = evaluate_offer(
+            context,
+            unprofitable=finances.status == "unprofitable" and not money_veto,
+            market=market,
+            generated_at=self._clock(),
+        )
+        ruling = rule_on_question(topic, context, finances, technical, market, product)
         now = self._clock()
         history = self._recall(client_account_id)
         history_text = history_context(history, now)
@@ -1420,6 +1496,7 @@ class QueenCouncil:
         brand_facts = cmo_facts(context)
         money_facts = cfo_facts(finances)
         tech_facts = technician_facts(technical) if technical is not None else None
+        product_facts = cpo_facts(product)
         # Datele demonstrative de piata nu ajung la niciun LLM: ar deveni "fapte".
         # Fragmentele gasite pe web sunt reale: ele ajung (RAG), si singure.
         live_market = market is not None and not market.is_demo
@@ -1432,7 +1509,7 @@ class QueenCouncil:
             technical.tracking_status != "unknown" or technical.speed_status != "unknown"
         )
 
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="consiliu") as pool:
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="consiliu") as pool:
             strategist = pool.submit(
                 self._opinion,
                 "strategist",
@@ -1473,9 +1550,19 @@ class QueenCouncil:
                         fallback=position,
                     )
                 )
+            cpo = pool.submit(
+                self._opinion,
+                "cpo",
+                question,
+                facts=_with_history(product_facts),
+                has_data=product.status != "unknown",
+                fallback=product.summary,
+            )
             opinions = [member.result() for member in members]
         if market is not None and market_text is None:
             opinions.append(_demo_market_opinion(market))
+        # CPO-ul vorbeste ultimul: judeca oferta pe concluziile celorlalti.
+        opinions.append(cpo.result())
 
         def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilReply:
             return CouncilReply(
@@ -1494,6 +1581,7 @@ class QueenCouncil:
                 technical=technical,
                 market=market,
                 history=[memory_line(entry, now) for entry in history],
+                product=product,
             )
 
         def _deterministic(reason: str) -> CouncilReply:
@@ -1520,6 +1608,7 @@ class QueenCouncil:
                 tech_facts=tech_facts,
                 market_text=market_text,
                 history_text=history_text,
+                product_facts=product_facts,
             )
             text, problem = self._ask(system=system, user=user, max_chars=MAX_REPLY_CHARS)
             if text is None:
@@ -1531,7 +1620,9 @@ class QueenCouncil:
                 reply = _reply(text, "llm", None)
         self._remember(
             client_account_id,
-            memories_from_reply(question, ruling, finances, technical, market, at=now),
+            memories_from_reply(
+                question, ruling, finances, technical, market, at=now, product=product
+            ),
         )
         return reply
 

@@ -8,7 +8,8 @@ scurt (ieftin in tokeni), detaliile doar la cerere. Nu e copiat niciun rand; ace
 idei, pe consiliul Reginei:
 
 - **captura**: dupa fiecare raspuns, deciziile majore - ce a taiat CFO-ul, veto-ul
-  Tehnicianului, ce a notat Researcher-ul, decizia Reginei pe bani - intra in
+  Tehnicianului, ce a notat Researcher-ul, verdictul CPO-ului pe oferta (o
+  pivotare, o repozitionare, o oferta aparata), decizia Reginei pe bani - intra in
   ``MemoryStream``. Propunerile respinse de client sau esuate la aplicare nu se
   dubleaza: se citesc direct din ``ProposedChange``, unde sunt deja;
 - **compresie** determinista, fara LLM: prima fraza, cel mult 220 de caractere, si
@@ -30,7 +31,7 @@ from typing import Literal, Protocol
 
 from ppc_agent_server.services.ro_format import count as _count
 
-AgentRole = Literal["queen", "cfo", "cto", "cso"]
+AgentRole = Literal["queen", "cfo", "cto", "cso", "cpo"]
 MemoryOutcome = Literal["decided", "rejected", "failed"]
 
 ROLE_NAMES: dict[AgentRole, str] = {
@@ -38,6 +39,7 @@ ROLE_NAMES: dict[AgentRole, str] = {
     "cfo": "CFO-ul",
     "cto": "Tehnicianul",
     "cso": "Researcher-ul",
+    "cpo": "CPO-ul",
 }
 #: Cate intrari primeste consiliul (indexul); restul, la cerere.
 HISTORY_LIMIT = 5

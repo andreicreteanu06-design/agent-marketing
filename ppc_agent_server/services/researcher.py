@@ -30,11 +30,12 @@ ale clientului (``market_focus``, din ``BrandStrategyDirective``), apoi doua
 interogari DuckDuckGo (``ddgs``, fara cheie) - "competitori <nisa> <oras>" si
 "trenduri <nisa> Romania <an>" - dau primele fragmente, cu sursa. Ele sunt date
 REALE: ajung la LLM-ul Researcher-ului (RAG), care are voie sa formuleze doar din
-ele. Cautarea ruleaza in fire separate (``asyncio.to_thread``), cu timeout; o
+ele. Researcher-ul nu stie cum se cauta: cere abilitatea ``web_search`` din
+registrul de abilitati (``ppc_agent_server/skills``), in paralel, cu timeout; o
 cautare picata sau limitata nu opreste nimic - directiva spune doar ca n-a mers.
 
 Regulile de mai sus sunt deterministe (aceleasi semnale, aceeasi directiva).
-Singura functie cu retea e :func:`search_market_web`.
+Singura functie cu retea e :func:`search_market_web` (prin registru).
 """
 
 from __future__ import annotations
@@ -46,12 +47,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from functools import lru_cache
 from itertools import zip_longest
-from typing import Any, Literal, Protocol
-from urllib.parse import urlsplit
+from typing import Literal, Protocol
 
-from ddgs import DDGS
 from pydantic import BaseModel
 
 from ppc_agent.texttools import tokenize
@@ -60,6 +58,8 @@ from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
+from ppc_agent_server.skills import SkillRegistry, skill_registry
+from ppc_agent_server.skills.web_search import WEB_TIMEOUT_SECONDS, WebFinding, _short
 
 logger = logging.getLogger("ppc_agent_server.services.researcher")
 
@@ -87,10 +87,8 @@ PAIN_GROWTH_MIN = 0.25
 PAIN_MIN_MENTIONS = 20
 #: Cate saptamani cere trendul: 4 acum + 4 inainte.
 TREND_WEEKS = 8
-#: Cautarea pe web: rezultate cerute per interogare, fragmente pastrate, timeout.
-WEB_RESULTS_PER_QUERY = 5
+#: Cautarea pe web: cate fragmente se pastreaza, din ambele interogari.
 MAX_WEB_FINDINGS = 5
-WEB_TIMEOUT_SECONDS = 8.0
 
 _MONTHS = (
     "ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august",
@@ -142,15 +140,6 @@ class PainTopic:
     example: str
     mentions_before: int
     mentions_now: int
-
-
-class WebFinding(BaseModel):
-    """Un rezultat al cautarii pe web: titlul, fragmentul si site-ul (fara link)."""
-
-    query: str
-    title: str
-    snippet: str
-    source: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,10 +481,6 @@ def researcher_position(directive: MarketDirective) -> str:
     return " ".join(parts)
 
 
-def _short(text: str, limit: int = 150) -> str:
-    return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + "…"
-
-
 def web_position(directive: MarketDirective) -> str:
     """Ce a gasit Researcher-ul pe web, fara LLM: sursele locale, citate."""
     findings = directive.web_findings
@@ -679,53 +664,25 @@ def market_focus(
     return niche, location or country
 
 
-def ddgs_text(query: str) -> list[dict[str, Any]]:
-    """Singura cerere reala: DuckDuckGo prin ``ddgs`` (fara cheie), rezultate din Romania."""
-    return DDGS(timeout=int(WEB_TIMEOUT_SECONDS)).text(
-        query, region="ro-ro", safesearch="moderate", max_results=WEB_RESULTS_PER_QUERY
-    )
-
-
-def _finding(query: str, result: dict[str, Any]) -> WebFinding | None:
-    title = " ".join(str(result.get("title") or "").split())
-    snippet = " ".join(str(result.get("body") or "").split())
-    source = (urlsplit(str(result.get("href") or "")).hostname or "").removeprefix("www.")
-    if not (title and snippet and source):
-        return None
-    return WebFinding(
-        query=query, title=_short(title, 120), snippet=_short(snippet, 300), source=source
-    )
-
-
-@lru_cache(maxsize=256)
-def _cached_search(query: str, day: date) -> tuple[WebFinding, ...]:
-    # ponytail: cache pe proces, o zi (cheia contine ziua); DuckDuckGo limiteaza
-    # repede, iar chatul intreaba de mai multe ori pe zi acelasi lucru. Erorile nu
-    # se tin minte (exceptiile nu intra in lru_cache). Redis, daca sunt mai multi workeri.
-    found = (_finding(query, result) for result in ddgs_text(query))
-    return tuple(finding for finding in found if finding is not None)
-
-
-WebSearch = Callable[[str], Sequence[WebFinding]]
-
-
 async def search_market_web(
     niche: str,
     location: str,
     *,
     year: int,
-    search: WebSearch | None = None,
+    registry: SkillRegistry = skill_registry,
     timeout: float = WEB_TIMEOUT_SECONDS,
 ) -> tuple[list[WebFinding], WebStatus, str]:
-    """Doua cautari reale, in paralel si in fire separate, cu timeout: nu pica niciodata.
+    """Doua cautari reale prin abilitatea ``web_search``, in paralel, cu timeout: nu pica.
 
     Intoarce ``(fragmente, stare, nota)``; o cautare picata (timeout, limita, retea)
     se sare, iar daca pica amandoua, starea e ``failed`` cu o nota pentru client.
     """
     queries = (f"competitori {niche} {location}", f"trenduri {niche} România {year}")
-    fetch = search or (lambda query: _cached_search(query, date.today()))
     results = await asyncio.gather(
-        *(asyncio.wait_for(asyncio.to_thread(fetch, query), timeout) for query in queries),
+        *(
+            asyncio.wait_for(registry.execute("web_search", query=query), timeout)
+            for query in queries
+        ),
         return_exceptions=True,
     )
     per_query: list[Sequence[WebFinding]] = []

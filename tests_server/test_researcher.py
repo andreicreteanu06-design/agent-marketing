@@ -10,17 +10,17 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from ppc_agent_server.services import researcher
 from ppc_agent_server.services.council import QuestionTopic, classify_question
 from ppc_agent_server.services.humanizer import ANALYST_VOICE, ai_tells
 from ppc_agent_server.services.market_demo import SEASON_INDEX, demo_market_signals
@@ -43,6 +43,7 @@ from ppc_agent_server.services.researcher import (
     search_market_web,
     social_sentiment,
 )
+from ppc_agent_server.skills import BaseAgentSkill, SkillRegistry, web_search
 from tests_server.test_jobs_tasks import _client_account
 from tests_server.test_queen_agent import NOW
 from tests_server.test_queen_council import RESEARCHER_SAYS, _council, _CouncilVoice, _directive
@@ -370,7 +371,7 @@ def test_a_live_researcher_speaks_with_market_facts_only() -> None:
     voice = _CouncilVoice()
     reply = _council(voice=voice, market=LIVE).evaluate_client_query(QUESTION, _directive())
 
-    assert voice.roles == ["cfo", "chair", "researcher", "strategist"]
+    assert voice.roles == ["cfo", "chair", "cpo", "researcher", "strategist"]
     researcher = voice.prompt("researcher")
     assert "FAPTE DE PIAȚĂ" in researcher and "Au intrat 2 concurenți noi" in researcher
     assert "Verdict financiar" not in researcher
@@ -456,6 +457,23 @@ def test_the_brand_is_never_the_niche() -> None:
     )
 
 
+class _FakeSearch(BaseAgentSkill):
+    """Abilitatea ``web_search`` din teste: o functie in loc de DuckDuckGo."""
+
+    name = "web_search"
+    description = "Căutare falsă, pentru teste."
+
+    def __init__(self, search: Callable[[str], list[WebFinding]]) -> None:
+        self._search = search
+
+    async def execute(self, **kwargs: Any) -> list[WebFinding]:
+        return await asyncio.to_thread(self._search, kwargs["query"])
+
+
+def _skills(search: Callable[[str], list[WebFinding]]) -> SkillRegistry:
+    return SkillRegistry([_FakeSearch(search)])
+
+
 def test_two_real_searches_give_up_to_five_distinct_local_sources() -> None:
     asked: list[str] = []
 
@@ -464,7 +482,7 @@ def test_two_real_searches_give_up_to_five_distinct_local_sources() -> None:
         return _found(query, "yably.ro", "cylex.ro", "homerun.ro", "a.ro", "b.ro")
 
     findings, status, note = asyncio.run(
-        search_market_web("service auto", "București", year=2026, search=search)
+        search_market_web("service auto", "București", year=2026, registry=_skills(search))
     )
 
     assert sorted(asked) == [
@@ -484,7 +502,7 @@ def test_one_failed_search_does_not_lose_the_other() -> None:
         return _found(query, "yably.ro")
 
     findings, status, _ = asyncio.run(
-        search_market_web("service auto", "București", year=2026, search=search)
+        search_market_web("service auto", "București", year=2026, registry=_skills(search))
     )
 
     assert (status, [finding.source for finding in findings]) == ("ok", ["yably.ro"])
@@ -496,7 +514,9 @@ def test_a_hanging_search_times_out_gracefully() -> None:
         return _found(query, "yably.ro")
 
     findings, status, note = asyncio.run(
-        search_market_web("service auto", "București", year=2026, search=search, timeout=0.05)
+        search_market_web(
+            "service auto", "București", year=2026, registry=_skills(search), timeout=0.05
+        )
     )
 
     assert (findings, status) == ([], "failed")
@@ -505,7 +525,9 @@ def test_a_hanging_search_times_out_gracefully() -> None:
 
 def test_a_search_with_no_results_says_so() -> None:
     findings, status, note = asyncio.run(
-        search_market_web("service auto", "București", year=2026, search=lambda query: [])
+        search_market_web(
+            "service auto", "București", year=2026, registry=_skills(lambda query: [])
+        )
     )
 
     assert (findings, status) == ([], "empty")
@@ -528,7 +550,8 @@ def test_ddgs_results_become_cited_findings_cached_for_the_day(
             {"title": "", "href": "https://gol.ro/", "body": "fara titlu"},
         ]
 
-    monkeypatch.setattr(researcher, "ddgs_text", ddgs)
+    # Registrul implicit: Researcher-ul -> abilitatea web_search -> DuckDuckGo.
+    monkeypatch.setattr(web_search, "ddgs_text", ddgs)
     for _ in range(2):
         findings, status, _ = asyncio.run(search_market_web("service auto", "București", year=2026))
 
@@ -552,7 +575,7 @@ def test_the_loader_searches_the_niche_and_city_of_the_client(session: Session) 
         seen.append(query)
         return _found(query, "yably.ro")
 
-    signals = ClientMarketSignals(session, today=lambda: TODAY, search=search).load(
+    signals = ClientMarketSignals(session, today=lambda: TODAY, registry=_skills(search)).load(
         account.id or 0, SERVICE_QUERIES
     )
 

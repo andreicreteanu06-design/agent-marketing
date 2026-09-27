@@ -33,6 +33,7 @@ from ppc_agent_server.services.council import (
     CHAIR_SYSTEM_PROMPT,
     STRATEGIST_SYSTEM_PROMPT,
 )
+from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT
 from ppc_agent_server.services.hf_client import HuggingFaceChatClient, hf_client_from_settings
 from ppc_agent_server.services.queen_agent import SearchSignal
 from ppc_agent_server.services.queen_signals import DbFinancialSignals
@@ -220,6 +221,7 @@ _COUNCIL_ANSWERS = {
     ),
     CFO_SYSTEM_PROMPT: "Contul e rentabil: CPA-ul e 39,23 RON, sub ținta de 80 RON.",
     TECHNICIAN_SYSTEM_PROMPT: "Tracking: verde. Conversiile Google Ads ajung.",
+    CPO_SYSTEM_PROMPT: "Oferta se potrivește cu piața: «Ocupatul pragmatic» e și cel care cumpără.",
     CHAIR_SYSTEM_PROMPT: (
         "Da, dar controlat: contul e rentabil - CPA 39,23 RON, sub ținta de 80 RON - deci "
         "cheltuiala poate crește treptat, doar pe ce aduce deja clienți, pentru "
@@ -273,13 +275,15 @@ def test_chat_reply_is_deliberated_by_the_council_through_hugging_face(
         ("cfo", "llm"),
         ("technician", "llm"),
         ("researcher", "template"),
+        ("cpo", "llm"),
     ]
     # Researcher-ul are doar date demonstrative: se vede, marcat, dar nu ajunge la niciun LLM.
     assert body["opinions"][3]["demo"] is True
     assert body["market"]["is_demo"] is True
     assert body["ruling"]["market_context"] is None
-    # Patru apeluri: cei trei membri cu date reale, apoi sinteza - catre routerul HF simulat.
-    assert len(hf.requests) == 4
+    assert body["product"]["status"] == "fit"
+    # Cinci apeluri: cei patru membri cu date reale, apoi sinteza - catre routerul HF simulat.
+    assert len(hf.requests) == 5
     assert {request.url.host for request in hf.requests} == {"router.huggingface.co"}
     chair = json.loads(hf.requests[-1].content)["messages"]
     assert chair[0]["content"] == CHAIR_SYSTEM_PROMPT
@@ -319,7 +323,7 @@ def test_an_inventive_council_never_reaches_the_client(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(hf.requests) == 4
+    assert len(hf.requests) == 5
     assert body["source"] == "template"
     assert "40%" not in body["reply"]
     assert body["reply"].startswith("Da, dar controlat")
@@ -337,7 +341,7 @@ def test_hugging_face_down_still_gets_an_answer(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(hf.requests) == 4
+    assert len(hf.requests) == 5
     assert body["source"] == "template"
     assert body["topic"] == "channel"
     assert body["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
