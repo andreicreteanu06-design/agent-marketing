@@ -209,6 +209,31 @@ def test_a_positioning_gap_is_said_on_audience_questions_not_on_budget() -> None
     assert budget.ruling.offer is None
 
 
+def test_targeting_ideas_read_as_noun_phrases_in_the_reply_the_ruling_and_the_memory() -> None:
+    memory = _Memory()
+    council = QueenCouncil(_Static(LOSING), memory=memory, clock=lambda: NOW)
+
+    reply = council.evaluate_client_query(
+        "De ce a crescut costul pe client luna asta?", _directive(searches=MISPOSITIONED_SEARCHES)
+    )
+
+    # Imperativul e pentru agentie («Caută ...»); in frazele consiliului intra forma nominala.
+    assert "a tăiat caută" not in reply.reply.lower()
+    assert (
+        "CFO-ul a tăiat un test de interese apropiate de «automata», «cutie», «service», ca set "
+        "separat: cere buget în plus, iar contul nu e rentabil." in reply.reply
+    )
+    assert (
+        "butonul «Vezi prețurile» (sau un formular de ofertă) și reclame cu prețul în imagine: "
+        "nu adaugă cheltuieli"
+    ) in reply.ruling.approved
+    [cfo] = [entry for entry in memory.written if entry.role == "cfo"]
+    assert cfo.decision == (
+        "a tăiat un test de interese apropiate de «automata», «cutie», «service», ca set "
+        "separat, pentru că cere buget în plus, iar contul nu e rentabil"
+    )
+
+
 def test_broken_tracking_never_triggers_a_pivot() -> None:
     council = QueenCouncil(
         _Static(ALIGNED_FINANCES),

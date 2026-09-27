@@ -557,10 +557,6 @@ def _avatar_line(directive: BrandStrategyDirective) -> str:
     return f"«{avatar.name}» ({detail})"
 
 
-def _idea(text: str) -> str:
-    return _lower_first(text.strip()).rstrip(".")
-
-
 IdeaKind = Literal[
     "budget", "channel", "loser", "negatives", "rewrite", "paid_targeting", "free_targeting"
 ]
@@ -656,21 +652,23 @@ def _ideas(
             )
         )
 
+    # Forma nominala (``idea``), nu imperativul pentru agentie: textul intra in fraze
+    # ca «Consiliul susține ...» / «CFO-ul a tăiat ...» si in memoria consiliului.
     for adjustment in directive.targeting_adjustments:
-        suggestion = _idea(adjustment.suggestion)
+        idea = adjustment.idea
         if adjustment.kind in ("exclusion", "delivery"):
-            ideas.append(_Idea("free_targeting", True, f"{suggestion}: nu adaugă cheltuieli"))
+            ideas.append(_Idea("free_targeting", True, f"{idea}: nu adaugă cheltuieli"))
         elif profitable:
             ideas.append(
                 _Idea(
                     "paid_targeting",
                     True,
-                    f"{suggestion}: contul e rentabil, deci merită un test mic, în plafonul "
+                    f"{idea}: contul e rentabil, deci se poate testa cu buget mic, în plafonul "
                     "actual",
                 )
             )
         else:
-            text = f"{suggestion}: un test nou consumă buget, iar {blocker}"
+            text = f"{idea}: cere buget în plus, iar {blocker}"
             ideas.append(_Idea("paid_targeting", False, text))
 
     if question.new_channel is not None:

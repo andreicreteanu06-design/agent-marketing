@@ -361,7 +361,9 @@ def test_cfo_cuts_creative_ideas_that_need_money_on_a_losing_account() -> None:
     assert ruling.decision == "Nu acum: contul nu e rentabil. Întâi se taie ce pierde bani."
     assert ruling.cut[0] == "creșterea bugetului: contul nu e rentabil"
     assert any(
-        "testează-le ca set separat: un test nou consumă buget" in idea for idea in ruling.cut
+        idea.startswith("un test de interese apropiate de")
+        and idea.endswith("ca set separat: cere buget în plus, iar contul nu e rentabil")
+        for idea in ruling.cut
     )
     # Ce nu costa bani trece si pe un cont pe pierdere.
     approved = " | ".join(ruling.approved)

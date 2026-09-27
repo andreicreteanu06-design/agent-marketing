@@ -196,7 +196,10 @@ def test_targeting_excludes_the_profile_that_clicks_but_never_buys() -> None:
     kinds = {adjustment.kind: adjustment for adjustment in directive.targeting_adjustments}
 
     assert "Programează-te" in kinds["delivery"].suggestion
-    assert "Do it yourself" in kinds["exclusion"].suggestion
+    exclusion = kinds["exclusion"]
+    assert exclusion.suggestion == "Exclude interesele de tip «Do it yourself» / tutoriale."
+    # Aceeasi excludere, ca sintagma nominala - pentru frazele consiliului.
+    assert exclusion.idea == "excluderea intereselor de tip «Do it yourself» / tutoriale"
     assert "35 de click-uri plătite" in kinds["exclusion"].reason
     assert "cutie" in kinds["interest"].suggestion
     # 19 conversii nu ajung pentru audienta-sursa a unui lookalike (minim 100).

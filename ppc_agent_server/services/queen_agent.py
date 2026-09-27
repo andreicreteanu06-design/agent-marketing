@@ -208,7 +208,11 @@ class PersonaArchetype:
     copy_examples: tuple[str, ...]
     #: Cum se difuzeaza pe Meta pentru acest profil.
     delivery: str
-    #: Interesele Meta de exclus cand profilul consuma bani fara sa converteasca.
+    #: Acelasi lucru ca sintagma nominala, ca sa intre intr-o fraza («Consiliul susține ...»).
+    delivery_idea: str
+    #: Tipul de interese Meta de exclus cand profilul consuma bani fara sa converteasca,
+    #: fara substantiv («de tip ...»): intra si in «Exclude interesele ...», si in
+    #: «excluderea intereselor ...».
     exclusion_theme: str | None
     #: Jargonul tehnic il indeparteaza.
     rejects_jargon: bool
@@ -253,7 +257,10 @@ ARCHETYPES: tuple[PersonaArchetype, ...] = (
         delivery=(
             "Buton «Vezi prețurile» / formular de ofertă; testează reclame cu prețul în imagine."
         ),
-        exclusion_theme="interesele de tip «cupoane», «reduceri», «vânători de oferte»",
+        delivery_idea=(
+            "butonul «Vezi prețurile» (sau un formular de ofertă) și reclame cu prețul în imagine"
+        ),
+        exclusion_theme="de tip «cupoane», «reduceri», «vânători de oferte»",
         rejects_jargon=False,
     ),
     PersonaArchetype(
@@ -292,6 +299,7 @@ ARCHETYPES: tuple[PersonaArchetype, ...] = (
             "Rază geografică mică în jurul locației și butonul «Sună acum» - cine are "
             "o problemă acută nu traversează orașul."
         ),
+        delivery_idea="o rază geografică mică în jurul locației și butonul «Sună acum»",
         exclusion_theme=None,
         rejects_jargon=True,
     ),
@@ -333,6 +341,9 @@ ARCHETYPES: tuple[PersonaArchetype, ...] = (
             "Fără surprize",
         ),
         delivery="Reclame cu recenzii reale (carusel de testimoniale) și butonul «Află mai multe».",
+        delivery_idea=(
+            "reclame cu recenzii reale (carusel de testimoniale) și butonul «Află mai multe»"
+        ),
         exclusion_theme=None,
         rejects_jargon=False,
     ),
@@ -378,6 +389,10 @@ ARCHETYPES: tuple[PersonaArchetype, ...] = (
             "Butonul «Programează-te» (formular instant) și difuzare pe serile din "
             "timpul săptămânii și în weekend, când își planifică treburile."
         ),
+        delivery_idea=(
+            "butonul «Programează-te» (formular instant) și difuzarea în serile din timpul "
+            "săptămânii și în weekend"
+        ),
         exclusion_theme=None,
         rejects_jargon=True,
     ),
@@ -417,7 +432,8 @@ ARCHETYPES: tuple[PersonaArchetype, ...] = (
             "Retargeting pe cei care au citit articolele informative - au învățat de la "
             "tine, acum pot cumpăra."
         ),
-        exclusion_theme="interesele de tip «Do it yourself» / tutoriale",
+        delivery_idea="retargeting pe cei care au citit articolele informative",
+        exclusion_theme="de tip «Do it yourself» / tutoriale",
         rejects_jargon=False,
     ),
 )
@@ -569,7 +585,11 @@ class TargetingAdjustment(BaseModel):
 
     platform: Literal["meta"] = "meta"
     kind: AdjustmentKind
+    #: Ce e de facut, la imperativ («Caută ...», «Exclude ...»): pentru agentie.
     suggestion: str
+    #: Aceeasi sugestie ca sintagma nominala («un test de interese ...»), ca sa intre
+    #: intr-o fraza a consiliului: «Consiliul susține ...», «CFO-ul a tăiat ...».
+    idea: str
     reason: str
 
 
@@ -914,6 +934,7 @@ def _targeting(
         TargetingAdjustment(
             kind="delivery",
             suggestion=archetype.delivery,
+            idea=archetype.delivery_idea,
             reason=f"«{avatar.name}» e {_percent(avatar.share)} din ce aduce contul.",
         )
     ]
@@ -926,6 +947,7 @@ def _targeting(
                     "Caută în Detailed Targeting interese apropiate de "
                     f"{_quote(topics)} și testează-le ca set separat."
                 ),
+                idea=f"un test de interese apropiate de {_quote(topics)}, ca set separat",
                 reason=f"Temele care revin în căutările lui «{avatar.name}».",
             )
         )
@@ -934,6 +956,7 @@ def _targeting(
             TargetingAdjustment(
                 kind="audience",
                 suggestion="Lookalike 1% pornind de la cei care au convertit.",
+                idea="o audiență Lookalike 1% pornind de la cei care au convertit",
                 reason=(
                     f"{_count(attribution.conversions, 'conversii')} în fereastră - destule "
                     "pentru audiența-sursă minimă a Meta (100 de oameni)."
@@ -951,7 +974,8 @@ def _targeting(
             adjustments.append(
                 TargetingAdjustment(
                     kind="exclusion",
-                    suggestion=f"Exclude {other.exclusion_theme}.",
+                    suggestion=f"Exclude interesele {other.exclusion_theme}.",
+                    idea=f"excluderea intereselor {other.exclusion_theme}",
                     reason=(
                         f"Profilul «{other.name}» a adus "
                         f"{_count(segment.paid_clicks, 'click-uri plătite')} și nicio "
