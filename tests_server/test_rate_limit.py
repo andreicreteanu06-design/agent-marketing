@@ -1,4 +1,4 @@
-"""Limitarea frecventei: forta bruta pe login si costul Hugging Face pe chatul Reginei.
+"""Limitarea frecventei: forta bruta pe login si costul modelelor pe chatul Reginei.
 
 Limitele sunt in memoria procesului; ``conftest._fresh_rate_limits`` le goleste
 inainte de fiecare test.
@@ -112,7 +112,7 @@ def test_one_ip_cannot_spray_many_accounts(client: TestClient, agency_settings: 
     assert _login(client, "x", email="inca-unul@exemplu.ro") == 429
 
 
-# --- chatul Reginei: costul Hugging Face ---------------------------------------------
+# --- chatul Reginei: costul modelelor (Ollama local, Jev) ----------------------------
 
 
 def _chat(client: TestClient, headers: dict[str, str]) -> int:

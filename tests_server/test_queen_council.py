@@ -486,7 +486,7 @@ def test_an_inventive_queen_falls_back_to_the_deterministic_ruling() -> None:
 def test_a_failing_member_is_replaced_by_its_deterministic_position() -> None:
     voice = _CouncilVoice(
         {"strategist": "Am schimbat deja textele reclamei."},
-        errors={"cfo": RuntimeError("Hugging Face a răspuns 503")},
+        errors={"cfo": RuntimeError("Ollama a răspuns 500")},
     )
     reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
 

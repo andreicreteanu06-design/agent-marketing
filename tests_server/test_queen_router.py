@@ -1,19 +1,17 @@
 """Rutele Reginei: ``GET /client-message`` (mesajul CMO) si ``POST /chat`` (consiliul).
 
-Hugging Face e MEREU simulat: fie un ``HuggingFaceChatClient`` real peste un
-``httpx.MockTransport`` (drumul complet, fara retea), fie absent (fara cheie ->
-template). Search Console e o sursa falsa. Rutele trebuie sa raspunda 200 cu un
-mesaj utilizabil in orice situatie.
+Ollama si Jev sunt MEREU simulati: fie clientii reali peste ``FakeOllama`` /
+``FakeJev`` (``tests_server/llm_fakes.py`` - drumul complet, fara retea), fie absenti
+(fara ``OLLAMA_HOST`` / ``JEV_API_KEY`` -> template si reguli fixe). Search Console e
+o sursa falsa. Rutele trebuie sa raspunda 200 cu un mesaj utilizabil in orice situatie.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,12 +31,12 @@ from ppc_agent_server.services.council import (
     CHAIR_SYSTEM_PROMPT,
     STRATEGIST_SYSTEM_PROMPT,
 )
-from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT
-from ppc_agent_server.services.hf_client import HuggingFaceChatClient, hf_client_from_settings
+from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT, EFFORT_LEVELS, IMPACT_LEVELS
+from ppc_agent_server.services.llm_client import LLMRouter
 from ppc_agent_server.services.queen_agent import SearchSignal
 from ppc_agent_server.services.queen_signals import DbFinancialSignals
 from ppc_agent_server.services.technician import TECHNICIAN_SYSTEM_PROMPT
-from ppc_agent_server.settings import ServerSettings
+from tests_server.llm_fakes import FakeJev, FakeOllama
 from tests_server.test_brand_alignment import (
     TECHNICAL_HEADLINE,
     _FakeSeoIntent,
@@ -55,24 +53,6 @@ _LLM_ANSWER = (
 )
 
 
-class _HuggingFaceMock:
-    """Routerul Hugging Face simulat: tine minte cererile, raspunde ce i se spune."""
-
-    def __init__(self, response: httpx.Response | None = None) -> None:
-        self.requests: list[httpx.Request] = []
-        self.response = response or httpx.Response(
-            200, json={"choices": [{"message": {"role": "assistant", "content": _LLM_ANSWER}}]}
-        )
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        return self.response
-
-    def client(self) -> HuggingFaceChatClient:
-        return HuggingFaceChatClient(
-            api_key="hf_test", model="test/cmo", transport=httpx.MockTransport(self)
-        )
-
 
 @pytest.fixture
 def signed_in(
@@ -81,10 +61,7 @@ def signed_in(
     app = client.app
     assert isinstance(app, FastAPI)
     app.dependency_overrides[queen.get_seo_intent] = lambda: _FakeSeoIntent()
-    # Implicit: nicio cheie Hugging Face, oricare ar fi .env-ul masinii de test.
-    app.dependency_overrides[queen.get_cmo_voice] = lambda: hf_client_from_settings(
-        ServerSettings(huggingface_api_key="")
-    )
+    # Implicit (conftest): fara OLLAMA_HOST si fara JEV_API_KEY, oricare ar fi .env-ul.
     token = client.post(
         "/api/v1/signup",
         json={"name": "Autofix", "email": "client@autofix.ro", "password": "parola-sigura-123"},
@@ -105,28 +82,28 @@ def _seed(session: Session, account_id: int) -> None:
     _seed_meta_launch(session, account_id)
 
 
-def test_message_comes_from_hugging_face_when_a_key_is_configured(
-    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], session: Session
+def test_message_comes_from_the_local_model_when_ollama_is_configured(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
 ) -> None:
     client, app, headers, account_id = signed_in
     _seed(session, account_id)
-    hf = _HuggingFaceMock()
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    fake_ollama.reply = _LLM_ANSWER
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
 
     response = client.get(_URL, headers=headers)
 
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["source"] == "llm"
-    assert body["model"] == "test/cmo"
+    assert body["model"] == "llama3"
     assert body["message"] == _LLM_ANSWER
     assert body["fallback_reason"] is None
     assert body["directive_status"] == "ok"
     assert body["client_account_id"] == account_id
 
-    [request] = hf.requests
-    assert request.url.host == "router.huggingface.co"
-    sent = json.loads(request.content)
+    [sent] = fake_ollama.requests
     system, user = (message["content"] for message in sent["messages"])
     assert "Senior AI Chief Marketing Officer" in system
     assert "«Ocupatul pragmatic»" in user
@@ -150,35 +127,26 @@ def test_without_a_key_the_route_answers_from_the_template(
     assert "Reclama «Schimb ulei ATF cutie automata» nu îi vorbește" in body["message"]
 
 
-@pytest.mark.parametrize(
-    "hf_response",
-    [
-        httpx.Response(503, json={"error": "Model is overloaded"}),
-        httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"content": "Am dublat bugetul și vei avea 40% mai mulți clienți."}}
-                ]
-            },
-        ),
-    ],
-)
+@pytest.mark.parametrize("failure", ["error", "inventive"])
 def test_a_failing_or_inventive_model_never_breaks_the_route(
     signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
     session: Session,
-    hf_response: httpx.Response,
+    fake_ollama: FakeOllama,
+    failure: str,
 ) -> None:
     client, app, headers, account_id = signed_in
     _seed(session, account_id)
-    hf = _HuggingFaceMock(hf_response)
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    if failure == "error":
+        fake_ollama.status = 500
+    else:
+        fake_ollama.reply = "Am dublat bugetul și vei avea 40% mai mulți clienți."
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
 
     response = client.get(_URL, headers=headers)
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(hf.requests) == 1
+    assert len(fake_ollama.requests) == 1
     assert body["source"] == "template"
     assert body["fallback_reason"]
     assert "bugetul" not in body["message"]
@@ -186,11 +154,10 @@ def test_a_failing_or_inventive_model_never_breaks_the_route(
 
 
 def test_new_client_without_data_gets_the_standard_message(
-    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], fake_ollama: FakeOllama
 ) -> None:
     client, app, headers, _ = signed_in
-    hf = _HuggingFaceMock()
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
     app.dependency_overrides[queen.get_seo_intent] = lambda: _FakeSeoIntent(
         [SearchSignal("autofix", "organic", 10, 2)]
     )
@@ -202,7 +169,7 @@ def test_new_client_without_data_gets_the_standard_message(
     assert body["directive_status"] == "insufficient_data"
     assert body["source"] == "template"
     assert body["message"].startswith("Încă nu pot contura clientul tău ideal.")
-    assert hf.requests == []  # fara client ideal, nu are ce explica un LLM
+    assert fake_ollama.requests == []  # fara client ideal, nu are ce explica un LLM
 
 
 def test_route_requires_a_signed_in_client(
@@ -230,34 +197,22 @@ _COUNCIL_ANSWERS = {
 }
 
 
-class _CouncilHuggingFace:
-    """Routerul Hugging Face pentru consiliu: raspunde dupa promptul de sistem primit."""
-
-    def __init__(self, chair: str | None = None) -> None:
-        self.requests: list[httpx.Request] = []
-        self.answers = dict(_COUNCIL_ANSWERS)
-        if chair is not None:
-            self.answers[CHAIR_SYSTEM_PROMPT] = chair
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        system = json.loads(request.content)["messages"][0]["content"]
-        content = self.answers[system]
-        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
-
-    def client(self) -> HuggingFaceChatClient:
-        return HuggingFaceChatClient(
-            api_key="hf_test", model="test/council", transport=httpx.MockTransport(self)
-        )
+def _council_ollama(fake: FakeOllama, chair: str | None = None) -> FakeOllama:
+    """Ollama pentru consiliu: raspunde dupa promptul de sistem primit."""
+    fake.replies = dict(_COUNCIL_ANSWERS)
+    if chair is not None:
+        fake.replies[CHAIR_SYSTEM_PROMPT] = chair
+    return fake
 
 
-def test_chat_reply_is_deliberated_by_the_council_through_hugging_face(
-    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], session: Session
+def test_chat_reply_is_deliberated_by_the_council_through_the_local_model(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
 ) -> None:
     client, app, headers, account_id = signed_in
     _seed(session, account_id)
-    hf = _CouncilHuggingFace()
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    app.dependency_overrides[queen.get_llm_router] = _council_ollama(fake_ollama).router
 
     response = client.post(_CHAT_URL, headers=headers, json={"message": "Merită să cresc bugetul?"})
 
@@ -265,7 +220,7 @@ def test_chat_reply_is_deliberated_by_the_council_through_hugging_face(
     body = response.json()
     assert body["reply"] == _COUNCIL_ANSWERS[CHAIR_SYSTEM_PROMPT]
     assert body["source"] == "llm"
-    assert body["model"] == "test/council"
+    assert body["model"] == "llama3"
     assert body["topic"] == "budget"
     assert body["financial_status"] == "profitable"
     assert body["directive_status"] == "ok"
@@ -282,10 +237,11 @@ def test_chat_reply_is_deliberated_by_the_council_through_hugging_face(
     assert body["market"]["is_demo"] is True
     assert body["ruling"]["market_context"] is None
     assert body["product"]["status"] == "fit"
-    # Cinci apeluri: cei patru membri cu date reale, apoi sinteza - catre routerul HF simulat.
-    assert len(hf.requests) == 5
-    assert {request.url.host for request in hf.requests} == {"router.huggingface.co"}
-    chair = json.loads(hf.requests[-1].content)["messages"]
+    # Cinci generari locale: cei patru membri cu date reale, apoi sinteza. Fara Jev,
+    # mutarile CPO-ului pastreaza estimarile fixe.
+    assert len(fake_ollama.requests) == 5
+    assert all(move["estimated_by"] == "fixed" for move in body["product"]["moves"])
+    chair = fake_ollama.requests[-1]["messages"]
     assert chair[0]["content"] == CHAIR_SYSTEM_PROMPT
     assert "«Merită să cresc bugetul?»" in chair[1]["content"]
     assert "DECIZIA CONSILIULUI" in chair[1]["content"]
@@ -312,48 +268,101 @@ def test_chat_without_a_key_answers_from_the_deterministic_council(
 
 
 def test_an_inventive_council_never_reaches_the_client(
-    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], session: Session
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
 ) -> None:
     client, app, headers, account_id = signed_in
     _seed(session, account_id)
-    hf = _CouncilHuggingFace(chair="Dublează bugetul: vei avea 40% mai mulți clienți.")
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    chair = "Dublează bugetul: vei avea 40% mai mulți clienți."
+    app.dependency_overrides[queen.get_llm_router] = _council_ollama(fake_ollama, chair).router
 
     response = client.post(_CHAT_URL, headers=headers, json={"message": "Pot dubla bugetul?"})
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(hf.requests) == 5
+    assert len(fake_ollama.requests) == 5
     assert body["source"] == "template"
     assert "40%" not in body["reply"]
     assert body["reply"].startswith("Da, dar controlat")
 
 
-def test_hugging_face_down_still_gets_an_answer(
-    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], session: Session
+def test_a_failing_local_model_still_gets_an_answer(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
 ) -> None:
     client, app, headers, account_id = signed_in
     _seed(session, account_id)
-    hf = _HuggingFaceMock(httpx.Response(503, json={"error": "Model is overloaded"}))
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    fake_ollama.status = 500
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
 
     response = client.post(_CHAT_URL, headers=headers, json={"message": "Ce zici de TikTok?"})
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(hf.requests) == 5
+    assert len(fake_ollama.requests) == 5
     assert body["source"] == "template"
     assert body["topic"] == "channel"
     assert body["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
     assert all(opinion["source"] == "template" for opinion in body["opinions"])
 
 
-def test_new_client_gets_no_generic_llm_advice(
+def test_ollama_not_running_falls_back_without_waiting_on_every_call(
     signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    fake_ollama.down = True
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
+
+    response = client.post(_CHAT_URL, headers=headers, json={"message": "Ce zici de TikTok?"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "template"
+    assert "LLMUnavailableError" in body["fallback_reason"]
+    assert body["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
+    assert all(opinion["source"] == "template" for opinion in body["opinions"])
+    # Membrii au incercat in paralel; sinteza, dupa ei, nu mai asteapta nicio conexiune.
+    assert 1 <= fake_ollama.connections <= 4
+
+
+def test_jev_scores_the_cpo_moves_and_ollama_writes_the_answer(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_jev: FakeJev,
+    fake_ollama: FakeOllama,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    # Impact "High" (2), efort "A few days" (0,5), ambele sigure.
+    fake_jev.score_rule = lambda state, qid: (3.0, 0.9) if qid.startswith("impact") else (0.0, 0.9)
+    router = LLMRouter(jev=fake_jev.client(), ollama=_council_ollama(fake_ollama).client())
+    app.dependency_overrides[queen.get_llm_router] = lambda: router
+
+    response = client.post(_CHAT_URL, headers=headers, json={"message": "Merită să cresc bugetul?"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "llm"
+    [move] = body["product"]["moves"]
+    assert (move["kind"], move["estimated_by"]) == ("message", "jev")
+    assert (move["impact"], move["effort"]) == (IMPACT_LEVELS[3][1], EFFORT_LEVELS[0][1])
+    # O singura cerere Jev (cautarea pe web e offline in teste, deci nimic de verificat).
+    [scored] = fake_jev.requests
+    assert set(scored["questions"]) == {"impact_0", "effort_0"}
+    assert scored["state"]["moves"][0]["description"].startswith("rescrierea mesajului")
+    assert len(fake_ollama.requests) == 5
+
+
+def test_new_client_gets_no_generic_llm_advice(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], fake_ollama: FakeOllama
 ) -> None:
     client, app, headers, _ = signed_in
-    hf = _CouncilHuggingFace()
-    app.dependency_overrides[queen.get_cmo_voice] = hf.client
+    app.dependency_overrides[queen.get_llm_router] = _council_ollama(fake_ollama).router
     app.dependency_overrides[queen.get_seo_intent] = lambda: _FakeSeoIntent(
         [SearchSignal("autofix", "organic", 10, 2)]
     )
@@ -362,7 +371,7 @@ def test_new_client_gets_no_generic_llm_advice(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert hf.requests == []
+    assert fake_ollama.requests == []
     assert body["financial_status"] == "insufficient_data"
     assert body["reply"].startswith("Încă nu am destule date ca să-ți răspund pe cifre")
 

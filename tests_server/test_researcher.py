@@ -26,6 +26,7 @@ from ppc_agent_server.services.humanizer import ANALYST_VOICE, ai_tells
 from ppc_agent_server.services.market_demo import SEASON_INDEX, demo_market_signals
 from ppc_agent_server.services.queen_signals import ClientMarketSignals
 from ppc_agent_server.services.researcher import (
+    RELEVANCE_QUESTION,
     RESEARCHER_SYSTEM_PROMPT,
     AuctionSnapshot,
     CompetitorMove,
@@ -44,6 +45,7 @@ from ppc_agent_server.services.researcher import (
     social_sentiment,
 )
 from ppc_agent_server.skills import BaseAgentSkill, SkillRegistry, web_search
+from tests_server.llm_fakes import FakeJev
 from tests_server.test_jobs_tasks import _client_account
 from tests_server.test_queen_agent import NOW
 from tests_server.test_queen_council import RESEARCHER_SAYS, _council, _CouncilVoice, _directive
@@ -534,6 +536,98 @@ def test_a_search_with_no_results_says_so() -> None:
     assert note == "Căutarea pe web n-a găsit nimic despre «service auto» în București."
 
 
+def _about_car_service(state: dict[str, Any], qid: str) -> float:
+    """Jev-ul fals: "da" doar pentru fragmentele despre service-uri auto."""
+    return 0.92 if "service" in state["search_result"]["title"].lower() else 0.08
+
+
+def _mixed_results(query: str) -> list[WebFinding]:
+    return [
+        WebFinding(query=query, title="Service auto Titan", snippet="Revizii.", source="titan.ro"),
+        WebFinding(query=query, title="Rețete de clătite", snippet="Făină.", source="retete.ro"),
+    ]
+
+
+def test_jev_keeps_only_the_snippets_about_the_niche(fake_jev: FakeJev) -> None:
+    fake_jev.noul_rule = _about_car_service
+
+    findings, status, note = asyncio.run(
+        search_market_web(
+            "service auto",
+            "București",
+            year=2026,
+            registry=_skills(_mixed_results),
+            verifier=fake_jev.router(),
+        )
+    )
+
+    assert (status, note) == ("ok", "")
+    assert [finding.source for finding in findings] == ["titan.ro"]
+    # O cerere per fragment (2 interogari x 2 fragmente), cu state-ul minim: nisa + fragmentul.
+    assert len(fake_jev.requests) == 4
+    request = fake_jev.requests[0]
+    assert request["questions"] == {"verify": RELEVANCE_QUESTION.payload()}
+    assert set(request["state"]) == {"client_niche", "search_result"}
+    assert request["state"]["client_niche"] == "service auto"
+    assert set(request["state"]["search_result"]) == {"title", "snippet", "site"}
+
+
+def test_when_jev_finds_nothing_relevant_the_search_says_so(fake_jev: FakeJev) -> None:
+    fake_jev.noul_rule = lambda state, qid: 0.05
+
+    findings, status, note = asyncio.run(
+        search_market_web(
+            "service auto",
+            "București",
+            year=2026,
+            registry=_skills(_mixed_results),
+            verifier=fake_jev.router(),
+        )
+    )
+
+    assert (findings, status) == ([], "empty")
+    assert note == "Căutarea pe web n-a găsit nimic relevant despre «service auto» în București."
+
+
+def test_without_an_answer_from_jev_every_snippet_stays(fake_jev: FakeJev) -> None:
+    fake_jev.status = 500
+
+    findings, status, _ = asyncio.run(
+        search_market_web(
+            "service auto",
+            "București",
+            year=2026,
+            registry=_skills(_mixed_results),
+            verifier=fake_jev.router(),
+        )
+    )
+
+    assert status == "ok"
+    assert [finding.source for finding in findings] == ["titan.ro", "retete.ro"]
+
+
+def test_a_slow_jev_never_holds_the_search(fake_jev: FakeJev) -> None:
+    def slow(state: dict[str, Any], qid: str) -> float:
+        time.sleep(0.5)
+        return 0.05
+
+    fake_jev.noul_rule = slow
+
+    findings, status, _ = asyncio.run(
+        search_market_web(
+            "service auto",
+            "București",
+            year=2026,
+            registry=_skills(_mixed_results),
+            verifier=fake_jev.router(),
+            timeout=0.1,
+        )
+    )
+
+    assert status == "ok"
+    assert len(findings) == 2  # verificarea n-a venit la timp: raman toate
+
+
 def test_ddgs_results_become_cited_findings_cached_for_the_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -585,6 +679,20 @@ def test_the_loader_searches_the_niche_and_city_of_the_client(session: Session) 
         "ok",
     )
     assert "competitori service auto București" in seen
+
+
+def test_the_loader_passes_the_jev_verifier_to_the_search(
+    session: Session, fake_jev: FakeJev
+) -> None:
+    account = _client_account(session)
+    fake_jev.noul_rule = _about_car_service
+
+    signals = ClientMarketSignals(
+        session, today=lambda: TODAY, registry=_skills(_mixed_results), verifier=fake_jev.router()
+    ).load(account.id or 0, SERVICE_QUERIES)
+
+    assert [finding.source for finding in signals.web] == ["titan.ro"]
+    assert fake_jev.requests
 
 
 WEB = replace(

@@ -1,0 +1,546 @@
+"""Ruterul LLM hibrid: Sistemul 1 (Jev) decide, Sistemul 2 (Ollama, local) scrie.
+
+Doua feluri de munca, doua modele:
+
+- **Sistemul 1 - Jev** (TypeSafe AI, ``POST https://api.typesafe.ai/v1/systemone``):
+  decizii structurate si rapide - alege o optiune (``choice``), noteaza pe o scara
+  ordonata (``score``), raspunde da/nu (``noul``). Nu scrie text: intoarce raspunsuri
+  tipizate, cu probabilitati si ``confidence``, si se plateste doar pe tokenii de
+  intrare. Aici: :meth:`LLMRouter.jev_classify`, :meth:`~LLMRouter.jev_score`,
+  :meth:`~LLMRouter.jev_verify`.
+- **Sistemul 2 - Ollama** (``POST {OLLAMA_HOST}/api/chat``, pe masina noastra): tot
+  textul scris pentru client - vocea Reginei, parerile consiliului, sinteza. Aici:
+  :meth:`LLMRouter.generate_text_local`; ruterul e si ``TextGenerator``-ul pe care il
+  primesc Regina si consiliul, deci orice generare trece pe acolo.
+
+:class:`LLMRouter` trimite fiecare sarcina (``task_type``, vezi :data:`ROUTES`) la
+sistemul ei. Ce nu e configurat, sau nu raspunde, ridica :class:`LLMError`, iar
+apelantii cad pe varianta determinista: template-urile consiliului, estimarile RICE
+din tabel, toate fragmentele web. Modulul nu decide nimic despre client: stie doar
+sa intrebe si sa verifice forma raspunsului.
+
+Jev, dupa documentatia lui (docs.typesafe.ai, ``jev-1.13``):
+
+- intrebarile si criteriile se scriu in engleza, unde modelul e cel mai precis;
+  continutul clientului sta in ``state``, in romana;
+- aritmetica ramane in cod: un ``score`` alege un NIVEL, valoarea lui o da codul;
+- sub :data:`MIN_CONFIDENCE` (0,5 - pragul "nu ghici" din documentatie) raspunsul
+  nu se foloseste;
+- 429/529 (limita, suprasarcina) -> o singura reincercare, dupa ``retry-after``.
+
+Ollama, cand nu raspunde (nepornit, alta adresa, prea lent pentru masina): dupa o
+conexiune picata sau un timeout, apelurile cad direct pe template
+:data:`OLLAMA_COOLDOWN_SECONDS`, fara sa mai astepte fiecare un timeout.
+
+Fara SDK-uri (``typesafe-sdk``, ``ollama``): doar ``httpx``, deja dependinta.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import re
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, TypeAlias, TypeVar
+
+import httpx
+
+from ppc_agent_server.settings import ServerSettings
+
+logger = logging.getLogger("ppc_agent_server.services.llm_client")
+
+#: Orice e JSON: ce poate intra in ``state``-ul unei cereri Jev.
+JsonValue: TypeAlias = (
+    "str | int | float | bool | Sequence[JsonValue] | Mapping[str, JsonValue] | None"
+)
+
+#: Cat din corpul unui raspuns de eroare ajunge in mesaj (si in log-uri).
+_ERROR_DETAIL_CHARS = 200
+
+
+class LLMError(RuntimeError):
+    """Un model nu a dat un raspuns utilizabil - apelantul cade pe varianta determinista."""
+
+
+class LLMUnavailableError(LLMError):
+    """Sistemul cerut nu e configurat sau nu raspunde deloc (nepornit, alta adresa)."""
+
+
+def _error_detail(response: httpx.Response) -> str:
+    try:
+        body: Any = response.json()
+    except ValueError:
+        return response.text[:_ERROR_DETAIL_CHARS]
+    if isinstance(body, dict):
+        error = body.get("error") or body.get("detail")
+        if isinstance(error, dict):
+            error = error.get("message") or error
+        if error:
+            return str(error)[:_ERROR_DETAIL_CHARS]
+    return str(body)[:_ERROR_DETAIL_CHARS]
+
+
+# --- Sistemul 1: Jev ---------------------------------------------------------------
+
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+#: Ultima versiune stabila (azi ``jev-1.13.0``); raspunsul spune ce versiune a raspuns.
+DEFAULT_JEV_MODEL = "jev-latest"
+#: Implicitul SDK-ului oficial, pe operatie HTTP.
+JEV_TIMEOUT_SECONDS = 10.0
+#: Sub atat, un raspuns Choice/Score nu se foloseste (pragul "nu ghici" din documentatie).
+MIN_CONFIDENCE = 0.5
+#: De la cat un ``noul`` e "da".
+YES = 0.5
+#: Limitele documentate ale API-ului.
+MAX_CHOICE_OPTIONS = 255
+MIN_SCORE_LEVELS = 2
+MAX_SCORE_LEVELS = 10
+#: 429 = limita depasita, 529 = TypeSafe suprasolicitat: se reincearca o data.
+_RETRY_STATUSES = frozenset({429, 529})
+_RETRY_WAIT_SECONDS = 0.5
+_MAX_RETRY_WAIT_SECONDS = 2.0
+
+
+class JevError(LLMError):
+    """Jev nu a intors un raspuns utilizabil (retea, cheie, limita, forma)."""
+
+
+def _instructions(text: str) -> str:
+    if not text.strip():
+        raise ValueError("o întrebare Jev are nevoie de «instructions»")
+    return text
+
+
+@dataclass(frozen=True, slots=True)
+class Noul:
+    """Intrebare da/nu: Jev intoarce probabilitatea ca raspunsul sa fie "da"."""
+
+    type: ClassVar[str] = "noul"
+    instructions: str
+    #: Ce inseamna "da", respectiv "nu" - optional, dar scade citirea "literala".
+    true: str | None = None
+    false: str | None = None
+
+    def payload(self) -> dict[str, Any]:
+        body: dict[str, Any] = {"type": self.type, "instructions": _instructions(self.instructions)}
+        criteria = {key: text for key, text in (("true", self.true), ("false", self.false)) if text}
+        if criteria:
+            body["criteria"] = criteria
+        return body
+
+
+@dataclass(frozen=True, slots=True)
+class Choice:
+    """Alege una dintre optiuni; Jev intoarce optiunea, probabilitatile si ``confidence``."""
+
+    type: ClassVar[str] = "choice"
+    instructions: str
+    #: Optiunea -> descrierea ei (``None`` = fara detalii). Intre 2 si 255.
+    options: Mapping[str, str | None]
+
+    def payload(self) -> dict[str, Any]:
+        if not 2 <= len(self.options) <= MAX_CHOICE_OPTIONS:
+            raise ValueError(f"un Choice are între 2 și {MAX_CHOICE_OPTIONS} opțiuni")
+        return {
+            "type": self.type,
+            "instructions": _instructions(self.instructions),
+            "criteria": dict(self.options),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Score:
+    """Noteaza pe o scara ordonata; Jev intoarce pozitia (poate cadea intre niveluri)."""
+
+    type: ClassVar[str] = "score"
+    instructions: str
+    #: Nivelurile, de la cel mai mic la cel mai mare. Intre 2 si 10.
+    levels: tuple[str, ...]
+
+    def payload(self) -> dict[str, Any]:
+        if not MIN_SCORE_LEVELS <= len(self.levels) <= MAX_SCORE_LEVELS:
+            raise ValueError(
+                f"un Score are între {MIN_SCORE_LEVELS} și {MAX_SCORE_LEVELS} niveluri"
+            )
+        return {
+            "type": self.type,
+            "instructions": _instructions(self.instructions),
+            "criteria": list(self.levels),
+        }
+
+
+Question: TypeAlias = Noul | Choice | Score
+
+
+@dataclass(frozen=True, slots=True)
+class NoulAnswer:
+    #: 0 = nu, 1 = da.
+    noul: float
+
+    def yes(self, threshold: float = YES) -> bool:
+        return self.noul >= threshold
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceAnswer:
+    choice: str
+    probabilities: dict[str, float]
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreAnswer:
+    #: Pozitia ponderata pe scara (0 = primul nivel); poate cadea intre niveluri.
+    score: float
+    legend: dict[str, str]
+    probabilities: dict[str, float]
+    confidence: float
+
+    @property
+    def level(self) -> int:
+        """Nivelul ales: pozitia rotunjita (prag la jumatate), in limitele scarii.
+
+        Documentatia: scorul spune doar ce prag a trecut, nu o valoare intre niveluri.
+        """
+        top = max(len(self.legend) - 1, 0)
+        return min(max(math.floor(self.score + 0.5), 0), top)
+
+
+Answer: TypeAlias = NoulAnswer | ChoiceAnswer | ScoreAnswer
+_Typed = TypeVar("_Typed", NoulAnswer, ChoiceAnswer, ScoreAnswer)
+
+
+def _unexpected(question_id: str) -> JevError:
+    return JevError(f"Jev a întors un răspuns neașteptat pentru «{question_id}»")
+
+
+def _number(value: object, question_id: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise _unexpected(question_id)
+    return float(value)
+
+
+def _unit(value: object, question_id: str) -> float:
+    number = _number(value, question_id)
+    if not 0.0 <= number <= 1.0:
+        raise _unexpected(question_id)
+    return number
+
+
+def _distribution(value: object, question_id: str) -> dict[str, float]:
+    if not isinstance(value, dict) or not value:
+        raise _unexpected(question_id)
+    return {str(key): _unit(probability, question_id) for key, probability in value.items()}
+
+
+def _answer(question_id: str, question: Question, raw: object) -> Answer:
+    """Raspunsul pentru o intrebare, verificat pe forma documentata a API-ului."""
+    if not isinstance(raw, dict) or raw.get("type") != question.type:
+        raise _unexpected(question_id)
+    if isinstance(question, Noul):
+        return NoulAnswer(_unit(raw.get("noul"), question_id))
+    confidence = _unit(raw.get("confidence"), question_id)
+    probabilities = _distribution(raw.get("probabilities"), question_id)
+    if isinstance(question, Choice):
+        choice = raw.get("choice")
+        if not isinstance(choice, str) or choice not in question.options:
+            raise _unexpected(question_id)
+        return ChoiceAnswer(choice, probabilities, confidence)
+    legend = raw.get("legend")
+    if not isinstance(legend, dict) or len(legend) != len(question.levels):
+        raise _unexpected(question_id)
+    return ScoreAnswer(
+        score=_number(raw.get("score"), question_id),
+        legend={str(key): str(text) for key, text in legend.items()},
+        probabilities=probabilities,
+        confidence=confidence,
+    )
+
+
+def _typed(question_id: str, answer: Answer, kind: type[_Typed]) -> _Typed:
+    if not isinstance(answer, kind):
+        raise _unexpected(question_id)
+    return answer
+
+
+def _retry_wait(response: httpx.Response) -> float:
+    try:
+        wait = float(response.headers.get("retry-after", _RETRY_WAIT_SECONDS))
+    except ValueError:
+        wait = _RETRY_WAIT_SECONDS
+    return min(max(wait, 0.0), _MAX_RETRY_WAIT_SECONDS)
+
+
+@dataclass(frozen=True, slots=True)
+class JevClient:
+    """Clientul HTTP pentru Jev: ``state`` + intrebari tipizate -> raspunsuri tipizate."""
+
+    api_key: str
+    model: str = DEFAULT_JEV_MODEL
+    timeout: float = JEV_TIMEOUT_SECONDS
+    url: str = JEV_URL
+    transport: httpx.BaseTransport | None = None
+    sleep: Callable[[float], None] = time.sleep
+
+    def system_one(
+        self, state: JsonValue, questions: Mapping[str, Question]
+    ) -> dict[str, Answer]:
+        """Toate intrebarile, evaluate intr-o singura cerere, pe acelasi ``state``.
+
+        Raises:
+            ValueError: nicio intrebare, sau o intrebare in afara limitelor API-ului.
+            JevError: retea, cheie, limita sau un raspuns fara forma documentata -
+                fara cheia in mesaj.
+        """
+        if not questions:
+            raise ValueError("Jev are nevoie de cel puțin o întrebare")
+        payload = {
+            "state": state,
+            "model": self.model,
+            "questions": {qid: question.payload() for qid, question in questions.items()},
+        }
+        response = self._post(payload)
+        if response.status_code in _RETRY_STATUSES:
+            self.sleep(_retry_wait(response))
+            response = self._post(payload)
+        if response.status_code != 200:
+            raise JevError(f"Jev a răspuns {response.status_code}: {_error_detail(response)}")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise JevError("Jev a întors un răspuns neașteptat (nu e JSON)") from exc
+        answers = body.get("answers") if isinstance(body, dict) else None
+        if not isinstance(answers, dict):
+            raise JevError("Jev a întors un răspuns fără «answers»")
+        parsed = {qid: _answer(qid, q, answers.get(qid)) for qid, q in questions.items()}
+        usage = body.get("usage")
+        logger.debug("[Jev] %s: %d răspunsuri, %s", body.get("model"), len(parsed), usage)
+        return parsed
+
+    def _post(self, payload: dict[str, Any]) -> httpx.Response:
+        try:
+            with httpx.Client(transport=self.transport, timeout=self.timeout) as client:
+                return client.post(
+                    self.url, headers={"Authorization": f"Bearer {self.api_key}"}, json=payload
+                )
+        except httpx.HTTPError as exc:
+            raise JevError(f"Jev nu a răspuns ({type(exc).__name__})") from exc
+
+
+# --- Sistemul 2: Ollama ------------------------------------------------------------
+
+#: Acelasi model ca la copywriterul din CLI (``PPC_LLM_MODEL``): un singur ``ollama pull``.
+DEFAULT_OLLAMA_MODEL = "llama3"
+#: Serverul e local: daca nu accepta conexiunea in 2 s, nu e pornit.
+OLLAMA_CONNECT_TIMEOUT_SECONDS = 2.0
+#: Generarea pe CPU poate dura - ca la copywriterul din CLI.
+OLLAMA_TIMEOUT_SECONDS = 60.0
+#: Dupa o conexiune picata sau un timeout, cat timp apelurile cad direct pe template.
+OLLAMA_COOLDOWN_SECONDS = 30.0
+_OLLAMA_PREFIX = "ollama/"
+#: Modelele care "gandesc" (qwen3, deepseek-r1) pot pune rationamentul in text.
+_THINKING = re.compile(r"^\s*<think>.*?</think>", re.DOTALL)
+
+#: Gazda Ollama -> momentul (``time.monotonic``) pana la care nu se mai incearca.
+_resting_until: dict[str, float] = {}
+_resting_lock = threading.Lock()
+
+
+def reset_llm_state() -> None:
+    """Uita serverele Ollama gasite oprite - pentru teste."""
+    with _resting_lock:
+        _resting_until.clear()
+
+
+def ollama_model_tag(model: str) -> str:
+    """Tag-ul pentru API-ul Ollama: fara prefixul ``ollama/`` (stil LiteLLM, ca in CLI)."""
+    model = model.strip()
+    return model[len(_OLLAMA_PREFIX) :] if model.lower().startswith(_OLLAMA_PREFIX) else model
+
+
+class OllamaError(LLMError):
+    """Ollama n-a dat un text utilizabil (prea lent, model lipsa, eroare, raspuns gol)."""
+
+
+@dataclass(frozen=True, slots=True)
+class OllamaChatClient:
+    """Chat cu un model Ollama local - implementeaza ``queen_agent.TextGenerator``."""
+
+    #: Adresa normalizata (``settings.normalize_ollama_host``), fara ``/`` la final.
+    host: str
+    model: str = DEFAULT_OLLAMA_MODEL
+    timeout: float = OLLAMA_TIMEOUT_SECONDS
+    connect_timeout: float = OLLAMA_CONNECT_TIMEOUT_SECONDS
+    #: Raspunsuri scurte si temperatura mica: formulare, nu creativitate - faptele vin din date.
+    max_tokens: int = 450
+    temperature: float = 0.3
+    cooldown: float = OLLAMA_COOLDOWN_SECONDS
+    transport: httpx.BaseTransport | None = None
+    clock: Callable[[], float] = time.monotonic
+
+    def complete(self, *, system: str, user: str) -> str:
+        """Raspunsul modelului la cele doua mesaje.
+
+        Raises:
+            LLMUnavailableError: Ollama nu accepta conexiunea (sau n-a raspuns de
+                curand - atunci fara sa mai incerce).
+            OllamaError: n-a terminat la timp, sau a raspuns fara un text utilizabil.
+        """
+        if self._resting():
+            raise LLMUnavailableError(
+                f"Ollama nu a răspuns de curând la {self.host} - reîncerc după pauză"
+            )
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "options": {"temperature": self.temperature, "num_predict": self.max_tokens},
+        }
+        timeout = httpx.Timeout(self.timeout, connect=self.connect_timeout)
+        try:
+            with httpx.Client(transport=self.transport, timeout=timeout) as client:
+                response = client.post(f"{self.host}/api/chat", json=payload)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            self._rest()
+            raise LLMUnavailableError(
+                f"Ollama nu răspunde la {self.host} ({type(exc).__name__}): pornește-l cu "
+                "«ollama serve» sau corectează OLLAMA_HOST"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            # Masina e prea lenta pentru model (sau inca il incarca): urmatoarele apeluri
+            # ar astepta la fel - sinteza consiliului, dupa membri, cade direct pe template.
+            self._rest()
+            raise OllamaError(
+                f"Ollama nu a terminat în {self.timeout:.0f} s (modelul «{self.model}» poate fi "
+                "prea mare pentru mașină)"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"Ollama nu a răspuns ({type(exc).__name__})") from exc
+
+        if response.status_code == 404:
+            raise OllamaError(
+                f"Ollama a răspuns 404: {_error_detail(response)} - dacă lipsește modelul: "
+                f"ollama pull {self.model}"
+            )
+        if response.status_code != 200:
+            raise OllamaError(f"Ollama a răspuns {response.status_code}: {_error_detail(response)}")
+        try:
+            body = response.json()
+            content = body["message"]["content"]
+            done = body.get("done", True)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise OllamaError("Ollama a întors un răspuns neașteptat") from exc
+        if done is False:
+            raise OllamaError("Ollama a întrerupt generarea înainte de final")
+        text = _THINKING.sub("", content, count=1).strip() if isinstance(content, str) else ""
+        if not text:
+            raise OllamaError("Ollama a întors un mesaj gol")
+        return text
+
+    def _resting(self) -> bool:
+        with _resting_lock:
+            return self.clock() < _resting_until.get(self.host, -math.inf)
+
+    def _rest(self) -> None:
+        with _resting_lock:
+            _resting_until[self.host] = self.clock() + self.cooldown
+
+
+# --- ruterul -------------------------------------------------------------------------
+
+TaskType = Literal["classify", "score", "verify", "generate"]
+Backend = Literal["jev", "ollama"]
+#: Unde merge fiecare sarcina: deciziile la Sistemul 1, textul la Sistemul 2.
+ROUTES: Mapping[TaskType, Backend] = {
+    "classify": "jev",
+    "score": "jev",
+    "verify": "jev",
+    "generate": "ollama",
+}
+
+
+class LLMRouter:
+    """Trimite fiecare sarcina la sistemul ei (:data:`ROUTES`).
+
+    E si vocea Reginei si a consiliului (``TextGenerator``): ``complete`` trece prin
+    :meth:`generate_text_local`, deci orice text generat ajunge doar la Ollama.
+    """
+
+    def __init__(
+        self, *, jev: JevClient | None = None, ollama: OllamaChatClient | None = None
+    ) -> None:
+        self._jev = jev
+        self._ollama = ollama
+
+    @staticmethod
+    def backend(task: TaskType) -> Backend:
+        return ROUTES[task]
+
+    def ready(self, task: TaskType) -> bool:
+        """Sistemul sarcinii e configurat (nu garanteaza ca si raspunde)."""
+        client = self._jev if ROUTES[task] == "jev" else self._ollama
+        return client is not None
+
+    @property
+    def voice(self) -> LLMRouter | None:
+        """Ruterul, ca voce - sau ``None`` fara Ollama (-> template-uri)."""
+        return self if self.ready("generate") else None
+
+    # Sistemul 1 ----------------------------------------------------------------------
+
+    def _system_one(
+        self, task: TaskType, state: JsonValue, questions: Mapping[str, Question]
+    ) -> dict[str, Answer]:
+        if ROUTES[task] != "jev" or self._jev is None:
+            raise LLMUnavailableError(f"Jev nu e configurat (JEV_API_KEY) pentru «{task}»")
+        return self._jev.system_one(state, questions)
+
+    def jev_classify(self, state: JsonValue, question: Choice) -> ChoiceAnswer:
+        """Choice: ce optiune se potriveste ``state``-ului."""
+        answers = self._system_one("classify", state, {"choice": question})
+        return _typed("choice", answers["choice"], ChoiceAnswer)
+
+    def jev_score(
+        self, state: JsonValue, questions: Mapping[str, Score]
+    ) -> dict[str, ScoreAnswer]:
+        """Score: mai multe scari pe acelasi ``state``, intr-o singura cerere."""
+        answers = self._system_one("score", state, questions)
+        return {qid: _typed(qid, answer, ScoreAnswer) for qid, answer in answers.items()}
+
+    def jev_verify(self, state: JsonValue, question: Noul, *, threshold: float = YES) -> bool:
+        """Noul: e adevarat ce intreaba ``question`` despre ``state``? (``noul >= threshold``)."""
+        answers = self._system_one("verify", state, {"verify": question})
+        return _typed("verify", answers["verify"], NoulAnswer).yes(threshold)
+
+    # Sistemul 2 ----------------------------------------------------------------------
+
+    def generate_text_local(self, *, system: str, user: str) -> str:
+        """Textul, generat local de Ollama."""
+        if ROUTES["generate"] != "ollama" or self._ollama is None:
+            raise LLMUnavailableError("Ollama nu e configurat (OLLAMA_HOST gol)")
+        return self._ollama.complete(system=system, user=user)
+
+    @property
+    def model(self) -> str:
+        """Modelul care scrie textul (``TextGenerator``)."""
+        return self._ollama.model if self._ollama is not None else ""
+
+    def complete(self, *, system: str, user: str) -> str:
+        return self.generate_text_local(system=system, user=user)
+
+
+def llm_router_from_settings(settings: ServerSettings) -> LLMRouter:
+    """Ruterul din ``.env``: fara ``JEV_API_KEY`` nu exista Sistemul 1, fara
+    ``OLLAMA_HOST`` nu exista Sistemul 2 - fiecare cade pe regulile lui fixe."""
+    jev = JevClient(api_key=settings.jev_api_key) if settings.jev_api_key else None
+    ollama = None
+    if settings.ollama_host:
+        model = ollama_model_tag(settings.ollama_model) or DEFAULT_OLLAMA_MODEL
+        ollama = OllamaChatClient(host=settings.ollama_host, model=model)
+    return LLMRouter(jev=jev, ollama=ollama)

@@ -1,6 +1,6 @@
 """Vocea CMO a Reginei: LLM-ul doar formuleaza, nu decide.
 
-Un LLM fals (``_FakeVoice``) inlocuieste Hugging Face. Se verifica partea
+Un LLM fals (``_FakeVoice``) inlocuieste modelul local (Ollama). Se verifica partea
 riscanta: ce primeste modelul, ce i se respinge (cifre inventate, bugete,
 linkuri) si ca orice problema duce la mesajul din template, nu la o eroare.
 """
@@ -127,7 +127,7 @@ def test_number_formats_are_compared_by_value() -> None:
 
 
 def test_llm_errors_fall_back_to_the_template() -> None:
-    voice = _FakeVoice(error=RuntimeError("Hugging Face a răspuns 503"))
+    voice = _FakeVoice(error=RuntimeError("Ollama a răspuns 500"))
     message = _queen(voice).generate_cmo_message(42, _directive())
 
     assert message.source == "template"

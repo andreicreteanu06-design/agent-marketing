@@ -14,7 +14,12 @@ from decimal import Decimal
 import pytest
 
 from ppc_agent_server.services.council import QueenCouncil
-from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT, evaluate_offer
+from ppc_agent_server.services.cpo import (
+    CPO_SYSTEM_PROMPT,
+    EFFORT_LEVELS,
+    IMPACT_LEVELS,
+    evaluate_offer,
+)
 from ppc_agent_server.services.memory import MAX_MEMORY_CHARS, memory_line
 from ppc_agent_server.services.queen_agent import (
     BrandStrategyDirective,
@@ -26,6 +31,7 @@ from ppc_agent_server.services.researcher import (
     MarketSignals,
     build_market_directive,
 )
+from tests_server.llm_fakes import FakeJev, ScoreRule
 from tests_server.test_memory import _Memory
 from tests_server.test_queen_agent import CONVENIENCE_AD, NOW
 from tests_server.test_queen_council import (
@@ -141,6 +147,68 @@ def test_the_segment_that_buys_most_easily_sharpens_the_positioning() -> None:
     assert [(move.kind, move.rice) for move in product.moves] == [
         ("reposition", 51), ("message", 22)
     ]
+    assert {move.estimated_by for move in product.moves} == {"fixed"}
+
+
+def _rate(
+    reposition: tuple[float, float], message: tuple[float, float], confidence: float = 0.9
+) -> ScoreRule:
+    """Regula falsului Jev: nivelul (impact, efort) pe tip de mutare, citit din ``state``."""
+
+    def rule(state: dict[str, list[dict[str, str]]], qid: str) -> tuple[float, float]:
+        scale, index = qid.split("_")
+        about = state["moves"][int(index)]["type"]
+        impact, effort = reposition if "reposition" in about else message
+        return (impact if scale == "impact" else effort), confidence
+
+    return rule
+
+
+def test_jev_rates_impact_and_effort_and_the_rice_math_stays_in_code(fake_jev: FakeJev) -> None:
+    # Jev: repozitionarea - impact mic (1 = 0,5), efort o luna (3 = 4 saptamani); rescrierea -
+    # impact mare (3 = 2), cateva zile (0 = 0,5). Ordinea RICE se inverseaza.
+    fake_jev.score_rule = _rate(reposition=(1.0, 3.0), message=(3.0, 0.0))
+    directive = _directive(searches=MISPOSITIONED_SEARCHES)
+
+    product = evaluate_offer(
+        directive, unprofitable=False, generated_at=NOW, scorer=fake_jev.router()
+    )
+
+    assert [
+        (move.kind, move.impact, move.effort, move.rice, move.estimated_by)
+        for move in product.moves
+    ] == [
+        ("message", 2.0, 0.5, 45, "jev"),  # 14 x 2 x 0,8 / 0,5
+        ("reposition", 0.5, 4.0, 6, "jev"),  # 64 x 0,5 x 0,8 / 4
+    ]
+    assert product.summary.endswith("(scor 45).")
+    # O singura cerere: ambele mutari, cate doua scari fiecare, pe acelasi state.
+    [request] = fake_jev.requests
+    assert set(request["questions"]) == {"impact_0", "effort_0", "impact_1", "effort_1"}
+    assert request["questions"]["impact_0"]["criteria"] == [text for text, _ in IMPACT_LEVELS]
+    assert request["questions"]["effort_1"]["criteria"] == [text for text, _ in EFFORT_LEVELS]
+    assert "`moves[1]`" in request["questions"]["effort_1"]["instructions"]
+    [reposition, message] = request["state"]["moves"]
+    assert reposition["description"].startswith("repoziționarea ofertei pe «Scepticul")
+    assert message["type"] == "rewrite the ads so they speak to the ideal customer"
+
+
+def test_an_unsure_or_failing_jev_keeps_the_fixed_estimates(fake_jev: FakeJev) -> None:
+    directive = _directive(searches=MISPOSITIONED_SEARCHES)
+    fixed = evaluate_offer(directive, unprofitable=False, generated_at=NOW)
+
+    fake_jev.score_rule = _rate(reposition=(1.0, 3.0), message=(3.0, 0.0), confidence=0.3)
+    unsure = evaluate_offer(
+        directive, unprofitable=False, generated_at=NOW, scorer=fake_jev.router()
+    )
+    fake_jev.status = 500
+    failing = evaluate_offer(
+        directive, unprofitable=False, generated_at=NOW, scorer=fake_jev.router()
+    )
+
+    assert unsure.moves == fixed.moves
+    assert failing.moves == fixed.moves
+    assert len(fake_jev.requests) == 2
 
 
 def test_competitors_found_on_the_web_enter_the_positioning() -> None:

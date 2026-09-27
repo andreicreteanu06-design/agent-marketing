@@ -67,6 +67,7 @@ from ppc_agent_server.services.memory import (
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
 from ppc_agent_server.services.researcher import (
     MarketSignals,
+    RelevanceVerifier,
     market_focus,
     search_market_web,
 )
@@ -524,7 +525,8 @@ class ClientMarketSignals:
     ziua, marcate ``source="demo"``) - nu exista inca API-uri pentru ele. Cautarea
     pe web: reala, pe nisa si orasul din ``queries`` (cautarile clientului), prin
     abilitatea ``web_search``; fara cautari, nu se cauta nimic. ``registry`` (registrul
-    de abilitati) e injectabil in teste.
+    de abilitati) e injectabil in teste. ``verifier`` (Jev) pastreaza doar fragmentele
+    despre nisa; ``None`` = toate.
     """
 
     def __init__(
@@ -533,10 +535,12 @@ class ClientMarketSignals:
         *,
         today: Callable[[], date] = _utc_today,
         registry: SkillRegistry = skill_registry,
+        verifier: RelevanceVerifier | None = None,
     ) -> None:
         self._session = session
         self._today = today
         self._registry = registry
+        self._verifier = verifier
 
     def load(self, client_account_id: int, queries: Sequence[str] = ()) -> MarketSignals:
         account = self._session.get(ClientAccount, client_account_id)
@@ -555,7 +559,13 @@ class ClientMarketSignals:
                 "s-a căutat pe web.",
             )
         findings, status, note = asyncio.run(
-            search_market_web(niche, location, year=today.year, registry=self._registry)
+            search_market_web(
+                niche,
+                location,
+                year=today.year,
+                registry=self._registry,
+                verifier=self._verifier,
+            )
         )
         return replace(
             signals, niche=niche, location=location, web=findings, web_status=status, web_note=note

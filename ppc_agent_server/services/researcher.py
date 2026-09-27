@@ -33,9 +33,12 @@ REALE: ajung la LLM-ul Researcher-ului (RAG), care are voie sa formuleze doar di
 ele. Researcher-ul nu stie cum se cauta: cere abilitatea ``web_search`` din
 registrul de abilitati (``ppc_agent_server/skills``), in paralel, cu timeout; o
 cautare picata sau limitata nu opreste nimic - directiva spune doar ca n-a mers.
+Inainte sa ajunga la LLM, fiecare fragment trece prin Jev (Sistemul 1,
+``llm_client.py``): "e despre nisa clientului?" - raman doar cele cu "da". Fara Jev,
+sau cand nu raspunde, raman toate (ca inainte).
 
 Regulile de mai sus sunt deterministe (aceleasi semnale, aceeasi directiva).
-Singura functie cu retea e :func:`search_market_web` (prin registru).
+Singura functie cu retea e :func:`search_market_web` (prin registru si, optional, Jev).
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ from pydantic import BaseModel
 
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.humanizer import ANALYST_VOICE
+from ppc_agent_server.services.llm_client import JsonValue, Noul
 from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
@@ -89,6 +93,19 @@ PAIN_MIN_MENTIONS = 20
 TREND_WEEKS = 8
 #: Cautarea pe web: cate fragmente se pastreaza, din ambele interogari.
 MAX_WEB_FINDINGS = 5
+
+#: Intrebarea pentru Jev, pe fiecare fragment (in engleza: acolo e cel mai precis).
+RELEVANCE_QUESTION = Noul(
+    instructions=(
+        "Is `search_result` about the same kind of business as `client_niche`, or about its "
+        "customers, prices, competitors or market?"
+    ),
+    true="The result is about this kind of business or its market.",
+    false=(
+        "The result is about another topic or another kind of business, or it is generic text "
+        "with nothing specific to this business."
+    ),
+)
 
 _MONTHS = (
     "ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august",
@@ -664,6 +681,55 @@ def market_focus(
     return niche, location or country
 
 
+class RelevanceVerifier(Protocol):
+    """Sistemul 1 (``llm_client.LLMRouter``): o intrebare da/nu despre un ``state``."""
+
+    def jev_verify(self, state: JsonValue, question: Noul, *, threshold: float = ...) -> bool: ...
+
+
+def _relevant(verifier: RelevanceVerifier, niche: str, finding: WebFinding) -> bool:
+    """Jev: e fragmentul despre nisa clientului? Cand nu raspunde, fragmentul ramane."""
+    state: JsonValue = {
+        "client_niche": niche,
+        "search_result": {
+            "title": finding.title,
+            "snippet": finding.snippet,
+            "site": finding.source,
+        },
+    }
+    try:
+        return verifier.jev_verify(state, RELEVANCE_QUESTION)
+    except Exception as exc:  # Jev e un plus: fara raspuns, fragmentul ramane (ca inainte)
+        logger.warning("[Researcher] Jev n-a verificat «%s»: %r", finding.source, exc)
+        return True
+
+
+async def _keep_relevant(
+    per_query: list[Sequence[WebFinding]],
+    niche: str,
+    verifier: RelevanceVerifier,
+    timeout: float,
+) -> list[Sequence[WebFinding]]:
+    """Doar fragmentele despre nisa: cate o intrebare Jev pe fragment, toate in paralel."""
+    checks = [
+        asyncio.to_thread(_relevant, verifier, niche, finding)
+        for findings in per_query
+        for finding in findings
+    ]
+    try:
+        verdicts = iter(await asyncio.wait_for(asyncio.gather(*checks), timeout))
+    except TimeoutError:
+        logger.warning("[Researcher] Jev n-a verificat fragmentele la timp - rămân toate")
+        return per_query
+    kept: list[Sequence[WebFinding]] = [
+        [finding for finding in findings if next(verdicts)] for findings in per_query
+    ]
+    dropped = sum(map(len, per_query)) - sum(map(len, kept))
+    if dropped:
+        logger.info("[Researcher] Jev a scos %d fragmente fără legătură cu «%s»", dropped, niche)
+    return kept
+
+
 async def search_market_web(
     niche: str,
     location: str,
@@ -671,11 +737,13 @@ async def search_market_web(
     year: int,
     registry: SkillRegistry = skill_registry,
     timeout: float = WEB_TIMEOUT_SECONDS,
+    verifier: RelevanceVerifier | None = None,
 ) -> tuple[list[WebFinding], WebStatus, str]:
     """Doua cautari reale prin abilitatea ``web_search``, in paralel, cu timeout: nu pica.
 
     Intoarce ``(fragmente, stare, nota)``; o cautare picata (timeout, limita, retea)
     se sare, iar daca pica amandoua, starea e ``failed`` cu o nota pentru client.
+    Cu ``verifier`` (Jev), raman doar fragmentele despre nisa clientului.
     """
     queries = (f"competitori {niche} {location}", f"trenduri {niche} România {year}")
     results = await asyncio.gather(
@@ -694,6 +762,9 @@ async def search_market_web(
             per_query.append(())
         else:
             per_query.append(result)
+    found_any = any(per_query)
+    if verifier is not None and found_any:
+        per_query = await _keep_relevant(per_query, niche, verifier, timeout)
     # Pe rand din fiecare cautare, ca si concurenta, si trendurile sa prinda loc.
     findings: list[WebFinding] = []
     sources: set[str] = set()
@@ -708,6 +779,10 @@ async def search_market_web(
         return [], "failed", (
             "Căutarea pe web n-a răspuns acum (limită sau timeout): contextul de piață rămâne "
             "cel demonstrativ."
+        )
+    if found_any:
+        return [], "empty", (
+            f"Căutarea pe web n-a găsit nimic relevant despre «{niche}» în {location}."
         )
     return [], "empty", f"Căutarea pe web n-a găsit nimic despre «{niche}» în {location}."
 

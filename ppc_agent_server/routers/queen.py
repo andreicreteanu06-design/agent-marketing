@@ -1,17 +1,22 @@
 """Regina vorbeste cu clientul: mesajul CMO si chatul deliberat de consiliu.
 
+Modelele vin din ruterul hibrid (``services/llm_client.py``): textul il scrie
+Ollama, local (Sistemul 2, ``OLLAMA_HOST``); deciziile structurate le ia Jev
+(Sistemul 1, ``JEV_API_KEY``). Fara ele - sau cand pica - totul cade pe varianta
+determinista, deci rutele raspund mereu 200.
+
 ``GET /api/v1/queen/client-message`` - Regina explica deciziile ei clientului.
 Doar citeste: evalueaza directiva clientului autentificat (determinist, fara
-LLM) si o formuleaza ca un mesaj de consultant. Vocea e Hugging Face cand
-``HUGGINGFACE_API_KEY`` e setat; altfel - sau cand modelul pica ori scrie ceva
-ce nu e in date - mesajul vine dintr-un template intern, deci ruta raspunde
-mereu 200 cu un mesaj utilizabil. Nu creeaza propuneri si nu schimba nimic:
-propunerile le face jobul de noapte (``jobs/brand_alignment.py``).
+LLM) si o formuleaza ca un mesaj de consultant. Vocea e Ollama; fara el - sau
+cand modelul pica ori scrie ceva ce nu e in date - mesajul vine dintr-un template
+intern. Nu creeaza propuneri si nu schimba nimic: propunerile le face jobul de
+noapte (``jobs/brand_alignment.py``).
 
 ``POST /api/v1/queen/chat`` - o intrebare libera a clientului. Regina nu raspunde
-direct: isi consulta consiliul (strategia de brand, CFO-ul si Tehnicianul, vezi
-``services/council.py``), iar decizia - ce trece, ce se taie, ce opreste veto-ul
-Tehnicianului - e determinista. Tot doar citeste; raspunde 200 si fara Hugging Face.
+direct: isi consulta consiliul (strategia de brand, CFO-ul, Tehnicianul, Researcher-ul
+si CPO-ul, vezi ``services/council.py``), iar decizia - ce trece, ce se taie, ce
+opreste veto-ul Tehnicianului - e determinista. Jev noteaza mutarile CPO-ului (RICE)
+si filtreaza fragmentele web ale Researcher-ului. Tot doar citeste.
 
 ``GET /api/v1/queen/technician`` - raportul Tehnicianului (``services/technician.py``):
 tracking-ul conversiilor si viteza pe mobil, verde/rosu, cu reparatiile. Determinist,
@@ -21,9 +26,10 @@ fara LLM, doar citeste.
 consiliul primeste doar ultimele 5 intrari; aici e tot istoricul, la cerere.
 
 ``GET /api/v1/queen/market`` - contextul pietei al Researcher-ului
-(``services/researcher.py``): cautarea pe web, reala, pe nisa si orasul clientului,
-plus licitatia si cererea - acestea demonstrative (``is_demo: true``) pana se
-conecteaza surse. Cautarea pe web poate dura cateva secunde (cache pe zi).
+(``services/researcher.py``): cautarea pe web, reala, pe nisa si orasul clientului
+(fragmentele verificate de Jev, cand e configurat), plus licitatia si cererea -
+acestea demonstrative (``is_demo: true``) pana se conecteaza surse. Cautarea pe web
+poate dura cateva secunde (cache pe zi).
 """
 
 from __future__ import annotations
@@ -45,7 +51,7 @@ from ppc_agent_server.services.council import (
     QueenCouncil,
     clean_question,
 )
-from ppc_agent_server.services.hf_client import hf_client_from_settings
+from ppc_agent_server.services.llm_client import LLMRouter, llm_router_from_settings
 from ppc_agent_server.services.memory import MemoryOutcome, memory_line
 from ppc_agent_server.services.queen_agent import (
     BrandStrategist,
@@ -69,9 +75,19 @@ from ppc_agent_server.settings import get_server_settings
 router = APIRouter(prefix="/api/v1/queen", tags=["queen-agent"])
 
 
-def get_cmo_voice() -> TextGenerator | None:
-    """Dependinta: clientul Hugging Face din ``.env``, sau ``None`` (-> template)."""
-    return hf_client_from_settings(get_server_settings())
+def get_llm_router() -> LLMRouter:
+    """Dependinta: ruterul hibrid din ``.env`` - Jev (Sistemul 1) si Ollama (Sistemul 2)."""
+    return llm_router_from_settings(get_server_settings())
+
+
+def get_cmo_voice(router: Annotated[LLMRouter, Depends(get_llm_router)]) -> TextGenerator | None:
+    """Dependinta: vocea - Ollama, prin ``generate_text_local`` - sau ``None`` (-> template)."""
+    return router.voice
+
+
+def get_system_one(router: Annotated[LLMRouter, Depends(get_llm_router)]) -> LLMRouter | None:
+    """Dependinta: deciziile structurate (Jev), sau ``None`` (-> reguli fixe)."""
+    return router if router.ready("score") else None
 
 
 def get_seo_intent() -> SeoIntentSource:
@@ -109,12 +125,14 @@ def chat_with_queen(
     user: Annotated[ClientUser, Depends(get_current_client_user)],
     session: Annotated[Session, Depends(get_session)],
     voice: Annotated[TextGenerator | None, Depends(get_cmo_voice)],
+    system_one: Annotated[LLMRouter | None, Depends(get_system_one)],
     seo_intent: Annotated[SeoIntentSource, Depends(get_seo_intent)],
 ) -> CouncilReply:
     """Raspunsul Reginei la o intrebare libera, dupa deliberarea consiliului (``reply``).
 
-    Limitat per client (``rate_limit.py``): fiecare mesaj costa pana la patru
-    apeluri Hugging Face si tine un fir ocupat - 429 peste rafala sau plafonul orar.
+    Limitat per client (``rate_limit.py``): fiecare mesaj costa pana la sase
+    generari pe modelul local, cateva apeluri Jev si tine un fir ocupat - 429 peste
+    rafala sau plafonul orar.
     """
     key = f"client:{user.client_account_id}"
     wait = CHAT_BURST.retry_after(key) or CHAT_HOURLY.retry_after(key)
@@ -128,9 +146,10 @@ def chat_with_queen(
     council = QueenCouncil(
         DbFinancialSignals(session),
         technical=DbTechnicalSignals(session),
-        market=ClientMarketSignals(session),
+        market=ClientMarketSignals(session, verifier=system_one),
         memory=DbMemory(session),
         voice=voice,
+        scorer=system_one,
     )
     return council.evaluate_client_query(body.message, directive)
 
@@ -150,12 +169,14 @@ def read_market_context(
     user: Annotated[ClientUser, Depends(get_current_client_user)],
     session: Annotated[Session, Depends(get_session)],
     seo_intent: Annotated[SeoIntentSource, Depends(get_seo_intent)],
+    system_one: Annotated[LLMRouter | None, Depends(get_system_one)],
 ) -> MarketDirective:
     """Contextul pietei: cautarea pe web (reala) + licitatia si cererea (demonstrative azi)."""
     queen = BrandStrategist(DbBrandSignals(session, seo_intent=seo_intent))
     directive = queen.evaluate_brand_alignment(user.client_account_id)
     queries = [query for segment in directive.segments for query in segment.sample_queries]
-    researcher = MarketResearcher(ClientMarketSignals(session), clock=_utc_now)
+    market = ClientMarketSignals(session, verifier=system_one)
+    researcher = MarketResearcher(market, clock=_utc_now)
     return researcher.evaluate_market_context(user.client_account_id, queries)
 
 

@@ -22,8 +22,10 @@ from ppc_agent_server.jobs import synthetic, tasks
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
+from ppc_agent_server.services.llm_client import reset_llm_state
 from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.skills import web_search
+from tests_server.llm_fakes import FakeJev, FakeOllama
 
 
 @pytest.fixture
@@ -95,6 +97,40 @@ def _no_web_search(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     web_search._cached_search.cache_clear()
     yield
     web_search._cached_search.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_services(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Jev si Ollama - niciodata reali din teste, oricare ar fi ``.env``-ul masinii.
+
+    Fara ``JEV_API_KEY`` si fara ``OLLAMA_HOST``, ruterul hibrid nu are unde trimite
+    nimic: consiliul si Regina raspund determinist, iar CI-ul trece si fara
+    serviciile pornite. Testele care verifica drumul complet cer ``fake_jev`` /
+    ``fake_ollama``. Serverele Ollama gasite "oprite" se uita intre teste.
+    """
+    monkeypatch.setenv("JEV_API_KEY", "")
+    monkeypatch.setenv("OLLAMA_HOST", "")
+    get_server_settings.cache_clear()
+    reset_llm_state()
+    yield
+    get_server_settings.cache_clear()
+    reset_llm_state()
+
+
+@pytest.fixture
+def fake_jev() -> Iterator[FakeJev]:
+    """Jev simulat, raspuns instant; testul pica daca o cerere n-are forma documentata."""
+    fake = FakeJev()
+    yield fake
+    assert fake.problems == [], fake.problems
+
+
+@pytest.fixture
+def fake_ollama() -> Iterator[FakeOllama]:
+    """Ollama simulat, raspuns instant; testul pica daca o cerere n-are forma documentata."""
+    fake = FakeOllama()
+    yield fake
+    assert fake.problems == [], fake.problems
 
 
 @pytest.fixture

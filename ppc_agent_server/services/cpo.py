@@ -23,20 +23,28 @@ Framework-uri de produs (idei din menkesu/awesome-pm-skills, niciun rand copiat)
   profilului), promisiunea (dorinta lui), dovada (ce il convinge).
 - **RICE** (Intercom): mutarile de oferta, ordonate dupa Reach x Impact x
   Confidence / Effort. Reach = procentul din conversii atins (din cautari, cat timp
-  conversiile nu ajung), Impact pe scara 0,5-3, Confidence din cat de solide sunt
+  conversiile nu ajung), Impact pe scara 0,25-3, Confidence din cat de solide sunt
   datele, Effort in saptamani.
 
-Modul pur si determinist: fara DB, fara LLM. Vocea (``council.py``) doar formuleaza.
+Impactul si efortul fiecarei mutari le noteaza Jev (Sistemul 1, ``llm_client.py``),
+intr-o singura cerere: alege un NIVEL pe fiecare scara, iar valoarea nivelului si
+formula RICE raman in cod. Fara Jev, cand pica sau cand nu e sigur (``confidence``
+sub prag), raman estimarile fixe pe tip de mutare. Reach-ul si Confidence-ul vin
+mereu din date. In rest, modul e pur si determinist: fara DB, fara LLM generativ;
+vocea (``council.py``) doar formuleaza.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
 from ppc_agent_server.services.humanizer import CONSULTANT_VOICE
+from ppc_agent_server.services.llm_client import MIN_CONFIDENCE, JsonValue, Score, ScoreAnswer
 from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.queen_agent import (
     _BY_KEY,
@@ -49,14 +57,19 @@ from ppc_agent_server.services.researcher import MarketDirective, PainSignal
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
 
+logger = logging.getLogger("ppc_agent_server.services.cpo")
+
 OfferStatus = Literal["fit", "message_gap", "positioning_gap", "offer_gap", "pivot", "unknown"]
 MoveKind = Literal["pivot", "reposition", "offer_test", "message"]
+#: Cine a estimat impactul si efortul unei mutari: Jev sau tabelul fix.
+RiceEstimate = Literal["jev", "fixed"]
 
 #: Un segment e "best-fit" cand cumpara de atatea ori mai usor decat cauta...
 FIT_INDEX_MIN = 1.25
 #: ...si aduce cel putin atat din conversii (sub, e zgomot).
 FIT_MIN_BUYERS = 0.2
-#: Impactul (RICE: 3 masiv, 2 mare, 1 mediu, 0,5 mic) si efortul (saptamani), pe mutare.
+#: Impactul (RICE: 3 masiv, 2 mare, 1 mediu, 0,5 mic) si efortul (saptamani), pe mutare -
+#: estimarile fixe, cand Jev nu e configurat, pica sau nu e sigur.
 # ponytail: estimari fixe pe tip de mutare; calibreaza-le din rezultatele propunerilor aplicate.
 _RICE: dict[MoveKind, tuple[float, float]] = {
     "pivot": (3.0, 4.0),
@@ -64,6 +77,46 @@ _RICE: dict[MoveKind, tuple[float, float]] = {
     "offer_test": (2.0, 1.0),
     "message": (1.0, 0.5),
 }
+
+# Intrebarile pentru Jev: in engleza (acolo e cel mai precis), cu nivelurile in ordine,
+# fiecare cu valoarea lui RICE. Jev alege nivelul; valoarea si formula raman in cod.
+#: Impactul pe fiecare client atins (scara Intercom: 0,25 minim ... 3 masiv).
+IMPACT_LEVELS: tuple[tuple[str, float], ...] = (
+    ("Minimal: customers it reaches would barely notice the change", 0.25),
+    ("Low: makes the offer slightly more convincing", 0.5),
+    ("Medium: makes the offer clearly more convincing for the customers it reaches", 1.0),
+    ("High: changes the main reason these customers would buy", 2.0),
+    ("Massive: changes what the offer means to these customers", 3.0),
+)
+#: Efortul, in saptamani de lucru (aceleasi trepte ca estimarile fixe).
+EFFORT_LEVELS: tuple[tuple[str, float], ...] = (
+    ("A few days: rewriting ad texts and headlines", 0.5),
+    ("About a week: new ads or a new section on the landing page", 1.0),
+    ("About two weeks: new creatives, landing page changes and campaign setup", 2.0),
+    ("A month or more: reworking the offer, the pricing or the service itself", 4.0),
+)
+_IMPACT_QUESTION = (
+    "How much would `moves[{index}]` raise the chance that a customer it reaches buys? Judge "
+    "the effect on each customer it reaches, not how many customers it reaches."
+)
+_EFFORT_QUESTION = (
+    "How much work would a small marketing agency need before `moves[{index}]` can go live?"
+)
+#: Ce fel de mutare e, pentru Jev (textul mutarii, in romana, vine alaturi).
+_MOVE_TYPES: dict[MoveKind, str] = {
+    "pivot": "pivot the offer toward a new angle",
+    "reposition": "reposition the offer for another customer segment",
+    "offer_test": "test the current offer with its strongest proof in front",
+    "message": "rewrite the ads so they speak to the ideal customer",
+}
+
+
+class RiceScorer(Protocol):
+    """Sistemul 1 (``llm_client.LLMRouter``): mai multe scari pe acelasi ``state``."""
+
+    def jev_score(
+        self, state: JsonValue, questions: Mapping[str, Score]
+    ) -> dict[str, ScoreAnswer]: ...
 
 
 class OfferMove(BaseModel):
@@ -78,6 +131,8 @@ class OfferMove(BaseModel):
     #: Saptamani de lucru.
     effort: float
     rice: int
+    #: Cine a estimat impactul si efortul: Jev (Sistemul 1) sau tabelul fix.
+    estimated_by: RiceEstimate = "fixed"
 
 
 class ProductDirective(BaseModel):
@@ -144,6 +199,10 @@ def _losing(ad: AdAlignment, avatar: str) -> str:
     )
 
 
+def _rice(reach: int, impact: float, confidence: float, effort: float) -> int:
+    return round(reach * impact * confidence / effort)
+
+
 def _move(kind: MoveKind, text: str, reach: float, confidence: float) -> OfferMove:
     impact, effort = _RICE[kind]
     points = round(reach * 100)
@@ -154,8 +213,57 @@ def _move(kind: MoveKind, text: str, reach: float, confidence: float) -> OfferMo
         impact=impact,
         confidence=confidence,
         effort=effort,
-        rice=round(points * impact * confidence / effort),
+        rice=_rice(points, impact, confidence, effort),
     )
+
+
+def _level_value(
+    answer: ScoreAnswer | None, levels: tuple[tuple[str, float], ...]
+) -> float | None:
+    """Valoarea nivelului ales de Jev; ``None`` cand raspunsul lipseste sau e nesigur."""
+    if answer is None or answer.confidence < MIN_CONFIDENCE or len(answer.legend) != len(levels):
+        return None
+    return levels[answer.level][1]
+
+
+def _scored_by_jev(moves: list[OfferMove], scorer: RiceScorer) -> list[OfferMove]:
+    """Impactul si efortul mutarilor, notate de Jev intr-o singura cerere.
+
+    O mutare ia estimarea lui Jev doar cand ambele scari au trecut pragul de
+    incredere; altfel - sau cand Jev pica - ramane estimarea fixa.
+    """
+    state: JsonValue = {
+        "moves": [{"type": _MOVE_TYPES[move.kind], "description": move.text} for move in moves]
+    }
+    impact_levels = tuple(level for level, _ in IMPACT_LEVELS)
+    effort_levels = tuple(level for level, _ in EFFORT_LEVELS)
+    questions: dict[str, Score] = {}
+    for index in range(len(moves)):
+        questions[f"impact_{index}"] = Score(_IMPACT_QUESTION.format(index=index), impact_levels)
+        questions[f"effort_{index}"] = Score(_EFFORT_QUESTION.format(index=index), effort_levels)
+    try:
+        answers = scorer.jev_score(state, questions)
+    except Exception:  # Jev e un plus: fara el, raman estimarile fixe
+        logger.warning("[CPO] Jev n-a notat mutările - rămân estimările fixe", exc_info=True)
+        return moves
+    scored: list[OfferMove] = []
+    for index, move in enumerate(moves):
+        impact = _level_value(answers.get(f"impact_{index}"), IMPACT_LEVELS)
+        effort = _level_value(answers.get(f"effort_{index}"), EFFORT_LEVELS)
+        if impact is None or effort is None:
+            scored.append(move)
+            continue
+        scored.append(
+            move.model_copy(
+                update={
+                    "impact": impact,
+                    "effort": effort,
+                    "rice": _rice(move.reach, impact, move.confidence, effort),
+                    "estimated_by": "jev",
+                }
+            )
+        )
+    return scored
 
 
 def evaluate_offer(
@@ -164,12 +272,14 @@ def evaluate_offer(
     unprofitable: bool,
     market: MarketDirective | None = None,
     generated_at: datetime,
+    scorer: RiceScorer | None = None,
 ) -> ProductDirective:
     """Verdictul CPO-ului pe oferta.
 
     ``unprofitable`` = CFO-ul a gasit contul nerentabil pe cifre de incredere (cu
     tracking-ul picat, cifrele nu declanseaza nicio pivotare). Piata intra doar
     din surse reale; concurentii gasiti pe web intra doar in pozitionare.
+    ``scorer`` = Jev, pentru impactul si efortul mutarilor; ``None`` = estimarile fixe.
     """
     avatar = directive.avatar
     if directive.status != "ok" or avatar is None:
@@ -307,6 +417,8 @@ def evaluate_offer(
                 confidence,
             )
         )
+    if scorer is not None and moves:
+        moves = _scored_by_jev(moves, scorer)
     moves.sort(key=lambda move: -move.rice)
 
     archetype = _BY_KEY[target.key]

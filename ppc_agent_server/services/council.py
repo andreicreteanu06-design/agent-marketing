@@ -30,9 +30,10 @@ Abaterea deliberata: **decizia nu o ia niciun LLM**. :func:`rule_on_question`
 o calculeaza determinist (ce trece, ce se taie si de ce) inainte de orice apel;
 LLM-urile doar o argumenteaza si o formuleaza, iar fiecare text al lor trece prin
 :func:`check_council_text` (nicio cifra in afara datelor, niciun link, nicio
-actiune pretinsa, nicio cheltuiala promisa). Fara Hugging Face - sau cand pica -
-raspunde consiliul determinist, din aceleasi fapte. Fara date, nu raspunde nimeni
-"din burta": spune ce lipseste.
+actiune pretinsa, nicio cheltuiala promisa). Textul il scrie un model local
+(Ollama, Sistemul 2 din ``llm_client.py``); fara el - sau cand pica - raspunde
+consiliul determinist, din aceleasi fapte. Fara date, nu raspunde nimeni "din
+burta": spune ce lipseste.
 
 Argumentul de brand poarta si psihologia cumparatorului (``cognitive.py``): cum
 decide publicul (Sistemul 1/2), ce il opreste si ce parghie propunem - tot fapte
@@ -84,6 +85,7 @@ from ppc_agent_server.services.cpo import (
     CPO_SYSTEM_PROMPT,
     OfferStatus,
     ProductDirective,
+    RiceScorer,
     cpo_facts,
     evaluate_offer,
 )
@@ -1433,10 +1435,12 @@ def _demo_market_opinion(market: MarketDirective) -> CouncilOpinion:
 class QueenCouncil:
     """Consiliul Reginei: Strategul, CFO-ul, Tehnicianul, Researcher-ul si CPO-ul delibereaza.
 
-    ``voice`` e LLM-ul (Hugging Face) care da glas membrilor; fara el, sau cand
-    pica, raspunde consiliul determinist. Nimic din ce scrie un LLM nu se
-    citeste inapoi intr-o decizie. Fara ``technical`` nu exista veto; fara
-    ``market``, nici contextul pietei.
+    ``voice`` e LLM-ul local (Ollama, prin ``LLMRouter.generate_text_local``) care
+    da glas membrilor; fara el, sau cand pica, raspunde consiliul determinist.
+    Nimic din ce scrie un LLM nu se citeste inapoi intr-o decizie. ``scorer`` (Jev,
+    Sistemul 1) noteaza impactul si efortul mutarilor CPO-ului; fara el, raman
+    estimarile fixe. Fara ``technical`` nu exista veto; fara ``market``, nici
+    contextul pietei.
     """
 
     def __init__(
@@ -1447,6 +1451,7 @@ class QueenCouncil:
         market: MarketIntelligenceSource | None = None,
         memory: MemorySource | None = None,
         voice: TextGenerator | None = None,
+        scorer: RiceScorer | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._finances = finances
@@ -1454,6 +1459,7 @@ class QueenCouncil:
         self._market = market
         self._memory = memory
         self._voice = voice
+        self._scorer = scorer
         self._clock = clock
 
     def evaluate_client_query(self, query: str, context: BrandStrategyDirective) -> CouncilReply:
@@ -1481,6 +1487,7 @@ class QueenCouncil:
             unprofitable=finances.status == "unprofitable" and not money_veto,
             market=market,
             generated_at=self._clock(),
+            scorer=self._scorer,
         )
         ruling = rule_on_question(topic, context, finances, technical, market, product)
         now = self._clock()

@@ -8,10 +8,57 @@ variabilele de server pe care nu le recunoaste).
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_SQLITE_URL = "sqlite:///./ppc_agent_server.db"
+
+#: Serverul Ollama local (Sistemul 2, vezi ``services/llm_client.py``).
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+OLLAMA_DEFAULT_PORT = 11434
+#: Adresele pe care ASCULTA un server ("toate interfetele") - nu se poate conecta nimeni la ele.
+_BIND_ALL = frozenset({"0.0.0.0", "::"})
+
+
+def normalize_ollama_host(value: str) -> str:
+    """Adresa serverului Ollama, citita ca de clientul oficial ``ollama``.
+
+    ``gazda`` / ``gazda:port`` -> ``http://gazda:port`` (portul implicit 11434); cu
+    schema scrisa, portul implicit e al schemei. ``0.0.0.0`` - adresa pe care o da
+    documentatia Ollama *serverului* (acelasi ``OLLAMA_HOST``), ca sa-l vada Docker -
+    devine ``127.0.0.1``: la ea nu se poate conecta nimeni. Gol = fara Ollama.
+
+    Raises:
+        ValueError: nu e o adresa ``http(s)://gazda[:port][/cale]``.
+    """
+    raw = value.strip()
+    if not raw:
+        return ""
+    has_scheme = "://" in raw
+    parts = urlsplit(raw if has_scheme else f"http://{raw}")
+    problem = "OLLAMA_HOST trebuie să fie o adresă http(s)://gazdă[:port], fără cont sau query"
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError(problem) from exc
+    host = parts.hostname
+    if (
+        parts.scheme not in ("http", "https")
+        or not host
+        or parts.username
+        or parts.password
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError(problem)
+    if host in _BIND_ALL:
+        host = "127.0.0.1"
+    if port is None:
+        port = (443 if parts.scheme == "https" else 80) if has_scheme else OLLAMA_DEFAULT_PORT
+    netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    return f"{parts.scheme}://{netloc}{parts.path.rstrip('/')}"
 
 
 class ServerSettings(BaseSettings):
@@ -64,13 +111,30 @@ class ServerSettings(BaseSettings):
     # Site-ul pe care se intoarce clientul dupa ecranul de consimtamant Google.
     site_url: str = "http://localhost:3000"
 
-    # Vocea Reginei (GET /api/v1/queen/client-message) - vezi services/hf_client.py.
-    # Necompletat => mesajul catre client vine dintr-un template intern (fara
-    # niciun apel extern). Token de pe huggingface.co/settings/tokens, cu
-    # permisiunea "Make calls to Inference Providers".
-    huggingface_api_key: str = ""
-    # Necompletat => DEFAULT_HF_MODEL din services/hf_client.py.
-    huggingface_model: str = ""
+    # Arhitectura hibrida (services/llm_client.py). Sistemul 1 - Jev (TypeSafe AI):
+    # deciziile structurate si rapide (scorurile RICE ale CPO-ului, relevanta
+    # fragmentelor web ale Researcher-ului). Cheie de pe console.typesafe.ai.
+    # Necompletat => reguli fixe (estimarile RICE din tabel, toate fragmentele web).
+    jev_api_key: str = ""
+    # Sistemul 2 - Ollama, local: tot textul scris (vocea Reginei, consiliul, sinteza).
+    # Necompletat => mesajele vin din template-urile interne, fara niciun model.
+    ollama_host: str = DEFAULT_OLLAMA_HOST
+    # Necompletat => DEFAULT_OLLAMA_MODEL din services/llm_client.py ("llama3", acelasi
+    # ca la copywriterul din CLI - un singur `ollama pull`). Accepta si "ollama/<tag>".
+    ollama_model: str = ""
+
+    @field_validator("jev_api_key", "ollama_model")
+    @classmethod
+    def _no_blanks(cls, value: str) -> str:
+        value = value.strip()
+        if any(char.isspace() for char in value):
+            raise ValueError("nu poate conține spații")
+        return value
+
+    @field_validator("ollama_host")
+    @classmethod
+    def _ollama_host(cls, value: str) -> str:
+        return normalize_ollama_host(value)
 
     @property
     def cors_origins(self) -> list[str]:

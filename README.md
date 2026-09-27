@@ -510,8 +510,9 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `REDIS_URL` | necompletat -> `InlineJobQueue` | Seteaza pentru `ArqJobQueue` reala: `redis://localhost:6379/0` |
 | `PUBLIC_API_URL` | `http://localhost:8000` | Din ea se construieste `redirect_uri`-ul OAuth Google (vezi Integrari Google) |
 | `SITE_URL` | `http://localhost:3000` | Unde revine clientul dupa ecranul de consimtamant Google |
-| `HUGGINGFACE_API_KEY` | necompletat -> mesaj din template | Vocea CMO a Reginei si a consiliului din chat, prin Hugging Face Inference Providers (faptele directivei si cifrele PPC parasesc masina) |
-| `HUGGINGFACE_MODEL` | `meta-llama/Meta-Llama-3-8B-Instruct` | Modelul vocii CMO; trebuie servit de un furnizor Inference Providers |
+| `OLLAMA_HOST` | `http://localhost:11434` | Sistemul 2: modelul LOCAL care scrie tot textul Reginei si al consiliului (datele nu parasesc masina); gol -> template-uri |
+| `OLLAMA_MODEL` | `llama3` | Modelul Ollama (acelasi ca `PPC_LLM_MODEL`: un singur `ollama pull`); accepta si `ollama/<tag>` |
+| `JEV_API_KEY` | necompletat -> reguli fixe | Sistemul 1: Jev (TypeSafe AI) noteaza RICE-ul CPO-ului si filtreaza fragmentele web ale Researcher-ului |
 
 ### Endpoint-uri
 
@@ -542,7 +543,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
 | `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
 | `GET /api/v1/queen/client-message` | Agentul Regina explica clientului, ca un CMO, publicul ideal si ce a propus (vezi mai jos) |
-| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician + Researcher) |
+| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician + Researcher + CPO) |
 | `GET /api/v1/queen/market` | Contextul pietei al Researcher-ului: concurenta, trendul cererii, durerile noi (azi demonstrativ, vezi mai jos) |
 | `GET /api/v1/queen/technician` | Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil, veto si reparatii (vezi mai jos) |
 
@@ -558,12 +559,34 @@ EXPLICA clientului:
   decizii) si un rol de "Senior AI Chief Marketing Officer". Raspunsul lui e
   respins daca aduce o cifra care nu e in fapte, vorbeste despre bugete sau
   licitari, contine linkuri ori e gol/prea lung.
-- **Nu pica niciodata:** fara `HUGGINGFACE_API_KEY`, cand modelul nu raspunde
-  sau cand raspunsul e respins, mesajul vine din template-ul intern
-  (`source: "template"` + `fallback_reason`).
-- Apelul merge prin `router.huggingface.co/v1/chat/completions` (compatibil
-  OpenAI, `services/hf_client.py`, doar `httpx`); vechiul
-  `api-inference.huggingface.co` nu mai functioneaza.
+- **Nu pica niciodata:** fara Ollama (`OLLAMA_HOST` gol), cand modelul nu
+  raspunde sau cand raspunsul e respins, mesajul vine din template-ul intern
+  (`source: "template"` + `fallback_reason`). Un server Ollama oprit se tine minte
+  30 de secunde: apelurile urmatoare cad direct pe template, fara sa astepte.
+- Modelul e local (`POST {OLLAMA_HOST}/api/chat`, `services/llm_client.py`, doar
+  `httpx`): faptele clientului nu parasesc masina.
+
+#### Arhitectura hibrida: Sistemul 1 (Jev) si Sistemul 2 (Ollama)
+
+`services/llm_client.py` - `LLMRouter` trimite fiecare sarcina la sistemul ei:
+
+| Sarcina | Sistem | Unde se foloseste |
+|---------|--------|-------------------|
+| `generate` -> `generate_text_local()` | Ollama, local | Mesajul CMO, parerile consiliului, sinteza Reginei |
+| `score` -> `jev_score()` | Jev | CPO-ul: impactul si efortul fiecarei mutari RICE (o cerere pentru toate) |
+| `verify` -> `jev_verify()` | Jev | Researcher-ul: "e fragmentul web despre nisa clientului?" (o cerere pe fragment, in paralel) |
+| `classify` -> `jev_classify()` | Jev | Disponibil (Choice); rutarea intrebarilor ramane deocamdata pe reguli |
+
+Jev (`POST https://api.typesafe.ai/v1/systemone`) nu genereaza text: intoarce
+raspunsuri tipizate (Choice/Score/Noul) cu probabilitati si `confidence`. Dupa
+documentatia lui: intrebarile sunt in engleza (continutul clientului sta in
+`state`, in romana), aritmetica ramane in cod (un Score alege un NIVEL, valoarea si
+formula RICE le da codul), iar sub `confidence` 0,5 raspunsul nu se foloseste.
+Fara `JEV_API_KEY`, cand Jev pica sau nu e sigur, raman regulile fixe: estimarile
+RICE din tabel, toate fragmentele web. Decizia consiliului nu depinde de niciun model.
+
+In Docker, doar containerul `api` ajunge la Ollama de pe host
+(`host.docker.internal`, vezi comentariile din `docker-compose.yml`).
 
 #### Chatul cu Regina: `POST /api/v1/queen/chat`
 
@@ -583,8 +606,8 @@ Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliu
 Fiecare text LLM trece prin `check_council_text`: nicio cifra in afara datelor (ale
 clientului pot fi repetate, nu "calculate mai departe"), niciun link, nicio actiune
 pretinsa ("am marit bugetul"), nicio cheltuiala promisa, nicio garantie. Un membru
-respins sau picat e inlocuit cu pozitia lui determinista; fara `HUGGINGFACE_API_KEY`
-raspunde consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
+respins sau picat e inlocuit cu pozitia lui determinista; fara Ollama raspunde
+consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
 niciun LLM nu e apelat - raspunsul spune ce lipseste, nu da sfaturi generice.
 
 **Psihologia cumparatorului** (`services/cognitive.py`, determinist, in

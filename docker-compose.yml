@@ -20,6 +20,13 @@
 #   deschide direct - doar daca stii de ce. In spatele proxy-ului, seteaza
 #   FORWARDED_ALLOW_IPS la IP-ul lui, ca limitarea de login sa vada IP-ul real.
 #
+# Modelul local (Ollama, Sistemul 2 din services/llm_client.py) ruleaza pe HOST, nu
+# in stiva: GPU-ul e al masinii. Doar containerul "api" il foloseste si doar el
+# primeste drumul spre host (host.docker.internal -> host-gateway). Pe Docker Desktop
+# (Windows/macOS) merge direct. Pe Linux, Ollama asculta implicit doar pe 127.0.0.1:
+# porneste-l cu OLLAMA_HOST=172.17.0.1 (IP-ul bridge-ului docker0) sau 0.0.0.0 - al
+# doilea doar cu firewall pe portul 11434: API-ul Ollama nu are autentificare.
+#
 # Pentru dezvoltare locala (serverele pornite pe host), vezi docker-compose.dev.yml.
 
 name: ac-media
@@ -109,6 +116,11 @@ services:
     environment:
       <<: *backend-env
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      # Ollama de pe host. Suprascrie OLLAMA_HOST din .env (acolo e "localhost", adica
+      # insusi containerul). Alt server (alta masina cu GPU): OLLAMA_DOCKER_HOST in .env.
+      OLLAMA_HOST: ${OLLAMA_DOCKER_HOST:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
     # "data" pentru Postgres/Redis, "edge" pentru port si pentru apelurile catre

@@ -6,9 +6,10 @@ Doua rute au nevoie de ea acum:
   (impotriva cuiva care incearca multe conturi) si una stricta pe email, care
   numara doar ESECURILE (impotriva cuiva care incearca multe parole pe acelasi
   cont, din oricate IP-uri). Un login reusit sterge esecurile acelui email.
-- ``POST /api/v1/queen/chat`` - fiecare mesaj inseamna pana la trei apeluri
-  Hugging Face (bani) si un fir din pool-ul API-ului tinut ocupat zeci de
-  secunde. Limita e per client: o rafala scurta si un plafon pe ora.
+- ``POST /api/v1/queen/chat`` - fiecare mesaj inseamna pana la sase generari pe
+  modelul local (Ollama: GPU/CPU-ul masinii, partajat de toti clientii), cateva
+  apeluri Jev si un fir din pool-ul API-ului tinut ocupat zeci de secunde. Limita
+  e per client: o rafala scurta si un plafon pe ora.
 
 Fereastra e glisanta (se tin momentele cererilor, nu un contor resetat la fix),
 deci nu exista "granita" la care cineva sa trimita dublu. Sigur pentru fire:
@@ -99,7 +100,7 @@ LOGIN_BY_IP = RateLimiter(limit=30, window_seconds=60)
 LOGIN_FAILURES_BY_EMAIL = RateLimiter(limit=5, window_seconds=15 * 60)
 #: Mesaje catre Regina: rafala scurta...
 CHAT_BURST = RateLimiter(limit=6, window_seconds=60)
-#: ...si plafonul pe ora (costul Hugging Face).
+#: ...si plafonul pe ora (modelul local e partajat, Jev se plateste pe token).
 CHAT_HOURLY = RateLimiter(limit=60, window_seconds=60 * 60)
 
 ALL_LIMITERS = (LOGIN_BY_IP, LOGIN_FAILURES_BY_EMAIL, CHAT_BURST, CHAT_HOURLY)

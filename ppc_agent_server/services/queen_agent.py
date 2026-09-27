@@ -1141,7 +1141,7 @@ def build_directive(
 
 # --- vocea CMO: directiva explicata clientului --------------------------------
 #
-# Un LLM (Hugging Face, vezi ``hf_client.py``) doar TRADUCE directiva in limbaj
+# Un LLM local (Ollama, vezi ``llm_client.py``) doar TRADUCE directiva in limbaj
 # de consultant. Nu decide nimic: primeste faptele deja calculate, iar textul
 # lui trece prin ``check_cmo_message`` inainte sa ajunga la client. Orice cifra
 # pe care n-a primit-o, orice vorba despre buget sau licitari, orice link ->
