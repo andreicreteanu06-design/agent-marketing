@@ -602,7 +602,15 @@ Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliu
    un canal nou, buget in plus) trece doar pe un cont rentabil; o reclama rentabila
    pe care Regina vrea s-o rescrie devine test A/B, nu se inlocuieste.
 3. **Parerile** - strategia de brand si CFO-ul, cerute in paralel, fiecare doar cu
-   faptele rolului sau; apoi **sinteza Reginei**, care comunica decizia.
+   faptele rolului sau.
+4. **Runda de replici** - disputele pe care decizia le-a transat (`CouncilRuling.conflicts`):
+   CFO-ul taie o idee de brand care cere bani, veto-ul Tehnicianului opreste ce ar fi
+   trecut, Researcher-ul vede o fereastra in piata cand CFO-ul taie bugetul, CPO-ul da
+   vina pe oferta, nu pe mesaj. Cine a pierdut ii raspunde o data celui care a castigat,
+   cu faptele lui: ce ramane valabil si **cand se rediscuta** - o conditie masurabila
+   ("CPA-ul contului coboara sub tinta de 80 RON", "testul E2E confirma tracking-ul"),
+   care ajunge si in raspunsul catre client. Decizia nu se negociaza: o dau regulile.
+5. **Sinteza Reginei**, care comunica decizia, cine a cedat in fata cui si cand se rediscuta.
 
 Fiecare text LLM trece prin `check_council_text`: nicio cifra in afara datelor (ale
 clientului pot fi repetate, nu "calculate mai departe"), niciun link, nicio actiune

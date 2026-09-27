@@ -509,7 +509,13 @@ def test_the_technician_speaks_in_the_council_with_only_technical_facts() -> Non
         "Merită să cresc bugetul?", _directive()
     )
 
-    assert voice.roles == ["cfo", "chair", "cpo", "strategist", "technician"]
+    # Veto-ul opreste cresterea de buget sustinuta de CFO: CFO-ul ii raspunde Tehnicianului.
+    assert voice.roles == ["cfo", "chair", "cpo", "rebuttal", "strategist", "technician"]
+    [rebuttal] = reply.rebuttals
+    assert (rebuttal.member, rebuttal.replying_to, rebuttal.conflict) == (
+        "cfo", "technician", "veto"
+    )
+    assert "SE REDISCUTĂ CÂND: testul E2E confirmă" in voice.prompt("rebuttal")
     technician = voice.prompt("technician")
     assert "FAPTE TEHNICE" in technician
     assert "Stare tracking (calculată determinist, obligatorie): roșu." in technician
@@ -521,6 +527,8 @@ def test_the_technician_speaks_in_the_council_with_only_technical_facts() -> Non
         TECHNICIAN_SAYS,
         "Veto-ul Tehnicianului (obligatoriu): Tracking-ul e picat",
         "Oprit de veto-ul Tehnicianului: creșterea treptată",
+        "RUNDA DE REPLICI:\n- CFO · rentabilitate, către Tehnicianul · tracking și viteză:",
+        "Se rediscută când testul E2E confirmă că tracking-ul trimite din nou conversiile.",
     ):
         assert part in chair
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "technician"]

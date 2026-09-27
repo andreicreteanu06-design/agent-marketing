@@ -13,6 +13,7 @@ import {
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  ArrowBendDownRight,
   ArrowClockwise,
   CaretDown,
   Check,
@@ -87,9 +88,9 @@ const CHANNEL_NAME: Record<string, string> = {
 
 /**
  * Pasii deliberarii: datele, apoi cei cinci membri (pe server IN PARALEL, aici
- * pe rand, ca sa se vada fiecare), apoi sinteza Reginei. Durata reala
- * nu se stie dinainte (un apel HTTP), deci fazele avanseaza pe un ceas si
- * ultima ramane activa pana vine raspunsul.
+ * pe rand, ca sa se vada fiecare), runda de replici, apoi sinteza Reginei.
+ * Durata reala nu se stie dinainte (un apel HTTP), deci fazele avanseaza pe un
+ * ceas si ultima ramane activa pana vine raspunsul.
  */
 const DELIBERATION_STEPS: { label: string; phase: number }[] = [
   { label: "Datele contului: căutări, reclame, cheltuieli", phase: 0 },
@@ -98,7 +99,8 @@ const DELIBERATION_STEPS: { label: string; phase: number }[] = [
   { label: "Tehnicianul verifică tracking-ul și viteza pe mobil", phase: 3 },
   { label: "Researcher-ul citește piața și concurența", phase: 4 },
   { label: "CPO-ul judecă oferta și poziționarea", phase: 5 },
-  { label: "Sinteza: ce trece, ce se taie", phase: 6 },
+  { label: "Runda de replici: cine pierde o dispută răspunde", phase: 6 },
+  { label: "Sinteza: ce trece, ce se taie", phase: 7 },
 ];
 const DELIBERATION_HEADLINES = [
   "Regina își convoacă consiliul…",
@@ -107,9 +109,10 @@ const DELIBERATION_HEADLINES = [
   "Tehnicianul verifică site-ul și tracking-ul…",
   "Researcher-ul scanează piața…",
   "CPO-ul verifică dacă oferta se potrivește pieței…",
+  "Membrii se contrazic: cine a pierdut o dispută replică…",
   "Regina taie ideile proaste și formulează răspunsul…",
 ];
-const PHASE_DELAYS_MS = [700, 1500, 2300, 3100, 3900, 4700];
+const PHASE_DELAYS_MS = [700, 1500, 2300, 3100, 3900, 4700, 5500];
 
 function time(iso: string): string {
   const date = new Date(iso);
@@ -449,6 +452,34 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
         ))}
       </div>
 
+      {reply.rebuttals && reply.rebuttals.length > 0 && (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+            Runda de replici
+          </p>
+          <ul className="mt-2 space-y-2.5">
+            {reply.rebuttals.map((rebuttal) => (
+              <li key={rebuttal.member} className="flex gap-2">
+                <ArrowBendDownRight size={14} weight="bold" className="mt-0.5 shrink-0 text-brand-cyan" />
+                <div className="min-w-0">
+                  <p className="text-[11px] text-foreground-muted">
+                    {rebuttal.title} → {rebuttal.replying_to_title}
+                  </p>
+                  <p className="mt-0.5 text-[13px] leading-relaxed text-foreground/90">{rebuttal.rebuttal}</p>
+                  <p
+                    className="mt-1 text-[11px] text-foreground-muted"
+                    title={rebuttal.fallback_reason ?? undefined}
+                  >
+                    Se rediscută când {rebuttal.reopen_when}
+                    {rebuttal.source === "template" && " · replică deterministă, din datele contului"}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {reply.history && reply.history.length > 0 && (
         <div>
           <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
@@ -480,6 +511,12 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
           <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/80">
             <span className="text-foreground-muted">Oferta (CPO): </span>
             {ruling.offer}
+          </p>
+        )}
+        {ruling.reopen_when && (
+          <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/80">
+            <span className="text-foreground-muted">Se rediscută când: </span>
+            {ruling.reopen_when}
           </p>
         )}
       </div>

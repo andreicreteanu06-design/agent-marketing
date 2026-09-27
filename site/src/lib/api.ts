@@ -342,6 +342,41 @@ export interface CouncilRuling {
   market_context?: string | null;
   /** Verdictul CPO-ului pe oferta, cand intervine (CPA peste tinta, pozitionare de ascutit). */
   offer?: string | null;
+  /** Disputele transate de reguli: materialul rundei de replici. */
+  conflicts?: CouncilConflict[];
+  /** Cand se rediscuta ce s-a taiat sau oprit; null = nimic taiat. */
+  reopen_when?: string | null;
+}
+
+export type CouncilMember = CouncilOpinion["member"];
+export type ConflictKind = "veto" | "money_vs_brand" | "market_vs_money" | "offer_vs_message";
+
+/** O disputa din consiliu, transata de regula (decizia nu se negociaza). */
+export interface CouncilConflict {
+  kind: ConflictKind;
+  /** Cine a pierdut disputa - raspunde in runda de replici. */
+  challenger: CouncilMember;
+  /** Cine a castigat-o. */
+  respondent: CouncilMember;
+  issue: string;
+  rule: string;
+  /** Cand revine pe masa - o conditie masurabila, din date. */
+  reopen_when: string;
+  rebuttal: string;
+}
+
+/** Replica unui membru care a pierdut o disputa, catre colegul care a castigat-o. */
+export interface CouncilRebuttal {
+  member: CouncilMember;
+  title: string;
+  replying_to: CouncilMember;
+  replying_to_title: string;
+  conflict: ConflictKind;
+  rebuttal: string;
+  reopen_when: string;
+  source: MessageSource;
+  model: string | null;
+  fallback_reason: string | null;
 }
 
 /** green = verde, amber = la limita, red = rosu, unknown = fara date (nu se ghiceste). */
@@ -431,6 +466,8 @@ export interface QueenChatReply {
   history?: string[];
   /** Verdictul CPO-ului pe oferta: pozitionarea, povestea, mutarile dupa RICE. */
   product?: ProductDirective | null;
+  /** Runda de replici: cine a pierdut o disputa ii raspunde celui care a castigat-o. */
+  rebuttals?: CouncilRebuttal[];
 }
 
 /** Oferta si pozitionarea (ppc_agent_server/services/cpo.py), calculate determinist. */

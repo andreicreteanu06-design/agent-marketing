@@ -504,6 +504,26 @@ def classify_question(question: str, *, active_platforms: set[str]) -> QuestionT
 IdeaKind = Literal[
     "budget", "channel", "loser", "negatives", "rewrite", "paid_targeting", "free_targeting"
 ]
+#: Disputele pe care decizia le transeaza (``_conflicts``).
+ConflictKind = Literal["veto", "money_vs_brand", "market_vs_money", "offer_vs_message"]
+
+
+class CouncilConflict(BaseModel):
+    """O disputa din consiliu, transata de regula - materialul rundei de replici."""
+
+    kind: ConflictKind
+    #: Cine a pierdut disputa: el raspunde in runda de replici.
+    challenger: CouncilMember
+    #: Cine a castigat-o: lui i se raspunde.
+    respondent: CouncilMember
+    #: Despre ce - ideea taiata sau oprita, ori verdictul contestat.
+    issue: str
+    #: Regula care a transat-o: decizia nu se negociaza.
+    rule: str
+    #: Cand revine pe masa - o conditie masurabila, din date.
+    reopen_when: str
+    #: Replica determinista a celui care a pierdut (fara LLM, sau cand pica).
+    rebuttal: str
 
 
 class CouncilRuling(BaseModel):
@@ -529,6 +549,10 @@ class CouncilRuling(BaseModel):
     market_context: str | None = None
     #: Verdictul CPO-ului pe oferta, cand intervine (CPA peste tinta, pozitionare de ascutit).
     offer: str | None = None
+    #: Disputele transate, in ordinea importantei: runda de replici porneste de la ele.
+    conflicts: list[CouncilConflict] = Field(default_factory=list)
+    #: Cand se rediscuta ce s-a taiat sau oprit; ``None`` = nimic taiat.
+    reopen_when: str | None = None
 
 
 #: De ce nu se cheltuie bani in plus - cate un motiv pe stare financiara.
@@ -715,6 +739,157 @@ def _ideas(
     return ideas
 
 
+#: Cine apara fiecare fel de idee in runda de replici.
+_IDEA_OWNER: dict[IdeaKind, CouncilMember] = {
+    "rewrite": "strategist",
+    "paid_targeting": "strategist",
+    "free_targeting": "strategist",
+    "budget": "cfo",
+    "channel": "cfo",
+    "loser": "cfo",
+    "negatives": "cfo",
+}
+#: Cand se ridica fiecare veto - dovada pe care o cere Tehnicianul.
+_VETO_REOPEN: dict[str, str] = {
+    "SITE_UNAVAILABLE": "site-ul răspunde din nou și testul E2E trece",
+    "CRITICAL_JOURNEY_BROKEN": "butonul de conversie merge din nou și testul E2E trece",
+    "ATTRIBUTION_BROKEN": "testul E2E confirmă că tracking-ul trimite din nou conversiile",
+    "MOBILE_LCP_CRITICAL": "site-ul se încarcă pe mobil sub 4 s (LCP)",
+}
+_VETO_RULE = (
+    "Tehnicianul are drept de veto peste brand și CFO: pe cifre false sau pe un site lent nu "
+    "se decide nimic pe bani."
+)
+_MONEY_RULE = (
+    "Când brandul și banii nu se împacă, câștigă CFO-ul: o idee care cere bani trece doar pe "
+    "un cont rentabil."
+)
+_MARKET_RULE = (
+    "Piața explică decizia, nu o schimbă: cât timp contul nu e rentabil, fereastra se folosește "
+    "prin mesaj, nu prin buget."
+)
+_OFFER_RULE = (
+    "Pe un CPA mare, datele arată a cui e vina: o reclamă care îi vorbește deja clientului ideal "
+    "și tot pierde bani arată spre ofertă. Mesajul rămâne al Reginei; schimbarea ofertei e o "
+    "propunere separată."
+)
+
+
+def _money_reopen(finances: FinancialSnapshot) -> str:
+    """Cand revine pe masa o idee taiata de CFO: pragul pe care l-a folosit el."""
+    if finances.status == "insufficient_data":
+        return f"contul strânge cel puțin {_count(MIN_CONVERSIONS_FOR_VERDICT, 'conversii')}"
+    if finances.status == "no_benchmark":
+        return "stabilești cu agenția o țintă CPA (sau valoarea unei conversii)"
+    if finances.roas is not None and finances.roas < BREAK_EVEN_ROAS:
+        return "venitul atribuit acoperă cheltuiala cu reclamele (ROAS peste 1)"
+    if finances.target_cpa is not None:
+        return f"CPA-ul contului coboară sub ținta de {_ron(finances.target_cpa)} RON"
+    return "contul devine rentabil"
+
+
+def _conflicts(
+    ideas: Sequence[_Idea],
+    blocked: frozenset[IdeaKind],
+    directive: BrandStrategyDirective,
+    finances: FinancialSnapshot,
+    technical: TechnicianDirective | None,
+    market: MarketDirective | None,
+    product: ProductDirective | None,
+) -> list[CouncilConflict]:
+    """Disputele pe care decizia le-a transat - cine a pierdut, in fata cui, pana cand.
+
+    Doar dispute reale, din date: o idee a unui membru taiata sau oprita de altul, ori doua
+    diagnostice care se bat cap in cap. Cine a pierdut raspunde in runda de replici.
+    """
+    conflicts: list[CouncilConflict] = []
+    avatar = directive.avatar.name if directive.avatar is not None else None
+    reopen = _money_reopen(finances)
+    vetoed = [idea for idea in ideas if idea.approved and idea.kind in blocked]
+    if vetoed and technical is not None and technical.veto_code is not None:
+        first = vetoed[0]
+        why = (
+            "pe cifre false nu decidem nimic pe bani"
+            if technical.veto == "money"
+            else "pe un site lent, fiecare leu în plus plătește click-uri care pleacă"
+        )
+        when = _VETO_REOPEN[technical.veto_code]
+        conflicts.append(
+            CouncilConflict(
+                kind="veto",
+                challenger=_IDEA_OWNER[first.kind],
+                respondent="technician",
+                issue=first.text,
+                rule=_VETO_RULE,
+                reopen_when=when,
+                rebuttal=(
+                    f"Susțineam {first.text}, dar nu contest veto-ul Tehnicianului: {why}. "
+                    f"Reiau propunerea când {when}."
+                ),
+            )
+        )
+    # Diagnosticul (mesaj sau oferta) e disputa centrala a unui CPA mare.
+    if product is not None and product.status in ("pivot", "offer_gap") and avatar is not None:
+        when = f"o reclamă care îi vorbește lui «{avatar}» coboară sub ținta de CPA"
+        conflicts.append(
+            CouncilConflict(
+                kind="offer_vs_message",
+                challenger="strategist",
+                respondent="cpo",
+                issue=product.verdict,
+                rule=_OFFER_RULE,
+                reopen_when=when,
+                rebuttal=(
+                    "Eu am căutat problema în mesaj, CPO-ul o vede în ofertă, iar cifrele îi dau "
+                    f"dreptate. Rescrierea rămâne pentru reclamele care nu-i vorbesc lui "
+                    f"«{avatar}», dar oferta se testează și ea. Dacă {when}, vina era totuși a "
+                    "mesajului."
+                ),
+            )
+        )
+    cut = [idea for idea in ideas if not idea.approved]
+    brand_cut = next((idea for idea in cut if idea.kind == "paid_targeting"), None)
+    if brand_cut is not None:
+        lead = f"Clientul ideal rămâne «{avatar}», dar până atunci" if avatar else "Până atunci"
+        conflicts.append(
+            CouncilConflict(
+                kind="money_vs_brand",
+                challenger="strategist",
+                respondent="cfo",
+                issue=brand_cut.text,
+                rule=_MONEY_RULE,
+                reopen_when=reopen,
+                rebuttal=(
+                    f"Accept tăierea CFO-ului: {brand_cut.text}. {lead} lucrăm doar cu ce nu "
+                    f"costă bani. Revin cu ideea când {reopen}."
+                ),
+            )
+        )
+    spend_cut = next((idea for idea in cut if idea.kind in ("budget", "channel")), brand_cut)
+    trend = market.market_trend if market is not None and not market.is_demo else None
+    if (
+        spend_cut is not None
+        and trend is not None
+        and (trend.direction == "growing" or trend.season in ("rising", "peak"))
+    ):
+        conflicts.append(
+            CouncilConflict(
+                kind="market_vs_money",
+                challenger="researcher",
+                respondent="cfo",
+                issue=spend_cut.text,
+                rule=_MARKET_RULE,
+                reopen_when=reopen,
+                rebuttal=(
+                    f"{trend.window} Accept totuși tăierea CFO-ului: {spend_cut.text}. "
+                    "Fereastra o folosim prin mesaj, nu prin buget; bugetul revine pe masă când "
+                    f"{reopen}."
+                ),
+            )
+        )
+    return conflicts
+
+
 def rule_on_question(
     question: QuestionTopic,
     directive: BrandStrategyDirective,
@@ -740,6 +915,13 @@ def rule_on_question(
     blocked = _VETOED_KINDS[scope]
     cut = [idea for idea in ideas if not idea.approved]
     channel = PLATFORM_NAMES.get(question.new_channel or "", question.new_channel or "")
+    conflicts = _conflicts(ideas, blocked, directive, finances, technical, market, product)
+    veto_code = technical.veto_code if technical is not None and scope != "none" else None
+    reopen_when: str | None = None
+    if veto_code is not None:
+        reopen_when = _VETO_REOPEN[veto_code]
+    elif cut:
+        reopen_when = _money_reopen(finances)
     return CouncilRuling(
         topic=question.topic,
         new_channel=question.new_channel,
@@ -753,6 +935,8 @@ def rule_on_question(
         vetoed=[idea.text for idea in ideas if idea.approved and idea.kind in blocked],
         market_context=_market_context(question, market),
         offer=_offer_context(question, product),
+        conflicts=conflicts,
+        reopen_when=reopen_when,
     )
 
 
@@ -1022,6 +1206,8 @@ def ruling_facts(ruling: CouncilRuling) -> str:
         lines.append(f"Contextul pieței (Researcher): {ruling.market_context}")
     if ruling.offer:
         lines.append(f"Verdictul CPO-ului pe ofertă: {ruling.offer}")
+    if ruling.reopen_when:
+        lines.append(f"Se rediscută când {ruling.reopen_when}.")
     lines.append("Nimic nu se aplică fără aprobarea clientului.")
     return "\n".join(f"- {line}" for line in lines)
 
@@ -1064,6 +1250,8 @@ def template_council_reply(
         parts.append(f"Consiliul susține {ruling.approved[0]}.")
     if ruling.cut:
         parts.append(f"CFO-ul a tăiat {ruling.cut[0]}.")
+    if ruling.reopen_when:
+        parts.append(f"Se rediscută când {ruling.reopen_when}.")
     if directive.status != "ok" and finances.status == "insufficient_data":
         parts.append(
             "Ce ajută: conectează Search Console și lasă campaniile să adune termeni de căutare "
@@ -1191,7 +1379,25 @@ CHAIR_SYSTEM_PROMPT = (
     "7. Maximum 170 de cuvinte, la persoana I, adresându-te cu «tu». Fără markdown, fără "
     "liste, fără linkuri.\n"
     f"8. {HISTORY_RULE} Când o decizie de acum leagă de una din istoric, o spui pe scurt "
-    "(«acum două săptămâni, CFO-ul a tăiat...»).\n\n"
+    "(«acum două săptămâni, CFO-ul a tăiat...»).\n"
+    "9. Când consiliul s-a contrazis (RUNDA DE REPLICI), spui într-o frază cine a cedat în fața "
+    "cui și de ce, și când se rediscută - condiția din decizie, exact cum e dată.\n\n"
+    f"{CONSULTANT_VOICE}"
+)
+
+REBUTTAL_SYSTEM_PROMPT = (
+    "Ești un membru al consiliului agenției AC Media, în RUNDA DE REPLICI: ți-ai spus deja "
+    "părerea, iar regula consiliului a tranșat o dispută împotriva ta. Acum îi răspunzi "
+    "colegului care a câștigat-o, o singură dată. Primești rolul tău, faptele tale, poziția "
+    "colegului, disputa, regula care a tranșat-o și condiția în care se rediscută.\n"
+    "Reguli stricte:\n"
+    "1. Decizia NU se schimbă. Nu o contești ca rezultat: spui ce rămâne valabil din "
+    "perspectiva ta și de ce, apoi condiția în care se rediscută, exact cum e dată.\n"
+    "2. Un singur argument, din faptele tale. Folosești DOAR faptele primite: nicio cifră care "
+    "nu apare în ele.\n"
+    "3. Nu pretinzi că ai făcut ceva și nu promiți nimic: totul sunt propuneri care așteaptă "
+    "aprobarea clientului.\n"
+    "4. Maximum 60 de cuvinte, la persoana I, text simplu, fără markdown, liste sau linkuri.\n\n"
     f"{CONSULTANT_VOICE}"
 )
 
@@ -1226,6 +1432,24 @@ def build_member_prompt(member: CouncilMember, question: str, facts: str) -> tup
     return system, user
 
 
+def build_rebuttal_prompt(
+    conflict: CouncilConflict, question: str, facts: str, colleague: str
+) -> tuple[str, str]:
+    """Promptul replicii: cel care a pierdut disputa, cu faptele lui si pozitia colegului."""
+    heading = _MEMBER_PROMPTS[conflict.challenger][1]
+    user = (
+        f"{_question_block(question)}\n\n"
+        f"ROLUL TĂU: {MEMBER_TITLES[conflict.challenger]}\n\n"
+        f"{heading}:\n{facts}\n\n"
+        f"POZIȚIA COLEGULUI ({MEMBER_TITLES[conflict.respondent]}):\n{colleague}\n\n"
+        f"DISPUTA: {conflict.issue}\n"
+        f"REGULA CONSILIULUI: {conflict.rule}\n"
+        f"SE REDISCUTĂ CÂND: {conflict.reopen_when}\n\n"
+        "Replica ta către coleg:"
+    )
+    return REBUTTAL_SYSTEM_PROMPT, user
+
+
 def build_chair_prompt(
     question: str,
     opinions: Sequence[CouncilOpinion],
@@ -1237,8 +1461,9 @@ def build_chair_prompt(
     market_text: str | None = None,
     history_text: str = "",
     product_facts: str | None = None,
+    rebuttals: Sequence[CouncilRebuttal] = (),
 ) -> tuple[str, str]:
-    """Promptul Reginei ca presedinte: parerile, toate faptele si decizia.
+    """Promptul Reginei ca presedinte: parerile, replicile, toate faptele si decizia.
 
     ``market_text`` doar din surse reale: datele demonstrative nu ajung la sinteza.
     """
@@ -1261,6 +1486,11 @@ def build_chair_prompt(
         if product_facts is not None
         else ""
     )
+    replies = "".join(
+        f"- {rebuttal.title}, către {rebuttal.replying_to_title}: {rebuttal.rebuttal}\n"
+        for rebuttal in rebuttals
+    )
+    rebuttal_block = f"RUNDA DE REPLICI:\n{replies}\n" if replies else ""
     user = (
         f"{_question_block(question)}\n\n"
         f"PĂREREA TA DE BRAND:\n{by_member.get('strategist', '')}\n\n"
@@ -1270,6 +1500,7 @@ def build_chair_prompt(
         f"{technician}"
         f"{researcher}"
         f"{cpo}"
+        f"{rebuttal_block}"
         f"{_history_block(history_text)}"
         f"DECIZIA CONSILIULUI:\n{ruling_facts(ruling)}\n\n"
         "Scrie răspunsul tău final către client."
@@ -1301,6 +1532,21 @@ class CouncilOpinion(BaseModel):
     demo: bool = False
 
 
+class CouncilRebuttal(BaseModel):
+    """Replica unui membru care a pierdut o disputa, catre colegul care a castigat-o."""
+
+    member: CouncilMember
+    title: str
+    replying_to: CouncilMember
+    replying_to_title: str
+    conflict: ConflictKind
+    rebuttal: str
+    reopen_when: str
+    source: MessageSource
+    model: str | None
+    fallback_reason: str | None
+
+
 class CouncilReply(BaseModel):
     """Raspunsul Reginei in chat, dupa deliberare."""
 
@@ -1327,6 +1573,8 @@ class CouncilReply(BaseModel):
     history: list[str] = Field(default_factory=list)
     #: Verdictul CPO-ului pe oferta: pozitionarea, povestea, mutarile dupa RICE.
     product: ProductDirective | None = None
+    #: Runda de replici: cine a pierdut o disputa ii raspunde celui care a castigat-o.
+    rebuttals: list[CouncilRebuttal] = Field(default_factory=list)
 
 
 def clean_question(query: str) -> str:
@@ -1574,6 +1822,15 @@ class QueenCouncil:
             opinions.append(_demo_market_opinion(market))
         # CPO-ul vorbeste ultimul: judeca oferta pe concluziile celorlalti.
         opinions.append(cpo.result())
+        # Runda de replici: cine a pierdut o disputa ii raspunde celui care a castigat-o.
+        member_facts: dict[CouncilMember, str | None] = {
+            "strategist": brand_facts,
+            "cfo": money_facts,
+            "technician": tech_facts,
+            "researcher": market_text,
+            "cpo": product_facts,
+        }
+        rebuttals = self._rebuttal_round(question, ruling.conflicts, opinions, member_facts)
 
         def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilReply:
             return CouncilReply(
@@ -1593,6 +1850,7 @@ class QueenCouncil:
                 market=market,
                 history=[memory_line(entry, now) for entry in history],
                 product=product,
+                rebuttals=rebuttals,
             )
 
         def _deterministic(reason: str) -> CouncilReply:
@@ -1620,6 +1878,7 @@ class QueenCouncil:
                 market_text=market_text,
                 history_text=history_text,
                 product_facts=product_facts,
+                rebuttals=rebuttals,
             )
             text, problem = self._ask(system=system, user=user, max_chars=MAX_REPLY_CHARS)
             if text is None:
@@ -1700,6 +1959,65 @@ class QueenCouncil:
             model=self._voice.model,
             fallback_reason=None,
         )
+
+    def _rebuttal_round(
+        self,
+        question: str,
+        conflicts: Sequence[CouncilConflict],
+        opinions: Sequence[CouncilOpinion],
+        facts: dict[CouncilMember, str | None],
+    ) -> list[CouncilRebuttal]:
+        """A doua runda: fiecare membru care a pierdut o disputa raspunde o data, in paralel.
+
+        Un membru cu mai multe dispute o ia pe cea mai importanta (ordinea din ``conflicts``).
+        Decizia nu se schimba: replica spune ce ramane valabil si cand se rediscuta.
+        """
+        firsts: dict[CouncilMember, CouncilConflict] = {}
+        for conflict in conflicts:
+            firsts.setdefault(conflict.challenger, conflict)
+        if not firsts:
+            return []
+        said = {opinion.member: opinion.opinion for opinion in opinions}
+        with ThreadPoolExecutor(max_workers=len(firsts), thread_name_prefix="replici") as pool:
+            futures = [
+                pool.submit(
+                    self._rebuttal,
+                    conflict,
+                    question,
+                    facts.get(conflict.challenger) or "",
+                    said.get(conflict.respondent, ""),
+                )
+                for conflict in firsts.values()
+            ]
+            return [future.result() for future in futures]
+
+    def _rebuttal(
+        self, conflict: CouncilConflict, question: str, facts: str, colleague: str
+    ) -> CouncilRebuttal:
+        def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilRebuttal:
+            return CouncilRebuttal(
+                member=conflict.challenger,
+                title=MEMBER_TITLES[conflict.challenger],
+                replying_to=conflict.respondent,
+                replying_to_title=MEMBER_TITLES[conflict.respondent],
+                conflict=conflict.kind,
+                rebuttal=text,
+                reopen_when=conflict.reopen_when,
+                source=source,
+                model=self._voice.model if source == "llm" and self._voice else None,
+                fallback_reason=reason,
+            )
+
+        if self._voice is None:
+            return _reply(
+                conflict.rebuttal, "template", "Vocea LLM nu e configurată - replica deterministă."
+            )
+        system, user = build_rebuttal_prompt(conflict, question, facts, colleague)
+        text, problem = self._ask(system=system, user=user, max_chars=MAX_OPINION_CHARS)
+        if text is None:
+            logger.warning("[Consiliu] replica %s respinsa: %s", conflict.challenger, problem)
+            return _reply(conflict.rebuttal, "template", f"{problem} - replica deterministă.")
+        return _reply(text, "llm", None)
 
     def _ask(self, *, system: str, user: str, max_chars: int) -> tuple[str | None, str | None]:
         """``(text, None)`` sau ``(None, motivul)`` - vocea e optionala, nimic nu arunca."""

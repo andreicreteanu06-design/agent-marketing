@@ -18,6 +18,7 @@ import pytest
 from ppc_agent_server.services.council import (
     CFO_SYSTEM_PROMPT,
     CHAIR_SYSTEM_PROMPT,
+    REBUTTAL_SYSTEM_PROMPT,
     STRATEGIST_SYSTEM_PROMPT,
     AdSpend,
     FinancialSignals,
@@ -123,6 +124,7 @@ _ROLE_BY_PROMPT = {
     TECHNICIAN_SYSTEM_PROMPT: "technician",
     RESEARCHER_SYSTEM_PROMPT: "researcher",
     CPO_SYSTEM_PROMPT: "cpo",
+    REBUTTAL_SYSTEM_PROMPT: "rebuttal",
 }
 STRATEGIST_SAYS = (
     "Clientul tău ideal e «Ocupatul pragmatic»: vrea să rezolve totul din telefon. Reclama "
@@ -134,6 +136,10 @@ CFO_SAYS = (
 )
 TECHNICIAN_SAYS = "Tracking: roșu. Conversiile Google Ads tac. Nu e marketing, e tag-ul."
 RESEARCHER_SAYS = "Concurența urcă prețul. CPC-ul pieței: +26% în 28 de zile. Fereastra e acum."
+REBUTTAL_SAYS = (
+    "Accept regula: pe un cont pe pierdere nu cerem bani în plus. Clientul ideal rămâne același, "
+    "iar ideea revine când CPA-ul contului coboară sub ținta de 80 RON."
+)
 CPO_SAYS = (
     "Oferta se potrivește cu piața: «Ocupatul pragmatic» e și cel care cumpără. Nu schimbăm "
     "oferta, doar mesajul reclamei tehnice."
@@ -163,6 +169,7 @@ class _CouncilVoice:
             "technician": TECHNICIAN_SAYS,
             "researcher": RESEARCHER_SAYS,
             "cpo": CPO_SAYS,
+            "rebuttal": REBUTTAL_SAYS,
             "chair": CHAIR_SAYS,
         }
         self.answers.update(answers or {})
@@ -531,7 +538,8 @@ def test_a_member_without_data_is_not_asked() -> None:
     voice = _CouncilVoice()
     reply = _council(NO_MONEY, voice).evaluate_client_query("Cine e publicul meu?", _directive())
 
-    assert voice.roles == ["chair", "cpo", "strategist"]
+    # CFO-ul n-are date, dar taie testul de interese: Regina ii raspunde in runda de replici.
+    assert voice.roles == ["chair", "cpo", "rebuttal", "strategist"]
     cfo = reply.opinions[1]
     assert cfo.source == "template"
     assert cfo.opinion.startswith("Nu există încă nicio cheltuială înregistrată")
