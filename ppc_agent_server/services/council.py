@@ -776,11 +776,19 @@ _OFFER_RULE = (
 
 
 def _money_reopen(finances: FinancialSnapshot) -> str:
-    """Cand revine pe masa o idee taiata de CFO: pragul pe care l-a folosit el."""
+    """Cand revine pe masa o idee taiata de CFO: cand contul trece testul lui de rentabilitate.
+
+    Exact conditia dupa care jobul de noapte ridica restrictia (``council_guard._lift``).
+    """
     if finances.status == "insufficient_data":
-        return f"contul strânge cel puțin {_count(MIN_CONVERSIONS_FOR_VERDICT, 'conversii')}"
+        enough = f"contul strânge cel puțin {_count(MIN_CONVERSIONS_FOR_VERDICT, 'conversii')}"
+        if finances.target_cpa is not None:
+            return f"{enough}, la un CPA sub ținta de {_ron(finances.target_cpa)} RON"
+        return f"{enough} și se dovedește rentabil"
     if finances.status == "no_benchmark":
-        return "stabilești cu agenția o țintă CPA (sau valoarea unei conversii)"
+        return (
+            "stabilești cu agenția o țintă CPA (sau valoarea unei conversii), iar contul o atinge"
+        )
     if finances.roas is not None and finances.roas < BREAK_EVEN_ROAS:
         return "venitul atribuit acoperă cheltuiala cu reclamele (ROAS peste 1)"
     if finances.target_cpa is not None:

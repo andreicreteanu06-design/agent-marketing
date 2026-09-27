@@ -44,6 +44,7 @@ from ppc_agent_server.models import (
     SiteSpeedSample,
 )
 from ppc_agent_server.security import decrypt_secret
+from ppc_agent_server.services.council import build_financial_snapshot
 from ppc_agent_server.services.council_guard import (
     COUNCIL_MEMORY_DAYS,
     DECIDED_BY,
@@ -55,7 +56,12 @@ from ppc_agent_server.services.council_guard import (
     council_context,
     guard_changes,
 )
-from ppc_agent_server.services.queen_signals import DbMemory, DbTechnicalSignals
+from ppc_agent_server.services.memory import memory_line
+from ppc_agent_server.services.queen_signals import (
+    DbFinancialSignals,
+    DbMemory,
+    DbTechnicalSignals,
+)
 from ppc_agent_server.services.technician import evaluate_technical_health
 from ppc_agent_server.tracking.pipeline import to_ad_performance_state
 from seo_geo_agent.external_data import fetch_pagespeed_insights
@@ -260,14 +266,21 @@ def _guarded_row(
 
 
 def _council_constraints(session: Session, client_account_id: int) -> CouncilConstraints:
-    """Restrictiile consiliului in noaptea asta: memoria (7 zile) + Tehnicianul de acum."""
+    """Restrictiile consiliului in noaptea asta: memoria (7 zile) + Tehnicianul de acum.
+
+    Ce s-a ridicat (conditia de rediscutare, indeplinita in datele de azi) se invalideaza
+    in memorie pe loc - intrarile ``lifted:`` - ca s-o vada si consiliul din chat.
+    """
     now = datetime.now(tz=UTC)
-    memory = DbMemory(session).decisions(
-        client_account_id, now - timedelta(days=COUNCIL_MEMORY_DAYS)
-    )
+    memory = DbMemory(session)
+    decisions = memory.decisions(client_account_id, now - timedelta(days=COUNCIL_MEMORY_DAYS))
     signals = DbTechnicalSignals(session).load(client_account_id)
     technical = evaluate_technical_health(client_account_id, signals, generated_at=now)
-    return council_constraints(memory, technical, signals, now=now)
+    finances = build_financial_snapshot(DbFinancialSignals(session).load(client_account_id))
+    constraints = council_constraints(decisions, technical, signals, now=now, finances=finances)
+    if constraints.lifted:
+        memory.remember(client_account_id, constraints.lifted)
+    return constraints
 
 
 def _block_pending(
@@ -388,22 +401,27 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
             "total_projected_daily_spend": str(total),
             "brand_alignment": brand_alignment,
         }
-        if constraints.active:
-            council = {
+        lifted = [memory_line(entry, now) for entry in constraints.lifted]
+        for line in lifted:
+            logger.info("[Consiliu] client %s: restricție ridicată. %s", client_account_id, line)
+        if constraints.active or lifted:
+            council: dict[str, Any] = {
                 "note": constraints.note(),
                 "blocked": len(guarded) - len(allowed),
                 "capped": sum(1 for item in guarded if item.capped_from is not None),
                 "blocked_pending": _block_pending(session, client_account_id, constraints, now),
+                "lifted": lifted,
             }
-            logger.warning(
-                "[Consiliu] client %s: %d propuneri oprite, %d plafonate, %d în așteptare "
-                "oprite. %s",
-                client_account_id,
-                council["blocked"],
-                council["capped"],
-                council["blocked_pending"],
-                council["note"],
-            )
+            if constraints.active:
+                logger.warning(
+                    "[Consiliu] client %s: %d propuneri oprite, %d plafonate, %d în așteptare "
+                    "oprite. %s",
+                    client_account_id,
+                    council["blocked"],
+                    council["capped"],
+                    council["blocked_pending"],
+                    council["note"],
+                )
             result["council"] = council
         return result
 

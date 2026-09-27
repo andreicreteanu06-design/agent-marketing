@@ -22,6 +22,8 @@ from sqlmodel import Session, select
 import ppc_agent_server.jobs.tasks as tasks_module
 from ppc_agent_server.jobs.tasks import run_propose_job
 from ppc_agent_server.models import (
+    AdFatiguePlatform,
+    AdPerformanceRecord,
     ChangeOp,
     ChangeStatus,
     ClientAccount,
@@ -53,18 +55,45 @@ def _remember(
     decision: str,
     code: str,
     *,
-    days_ago: float,
+    days_ago: float = 0,
     observation: str = "",
+    at: datetime | None = None,
 ) -> None:
     session.add(
         MemoryStream(
             client_account_id=account.id or 0,
-            timestamp=NOW - timedelta(days=days_ago),
+            timestamp=at or NOW - timedelta(days=days_ago),
             agent_role=role,
             topic="budget",
             decision=decision,
             observation=observation,
             code=code,
+        )
+    )
+    session.commit()
+
+
+def _memory(session: Session, account: ClientAccount, code: str) -> list[MemoryStream]:
+    return list(
+        session.exec(
+            select(MemoryStream)
+            .where(MemoryStream.client_account_id == account.id)
+            .where(MemoryStream.code == code)
+        ).all()
+    )
+
+
+def _ads(session: Session, account: ClientAccount, *, spend: str, conversions: int) -> None:
+    """Cifrele CFO-ului: o reclama Meta cu tinta de 80 RON pe conversie."""
+    session.add(
+        AdPerformanceRecord(
+            client_account_id=account.id or 0,
+            ad_id=f"ad-{spend}-{conversions}",
+            platform=AdFatiguePlatform.META,
+            launch_time=NOW - timedelta(days=20),
+            spend=Decimal(spend),
+            target_cpa=Decimal("80"),
+            conversions=conversions,
         )
     )
     session.commit()
@@ -207,8 +236,17 @@ def test_the_veto_is_lifted_by_an_e2e_test_that_passes_after_it(session: Session
 
     result = run_propose_job(client_account_id=account.id or 0)
 
-    assert "council" not in result
+    # Conditia de rediscutare s-a indeplinit: algoritmul e liber, iar veto-ul se invalideaza.
     assert {row.status for row in _tonight(session, account)} == {ChangeStatus.PENDING}
+    assert result["council"]["note"] == ""
+    [lifted] = result["council"]["lifted"]
+    assert lifted.startswith("Azi, Tehnicianul a ridicat veto-ul: testul E2E din ")
+    assert lifted.endswith("a trecut, conversiile ajung din nou la platforme.")
+    [row] = _memory(session, account, "lifted:ATTRIBUTION_BROKEN")
+    assert row.agent_role == "cto"
+
+    # Noaptea urmatoare, veto-ul e invalidat: nicio restrictie, nicio ridicare noua.
+    assert "council" not in run_propose_job(client_account_id=account.id or 0)
 
 
 def test_a_passing_test_from_before_the_veto_proves_nothing(session: Session) -> None:
@@ -273,6 +311,46 @@ def test_a_cfo_cut_leaves_a_plan_that_does_not_grow_untouched(session: Session) 
 
     assert result["council"]["capped"] == 0
     assert result["total_projected_daily_spend"] == "500.00"
+
+
+def test_the_cfo_lifts_its_cut_once_the_account_is_profitable_again(session: Session) -> None:
+    account = _client_account(session)
+    _remember(session, account, "cfo", CFO_CUT, "budget", days_ago=2)
+    _remember(session, account, "cfo", "a tăiat un test de interese", "paid_targeting", days_ago=1)
+    _ads(session, account, spend="620", conversions=9)  # CPA 68,89 RON, sub tinta de 80
+
+    result = run_propose_job(client_account_id=account.id or 0)
+
+    # Algoritmul e liber din nou: Kelly urca la 60,87 RON, nimic plafonat.
+    assert result["total_projected_daily_spend"] == "60.87"
+    assert (result["council"]["note"], result["council"]["capped"]) == ("", 0)
+    assert result["council"]["lifted"] == [
+        "Azi, CFO-ul a ridicat restricția pe buget: CPA-ul contului a coborât la 68,89 RON, "
+        "sub ținta de 80 RON."
+    ]
+    # O singura ridicare pentru toate taieturile CFO-ului: aceeasi conditie.
+    [row] = _memory(session, account, "lifted:cfo")
+    assert row.agent_role == "cfo"
+
+
+def test_a_lifted_cut_does_not_come_back_on_its_own_but_a_new_decision_does(
+    session: Session,
+) -> None:
+    account = _client_account(session)
+    _remember(session, account, "cfo", CFO_CUT, "budget", days_ago=2)
+    _ads(session, account, spend="620", conversions=9)
+    assert run_propose_job(client_account_id=account.id or 0)["council"]["lifted"]
+
+    # Contul recade pe pierdere (CPA peste 80): taietura veche ramane invalidata...
+    _ads(session, account, spend="3000", conversions=1)
+    assert "council" not in run_propose_job(client_account_id=account.id or 0)
+
+    # ...pana cand consiliul decide din nou, in chat: atunci restrictia revine.
+    _remember(session, account, "cfo", CFO_CUT, "budget", at=datetime.now(tz=UTC))
+    again = run_propose_job(client_account_id=account.id or 0)
+    assert again["council"]["note"].startswith("Bugetul nu crește: Azi, CFO-ul a tăiat")
+    assert again["council"]["capped"] > 0
+    assert again["council"]["lifted"] == []
 
 
 def test_a_cut_that_costs_no_money_restricts_nothing(session: Session) -> None:

@@ -19,10 +19,21 @@ din raportul Tehnicianului de acum:
   (``max_daily_spend``): alocarile Thompson se reduc proportional, iar lansarile in
   asteptare se opresc. Scaderile si mutarile intre campanii raman.
 
-Un veto din memorie se ridica inainte de 7 zile doar pe o dovada NOUA: testul E2E
-trecut, respectiv o masuratoare PageSpeed buna, de DUPA veto. Un veto pe care
-Tehnicianul il vede acum se aplica si fara memorie - tracking-ul picat nu asteapta
-ca cineva sa intrebe in chat. Taietura CFO-ului tine 7 zile: e decizia consiliului.
+**Ridicarea**: fiecare restrictie are o conditie de rediscutare (``council._conflicts``,
+``CouncilRuling.reopen_when``), iar jobul de noapte o verifica in datele de azi. Cand e
+indeplinita, restrictia se ridica pe loc si se invalideaza in memorie: o intrare noua,
+``lifted:<cod>`` (memoria e doar adaugata, ca un jurnal), pe care o vede si consiliul
+din chat ("Azi, CFO-ul a ridicat restrictia pe buget: CPA-ul a coborat..."). Conditiile:
+
+- veto pe bani: testul E2E trecut, DUPA veto;
+- site lent: o masuratoare PageSpeed cu LCP sub 4 s, DUPA veto;
+- CFO: contul trece din nou testul lui de rentabilitate (CPA sub tinta sau ROAS peste 1) -
+  aceeasi regula dupa care a taiat.
+
+O restrictie ridicata ramane ridicata: doar o decizie noua a consiliului (sau un veto pe
+care Tehnicianul il vede din nou) o repune. Un veto pe care Tehnicianul il vede acum se
+aplica si fara memorie - tracking-ul picat nu asteapta ca cineva sa intrebe in chat.
+Fara ridicare, o decizie din memorie tine :data:`COUNCIL_MEMORY_DAYS` zile.
 
 Modul pur: regulile. Citirea memoriei si scrierea propunerilor sunt in ``jobs/tasks.py``.
 """
@@ -36,11 +47,15 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
 from ppc_agent.guardrails.models import ProposedChange as CliProposedChange
+from ppc_agent_server.services.council import FinancialSnapshot
 from ppc_agent_server.services.memory import MemoryEntry, memory_line
+from ppc_agent_server.services.ro_format import ron as _ron
 from ppc_agent_server.services.technician import (
     LCP_CRITICAL_MS,
     TechnicalSignals,
     TechnicianDirective,
+    _day,
+    _metric_value,
 )
 
 #: Cat de departe se uita jobul de noapte in memoria consiliului.
@@ -54,6 +69,8 @@ CFO_SPEND_CUTS = frozenset({"budget", "channel", "paid_targeting"})
 MONEY_MODULES = frozenset({"budget", "meta_liquidity"})
 #: Cine opreste propunerile, in ``ProposedChange.decided_by``.
 DECIDED_BY = "consiliu"
+#: Codul intrarii care ridica o restrictie: ``lifted:<cheia restrictiei>``.
+LIFT_PREFIX = "lifted:"
 
 GuardKind = Literal["money_veto", "spend_freeze"]
 
@@ -78,6 +95,9 @@ class CouncilConstraints:
 
     money_veto: CouncilBlock | None = None
     spend_freeze: CouncilBlock | None = None
+    #: Restrictiile ridicate in noaptea asta (conditia de rediscutare s-a indeplinit):
+    #: intrarile noi pentru memorie, ``lifted:<cheie>`` - le scrie jobul.
+    lifted: tuple[MemoryEntry, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -103,21 +123,63 @@ def _utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _fixed_after(entry: MemoryEntry, signals: TechnicalSignals) -> bool:
-    """O dovada de DUPA veto ca problema s-a rezolvat."""
-    if entry.code in MONEY_VETO_CODES:
+def _lift_key(entry: MemoryEntry) -> str:
+    """Ce ridica o ridicare: tot ce a taiat CFO-ul (aceeasi conditie), un veto dupa cod."""
+    return "cfo" if entry.role == "cfo" else entry.code or ""
+
+
+def _profitable_again(finances: FinancialSnapshot) -> str:
+    """Cum a trecut contul testul CFO-ului - cu cifrele, pentru memorie."""
+    cpa, target = finances.cpa, finances.target_cpa
+    if cpa is not None and target is not None and cpa <= target:
+        return f"CPA-ul contului a coborât la {_ron(cpa)} RON, sub ținta de {_ron(target)} RON"
+    if finances.roas is not None:
+        return f"venitul atribuit acoperă acum cheltuiala cu reclamele (ROAS {_ron(finances.roas)})"
+    return "contul e din nou rentabil"
+
+
+def _lift(
+    entry: MemoryEntry,
+    signals: TechnicalSignals,
+    finances: FinancialSnapshot | None,
+    now: datetime,
+) -> MemoryEntry | None:
+    """Intrarea care ridica restrictia, cand conditia ei de rediscutare e indeplinita in date."""
+    code = entry.code or ""
+    decision: str | None = None
+    if entry.role == "cto" and code in MONEY_VETO_CODES:
         evidence = signals.evidence
-        return (
+        if (
             evidence is not None
             and _utc(evidence.started_at) > _utc(entry.at)
             and evidence.failure_reason is None
-        )
-    speed = signals.mobile_speed
-    return (
-        speed is not None
-        and speed.lcp_ms is not None
-        and _utc(speed.measured_at) > _utc(entry.at)
-        and speed.lcp_ms <= LCP_CRITICAL_MS
+        ):
+            decision = (
+                f"a ridicat veto-ul: testul E2E din {_day(evidence.started_at.date())} a trecut, "
+                "conversiile ajung din nou la platforme"
+            )
+    elif entry.role == "cto" and code in SPEND_VETO_CODES:
+        speed = signals.mobile_speed
+        if (
+            speed is not None
+            and speed.lcp_ms is not None
+            and _utc(speed.measured_at) > _utc(entry.at)
+            and speed.lcp_ms <= LCP_CRITICAL_MS
+        ):
+            decision = (
+                "a ridicat veto-ul: site-ul se încarcă acum pe mobil în "
+                f"{_metric_value('lcp', speed.lcp_ms)} (LCP), sub pragul de 4 s"
+            )
+    elif entry.role == "cfo" and finances is not None and finances.status == "profitable":
+        decision = f"a ridicat restricția pe buget: {_profitable_again(finances)}"
+    if decision is None:
+        return None
+    return MemoryEntry(
+        at=now,
+        role=entry.role,
+        topic=entry.topic,
+        decision=decision,
+        code=f"{LIFT_PREFIX}{_lift_key(entry)}",
     )
 
 
@@ -127,11 +189,15 @@ def council_constraints(
     signals: TechnicalSignals,
     *,
     now: datetime,
+    finances: FinancialSnapshot | None = None,
 ) -> CouncilConstraints:
     """Restrictiile active: veto-ul de acum al Tehnicianului, apoi memoria consiliului.
 
     ``memory`` = deciziile consiliului (orice ordine); se folosesc doar cele cu cod, din
     ultimele :data:`COUNCIL_MEMORY_DAYS` zile. Cea mai recenta decizie de un fel castiga.
+    O decizie invalidata deja (o ridicare de dupa ea) nu mai conteaza; una a carei conditie
+    de rediscutare e indeplinita acum se ridica - ``lifted`` poarta intrarile de scris.
+    ``finances`` = verdictul CFO-ului de azi; fara el, taieturile CFO-ului nu se ridica.
     """
     since = now - timedelta(days=COUNCIL_MEMORY_DAYS)
     recent = sorted(
@@ -139,6 +205,13 @@ def council_constraints(
         key=lambda entry: _utc(entry.at),
         reverse=True,
     )
+    # Cea mai recenta ridicare a fiecarei chei (``recent`` e de la nou la vechi).
+    lifted_at: dict[str, datetime] = {}
+    for entry in recent:
+        code = entry.code or ""
+        if code.startswith(LIFT_PREFIX):
+            lifted_at.setdefault(code.removeprefix(LIFT_PREFIX), _utc(entry.at))
+    lifts: list[MemoryEntry] = []
     money: CouncilBlock | None = None
     freeze: CouncilBlock | None = None
     live_code = technical.veto_code
@@ -153,19 +226,26 @@ def council_constraints(
     for entry in recent:
         code = entry.code or ""
         if entry.role == "cto" and code in MONEY_VETO_CODES | SPEND_VETO_CODES:
-            if _fixed_after(entry, signals):
-                continue
             kind: GuardKind = "money_veto" if code in MONEY_VETO_CODES else "spend_freeze"
         elif entry.role == "cfo" and code in CFO_SPEND_CUTS:
             kind = "spend_freeze"
         else:
+            continue
+        key = _lift_key(entry)
+        invalidated = lifted_at.get(key)
+        if invalidated is not None and invalidated >= _utc(entry.at):
+            continue
+        lift = _lift(entry, signals, finances, now)
+        if lift is not None:
+            lifts.append(lift)
+            lifted_at[key] = _utc(now)
             continue
         block = CouncilBlock(kind, entry.role, code, entry.at, memory_line(entry, now))
         if kind == "money_veto" and money is None:
             money = block
         elif kind == "spend_freeze" and freeze is None:
             freeze = block
-    return CouncilConstraints(money_veto=money, spend_freeze=freeze)
+    return CouncilConstraints(money_veto=money, spend_freeze=freeze, lifted=tuple(lifts))
 
 
 # --- ce se face cu propunerile ---------------------------------------------------------

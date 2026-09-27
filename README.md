@@ -628,10 +628,19 @@ ultimele 7 zile, dupa codul deciziei) si raportul Tehnicianului de acum:
 | Veto pe bani | Tehnicianul: tracking picat, site cazut, drum de conversie rupt | Opreste (`blocked`) bugetele Thompson si consolidarile Meta - toate pe conversii; opreste lansarile si planurile de buget din asteptare. Negativele (pe intentie) merg mai departe |
 | Bugetul nu creste | CFO-ul a taiat o idee care cere bani, sau site lent pe mobil | Kelly nu mai urca peste `max_daily_spend`: bugetele se reduc proportional; lansarile din asteptare se opresc |
 
-Un veto din memorie se ridica inainte de 7 zile doar pe o dovada de dupa el (testul
-E2E trecut, un LCP bun). Un veto pe care Tehnicianul il vede acum se aplica si fara
-memorie. De aceea viteza si testul E2E ruleaza, noaptea, inaintea propunerilor. Ce se
-opreste ramane in DB, cu motivul, `decided_by="consiliu"`.
+**Ridicarea automata**: fiecare restrictie are conditia ei de rediscutare (aceeasi pe care
+o spune consiliul in chat, `CouncilRuling.reopen_when`), verificata noaptea in datele de
+azi. Veto pe bani: testul E2E trece dupa veto. Site lent: un LCP sub 4 s dupa veto.
+Taietura CFO-ului: contul trece din nou testul lui de rentabilitate (CPA sub tinta sau
+ROAS peste 1). Cand conditia e indeplinita, restrictia se ridica pe loc - algoritmul
+propune din nou bugete in aceeasi noapte - si se invalideaza in memorie printr-o intrare
+`lifted:<cod>`, pe care o vede si consiliul ("Azi, CFO-ul a ridicat restrictia pe buget:
+CPA-ul contului a coborat la 68,89 RON, sub tinta de 80 RON"). O restrictie ridicata nu
+revine singura; o repune doar o decizie noua a consiliului sau un veto pe care Tehnicianul
+il vede din nou. Fara ridicare, o decizie din memorie tine 7 zile. Un veto pe care
+Tehnicianul il vede acum se aplica si fara memorie. De aceea viteza si testul E2E ruleaza,
+noaptea, inaintea propunerilor. Ce se opreste ramane in DB, cu motivul,
+`decided_by="consiliu"`.
 
 **Psihologia cumparatorului** (`services/cognitive.py`, determinist, in
 `BrandStrategyDirective.cognitive_profile`) da argumentului de brand un "de ce":

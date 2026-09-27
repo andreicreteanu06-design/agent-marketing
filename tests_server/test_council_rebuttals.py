@@ -56,7 +56,7 @@ def test_the_way_back_follows_what_the_cfo_measured() -> None:
     no_data = rule_on_question(
         QuestionTopic("budget"), _directive(), build_financial_snapshot(_finances(ads=(), terms=()))
     )
-    assert no_data.reopen_when == "contul strânge cel puțin 5 conversii"
+    assert no_data.reopen_when == "contul strânge cel puțin 5 conversii și se dovedește rentabil"
 
 
 def test_without_a_dispute_there_is_no_second_round() -> None:
