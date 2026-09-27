@@ -269,7 +269,8 @@ def _council_constraints(session: Session, client_account_id: int) -> CouncilCon
     """Restrictiile consiliului in noaptea asta: memoria (7 zile) + Tehnicianul de acum.
 
     Ce s-a ridicat (conditia de rediscutare, indeplinita in datele de azi) se invalideaza
-    in memorie pe loc - intrarile ``lifted:`` - ca s-o vada si consiliul din chat.
+    in memorie pe loc - intrarile ``lifted:`` - iar ce a pus CFO-ul de noapte (contul a
+    recazut pe pierdere) se scrie ca decizia lui: le vede si consiliul din chat.
     """
     now = datetime.now(tz=UTC)
     memory = DbMemory(session)
@@ -278,8 +279,8 @@ def _council_constraints(session: Session, client_account_id: int) -> CouncilCon
     technical = evaluate_technical_health(client_account_id, signals, generated_at=now)
     finances = build_financial_snapshot(DbFinancialSignals(session).load(client_account_id))
     constraints = council_constraints(decisions, technical, signals, now=now, finances=finances)
-    if constraints.lifted:
-        memory.remember(client_account_id, constraints.lifted)
+    if constraints.lifted or constraints.imposed:
+        memory.remember(client_account_id, [*constraints.lifted, *constraints.imposed])
     return constraints
 
 
@@ -404,6 +405,7 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
         lifted = [memory_line(entry, now) for entry in constraints.lifted]
         for line in lifted:
             logger.info("[Consiliu] client %s: restricție ridicată. %s", client_account_id, line)
+        imposed = [memory_line(entry, now) for entry in constraints.imposed]
         if constraints.active or lifted:
             council: dict[str, Any] = {
                 "note": constraints.note(),
@@ -411,6 +413,7 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
                 "capped": sum(1 for item in guarded if item.capped_from is not None),
                 "blocked_pending": _block_pending(session, client_account_id, constraints, now),
                 "lifted": lifted,
+                "imposed": imposed,
             }
             if constraints.active:
                 logger.warning(

@@ -627,6 +627,7 @@ ultimele 7 zile, dupa codul deciziei) si raportul Tehnicianului de acum:
 |------------|------|-------------------------|
 | Veto pe bani | Tehnicianul: tracking picat, site cazut, drum de conversie rupt | Opreste (`blocked`) bugetele Thompson si consolidarile Meta - toate pe conversii; opreste lansarile si planurile de buget din asteptare. Negativele (pe intentie) merg mai departe |
 | Bugetul nu creste | CFO-ul a taiat o idee care cere bani, sau site lent pe mobil | Kelly nu mai urca peste `max_daily_spend`: bugetele se reduc proportional; lansarile din asteptare se opresc |
+| Bugetul nu creste (CFO-ul de noapte) | Contul nu mai e rentabil (CPA peste tinta sau ROAS sub 1) si nicio restrictie a CFO-ului nu e activa - fara chat | La fel; decizia se scrie in memorie ("Azi, CFO-ul a oprit automat cresterea bugetului..."), o vede consiliul in chat. Nu judeca sub un veto pe bani (cifre false) si nici sub 5 conversii |
 
 **Ridicarea automata**: fiecare restrictie are conditia ei de rediscutare (aceeasi pe care
 o spune consiliul in chat, `CouncilRuling.reopen_when`), verificata noaptea in datele de

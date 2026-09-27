@@ -31,10 +31,19 @@ from ppc_agent_server.models import (
     ProposedChange,
     TrackingEvidence,
 )
-from ppc_agent_server.services.council import QueenCouncil
+from ppc_agent_server.services.council import QueenCouncil, build_financial_snapshot
+from ppc_agent_server.services.council_guard import CFO_NIGHT_CODE, council_constraints
 from ppc_agent_server.services.queen_signals import DbMemory
+from ppc_agent_server.services.technician import evaluate_technical_health
 from tests_server.test_jobs_tasks import _client_account
-from tests_server.test_queen_council import LOSING, _directive, _Static, _StaticTechnical
+from tests_server.test_queen_council import (
+    LOSING,
+    _ad,
+    _directive,
+    _finances,
+    _Static,
+    _StaticTechnical,
+)
 from tests_server.test_queen_router import signed_in  # noqa: F401 - fixture
 from tests_server.test_technician import BROKEN_TAG, GA4_DOWN
 from tests_server.test_technician import _signals as _technical
@@ -333,7 +342,7 @@ def test_the_cfo_lifts_its_cut_once_the_account_is_profitable_again(session: Ses
     assert row.agent_role == "cfo"
 
 
-def test_a_lifted_cut_does_not_come_back_on_its_own_but_a_new_decision_does(
+def test_after_a_lift_a_relapse_is_stopped_by_the_night_cfo_not_by_the_old_cut(
     session: Session,
 ) -> None:
     account = _client_account(session)
@@ -341,16 +350,93 @@ def test_a_lifted_cut_does_not_come_back_on_its_own_but_a_new_decision_does(
     _ads(session, account, spend="620", conversions=9)
     assert run_propose_job(client_account_id=account.id or 0)["council"]["lifted"]
 
-    # Contul recade pe pierdere (CPA peste 80): taietura veche ramane invalidata...
+    # Contul recade pe pierdere: taietura veche ramane invalidata, dar CFO-ul de noapte
+    # judeca singur contul si opreste din nou cresterea - fara sa astepte chatul.
     _ads(session, account, spend="3000", conversions=1)
+    relapse = run_propose_job(client_account_id=account.id or 0)
+
+    assert relapse["council"]["imposed"] == [
+        "Azi, CFO-ul a oprit automat creșterea bugetului în tura de noapte: CPA-ul contului e "
+        "362 RON, peste ținta de 80 RON."
+    ]
+    assert relapse["council"]["note"].startswith(
+        "Bugetul nu crește: Azi, CFO-ul a oprit automat creșterea bugetului"
+    )
+    assert relapse["council"]["capped"] > 0
+    assert relapse["total_projected_daily_spend"] == "50.00"
+
+
+# --- CFO-ul de noapte: judeca singur, fara chat ------------------------------------------
+
+
+def test_the_night_cfo_stops_the_growth_of_a_losing_account_and_tells_the_chat(
+    session: Session,
+) -> None:
+    account = _client_account(session)
+    _ads(session, account, spend="1500", conversions=6)  # CPA 250 RON, tinta 80
+
+    first = run_propose_job(client_account_id=account.id or 0)
+
+    decision = (
+        "a oprit automat creșterea bugetului în tura de noapte: CPA-ul contului e 250 RON, "
+        "peste ținta de 80 RON"
+    )
+    assert first["council"]["imposed"] == [f"Azi, CFO-ul {decision}."]
+    # Kelly voia 60,87 RON/zi; CFO-ul tine bugetul la cel aprobat.
+    assert Decimal(first["total_projected_daily_spend"]) <= Decimal("50.00")
+    assert first["council"]["capped"] > 0
+    [row] = _memory(session, account, CFO_NIGHT_CODE)
+    assert (row.agent_role, row.decision) == ("cfo", decision)
+    # In chat, a doua zi: consiliul o gaseste in Contextul Istoric.
+    assert any(entry.decision == decision for entry in DbMemory(session).recall(account.id or 0))
+
+    # A doua noapte, tot pe pierdere: restrictia e deja activa - nicio decizie dubla.
+    second = run_propose_job(client_account_id=account.id or 0)
+    assert second["council"]["imposed"] == []
+    assert second["council"]["note"].startswith(
+        "Bugetul nu crește: Azi, CFO-ul a oprit automat creșterea bugetului"
+    )
+    assert len(_memory(session, account, CFO_NIGHT_CODE)) == 1
+
+
+def test_the_night_cfo_never_judges_on_numbers_without_tracking(session: Session) -> None:
+    account = _client_account(session)
+    _ads(session, account, spend="1500", conversions=6)
+    _e2e(session, account, hours_ago=2, meta_ok=False)
+
+    result = run_propose_job(client_account_id=account.id or 0)
+
+    # Cu pixelul picat, CPA-ul mare e fals: veto-ul Tehnicianului opreste bugetele, nu CFO-ul.
+    assert result["council"]["note"].startswith("Veto pe bani: Tehnicianul a pus veto azi")
+    assert result["council"]["imposed"] == []
+    assert _memory(session, account, CFO_NIGHT_CODE) == []
+
+
+def test_the_night_cfo_waits_for_enough_conversions(session: Session) -> None:
+    account = _client_account(session)
+    _ads(session, account, spend="900", conversions=2)  # sub 5 conversii: nu judeca
+
     assert "council" not in run_propose_job(client_account_id=account.id or 0)
 
-    # ...pana cand consiliul decide din nou, in chat: atunci restrictia revine.
-    _remember(session, account, "cfo", CFO_CUT, "budget", at=datetime.now(tz=UTC))
-    again = run_propose_job(client_account_id=account.id or 0)
-    assert again["council"]["note"].startswith("Bugetul nu crește: Azi, CFO-ul a tăiat")
-    assert again["council"]["capped"] > 0
-    assert again["council"]["lifted"] == []
+
+def test_the_night_cfo_judges_a_sales_account_by_roas() -> None:
+    snapshot = build_financial_snapshot(
+        _finances(
+            ads=(_ad(spend="1000", conversions=10, revenue="600"),), terms=(), objective="sales"
+        )
+    )
+    signals = _technical()
+    technical = evaluate_technical_health(42, signals, generated_at=NOW)
+
+    constraints = council_constraints([], technical, signals, now=NOW, finances=snapshot)
+
+    [entry] = constraints.imposed
+    assert entry.decision == (
+        "a oprit automat creșterea bugetului în tura de noapte: venitul atribuit nu acoperă "
+        "cheltuiala cu reclamele (ROAS 0,60)"
+    )
+    assert constraints.spend_freeze is not None
+    assert constraints.spend_freeze.code == CFO_NIGHT_CODE
 
 
 def test_a_cut_that_costs_no_money_restricts_nothing(session: Session) -> None:

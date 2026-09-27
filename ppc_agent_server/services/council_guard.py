@@ -30,10 +30,20 @@ din chat ("Azi, CFO-ul a ridicat restrictia pe buget: CPA-ul a coborat..."). Con
 - CFO: contul trece din nou testul lui de rentabilitate (CPA sub tinta sau ROAS peste 1) -
   aceeasi regula dupa care a taiat.
 
-O restrictie ridicata ramane ridicata: doar o decizie noua a consiliului (sau un veto pe
-care Tehnicianul il vede din nou) o repune. Un veto pe care Tehnicianul il vede acum se
-aplica si fara memorie - tracking-ul picat nu asteapta ca cineva sa intrebe in chat.
-Fara ridicare, o decizie din memorie tine :data:`COUNCIL_MEMORY_DAYS` zile.
+O restrictie ridicata ramane ridicata: doar o decizie noua o repune. Iar deciziile noi
+nu asteapta chatul - si Tehnicianul, si CFO-ul judeca singuri contul in fiecare noapte:
+
+- un veto pe care Tehnicianul il vede acum (testul E2E, PageSpeed) se aplica si fara
+  memorie - tracking-ul picat nu asteapta ca cineva sa intrebe in chat;
+- **CFO-ul de noapte**: cand contul nu e rentabil (CPA peste tinta sau ROAS sub 1, aceeasi
+  regula ca in chat) si nu exista deja o restrictie a CFO-ului, pune el una
+  (:data:`CFO_NIGHT_CODE`): o scrie in memorie ("Azi, CFO-ul a oprit automat cresterea
+  bugetului...") si Kelly nu mai urca bugetul. Se ridica la fel ca celelalte: cand contul
+  trece din nou testul. Cu un veto pe bani activ, CFO-ul nu judeca: fara tracking, un CPA
+  mare e un CPA fals (lipsesc conversiile), iar bugetele sunt oricum oprite.
+
+Fara ridicare, o decizie din memorie tine :data:`COUNCIL_MEMORY_DAYS` zile (dupa care,
+daca problema e tot acolo, cea de noapte o pune din nou).
 
 Modul pur: regulile. Citirea memoriei si scrierea propunerilor sunt in ``jobs/tasks.py``.
 """
@@ -71,6 +81,8 @@ MONEY_MODULES = frozenset({"budget", "meta_liquidity"})
 DECIDED_BY = "consiliu"
 #: Codul intrarii care ridica o restrictie: ``lifted:<cheia restrictiei>``.
 LIFT_PREFIX = "lifted:"
+#: Restrictia pusa de CFO-ul de noapte, fara chat: contul a recazut pe pierdere.
+CFO_NIGHT_CODE = "night_budget"
 
 GuardKind = Literal["money_veto", "spend_freeze"]
 
@@ -98,6 +110,8 @@ class CouncilConstraints:
     #: Restrictiile ridicate in noaptea asta (conditia de rediscutare s-a indeplinit):
     #: intrarile noi pentru memorie, ``lifted:<cheie>`` - le scrie jobul.
     lifted: tuple[MemoryEntry, ...] = ()
+    #: Restrictiile puse in noaptea asta, fara chat (CFO-ul de noapte) - le scrie jobul.
+    imposed: tuple[MemoryEntry, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -136,6 +150,29 @@ def _profitable_again(finances: FinancialSnapshot) -> str:
     if finances.roas is not None:
         return f"venitul atribuit acoperă acum cheltuiala cu reclamele (ROAS {_ron(finances.roas)})"
     return "contul e din nou rentabil"
+
+
+def _losing(finances: FinancialSnapshot) -> str:
+    """De ce nu mai e rentabil contul - cu cifrele, pentru memorie si pentru client."""
+    cpa, target, roas = finances.cpa, finances.target_cpa, finances.roas
+    if roas is not None and roas < 1:
+        return f"venitul atribuit nu acoperă cheltuiala cu reclamele (ROAS {_ron(roas)})"
+    if cpa is not None and target is not None and cpa > target:
+        return f"CPA-ul contului e {_ron(cpa)} RON, peste ținta de {_ron(target)} RON"
+    return "contul nu e rentabil"
+
+
+def _night_cfo(finances: FinancialSnapshot, now: datetime) -> MemoryEntry:
+    """Restrictia pusa de CFO-ul de noapte, scrisa ca decizia lui."""
+    return MemoryEntry(
+        at=now,
+        role="cfo",
+        topic="budget",
+        decision=(
+            f"a oprit automat creșterea bugetului în tura de noapte: {_losing(finances)}"
+        ),
+        code=CFO_NIGHT_CODE,
+    )
 
 
 def _lift(
@@ -197,7 +234,9 @@ def council_constraints(
     ultimele :data:`COUNCIL_MEMORY_DAYS` zile. Cea mai recenta decizie de un fel castiga.
     O decizie invalidata deja (o ridicare de dupa ea) nu mai conteaza; una a carei conditie
     de rediscutare e indeplinita acum se ridica - ``lifted`` poarta intrarile de scris.
-    ``finances`` = verdictul CFO-ului de azi; fara el, taieturile CFO-ului nu se ridica.
+    ``finances`` = verdictul CFO-ului de azi: ridica taieturile CFO-ului cand contul e
+    rentabil si, cand nu e si nicio restrictie a CFO-ului nu e activa, pune una
+    (``imposed``). Fara el, CFO-ul nu judeca.
     """
     since = now - timedelta(days=COUNCIL_MEMORY_DAYS)
     recent = sorted(
@@ -223,11 +262,12 @@ def council_constraints(
             money = live
         else:
             freeze = live
+    cfo_active = False
     for entry in recent:
         code = entry.code or ""
         if entry.role == "cto" and code in MONEY_VETO_CODES | SPEND_VETO_CODES:
             kind: GuardKind = "money_veto" if code in MONEY_VETO_CODES else "spend_freeze"
-        elif entry.role == "cfo" and code in CFO_SPEND_CUTS:
+        elif entry.role == "cfo" and code in CFO_SPEND_CUTS | {CFO_NIGHT_CODE}:
             kind = "spend_freeze"
         else:
             continue
@@ -240,12 +280,27 @@ def council_constraints(
             lifts.append(lift)
             lifted_at[key] = _utc(now)
             continue
+        cfo_active = cfo_active or entry.role == "cfo"
         block = CouncilBlock(kind, entry.role, code, entry.at, memory_line(entry, now))
         if kind == "money_veto" and money is None:
             money = block
         elif kind == "spend_freeze" and freeze is None:
             freeze = block
-    return CouncilConstraints(money_veto=money, spend_freeze=freeze, lifted=tuple(lifts))
+    # CFO-ul de noapte: contul a recazut si nimeni nu l-a oprit inca. Nu pe cifre false.
+    imposed: list[MemoryEntry] = []
+    if (
+        finances is not None
+        and finances.status == "unprofitable"
+        and not cfo_active
+        and money is None
+    ):
+        night = _night_cfo(finances, now)
+        imposed.append(night)
+        reason = memory_line(night, now)
+        freeze = freeze or CouncilBlock("spend_freeze", "cfo", CFO_NIGHT_CODE, now, reason)
+    return CouncilConstraints(
+        money_veto=money, spend_freeze=freeze, lifted=tuple(lifts), imposed=tuple(imposed)
+    )
 
 
 # --- ce se face cu propunerile ---------------------------------------------------------
