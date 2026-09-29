@@ -17,13 +17,17 @@ clientului. Researcher-ul aduce ce se intampla in jurul lui:
 3. **Sentimentul pietei**: temele (durerile) care cresc in cautari si recenzii -
    cel putin +25%, din cel putin 20 de mentiuni.
 
-Sursele vin printr-un :class:`MarketIntelligenceSource`. Azi exista doar cea
-demonstrativa (``market_demo.py``): nu avem inca API-uri de piata conectate.
-Directiva poarta mereu ``source``/``is_demo``, iar consiliul trateaza datele
-demonstrative strict ca ilustratie - se vad in deliberare, marcate, dar nu intra
-in decizie si nu ajung in raspunsul catre client ca fapte despre piata lui.
-Cand o sursa reala (Auction Insights, Keyword Planner) se conecteaza, aceleasi
-reguli dau contextul pietei in decizie, fara alta schimbare.
+Sursele vin printr-un :class:`MarketIntelligenceSource` si sunt doar reale:
+
+- **cererea** - interesul de cautare din Google Trends pentru nisa clientului, in
+  tara lui (``market_trends.py``, prin ``pytrends``): indice 0-100, saptamanal, pe
+  5 ani - destul pentru directie, anul trecut si sezon;
+- **licitatia** si **durerile din recenzii** - nu exista inca o sursa (Google Ads nu
+  expune Auction Insights prin API): raman necunoscute si se spune asta, nu se
+  inventeaza.
+
+Cand o sursa de licitatie se conecteaza, aceleasi reguli o aduc in decizie, fara
+alta schimbare.
 
 **Cautarea pe web** (ca Perplexity): nisa si orasul se scot din cautarile reale
 ale clientului (``market_focus``, din ``BrandStrategyDirective``), apoi doua
@@ -60,6 +64,7 @@ from ppc_agent_server.services.humanizer import ANALYST_VOICE
 from ppc_agent_server.services.llm_client import JsonValue, Noul
 from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.ro_format import count as _count
+from ppc_agent_server.services.ro_format import decimal as _decimal
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
 from ppc_agent_server.skills import SkillRegistry, skill_registry
@@ -67,12 +72,13 @@ from ppc_agent_server.skills.web_search import WEB_TIMEOUT_SECONDS, WebFinding, 
 
 logger = logging.getLogger("ppc_agent_server.services.researcher")
 
-MarketSource = Literal["live", "demo"]
 #: ``ok`` = fragmente reale; ``empty`` = cautarea a mers, dar n-a gasit nimic;
 #: ``failed`` = timeout/limita/retea; ``off`` = nisa necunoscuta, nu s-a cautat.
 WebStatus = Literal["ok", "empty", "failed", "off"]
 CompetitorPressure = Literal["rising", "stable", "easing", "unknown"]
 DemandDirection = Literal["growing", "flat", "declining", "unknown"]
+#: ``searches`` = cautari numarate; ``index`` = indicele Google Trends (0-100, relativ).
+DemandUnit = Literal["searches", "index"]
 SeasonPhase = Literal["peak", "rising", "cooling", "low", "normal", "unknown"]
 
 #: CPC-ul pietei s-a miscat cu cel putin atat ca sa vorbim de presiune (sau relaxare).
@@ -145,8 +151,11 @@ class DemandSeries:
     weekly: Sequence[int]
     #: Cautarile din aceleasi 4 saptamani de anul trecut; ``None`` = necunoscut.
     same_weeks_last_year: int | None
-    #: 12 valori, ianuarie..decembrie, media anului = 1.
+    #: 12 valori, ianuarie..decembrie, media anului = 1; gol = sezon necunoscut.
     monthly_index: Sequence[float]
+    unit: DemandUnit = "searches"
+    #: De unde vine seria ("Google Trends"), pentru textele Researcher-ului.
+    source: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +170,6 @@ class PainTopic:
 
 @dataclass(frozen=True, slots=True)
 class MarketSignals:
-    source: MarketSource
     #: Piata, in cuvinte ("service auto, Bucuresti").
     market: str
     today: date
@@ -225,11 +233,9 @@ class SocialSentiment(BaseModel):
 
 
 class MarketDirective(BaseModel):
-    """Contextul pietei - calculat determinist; ``is_demo`` = ilustratie, nu fapte."""
+    """Contextul pietei - calculat determinist, doar din surse reale."""
 
     client_account_id: int
-    source: MarketSource
-    is_demo: bool
     market: str
     period_days: int
     competitor_activity: CompetitorActivity
@@ -390,10 +396,17 @@ def market_trend(demand: DemandSeries | None, *, today: date) -> MarketTrend:
     yoy = (recent - last_year) / last_year if last_year else None
     season, month = _season(demand.monthly_index, today)
 
-    evidence = (
-        f"Căutări pentru «{demand.category}»: {_count(recent, 'căutări')} în ultimele 4 "
-        "săptămâni"
-    )
+    if demand.unit == "index":
+        source = f" ({demand.source})" if demand.source else ""
+        evidence = (
+            f"Interesul de căutare pentru «{demand.category}»{source}: indice mediu "
+            f"{_decimal(recent / 4)} din 100 în ultimele 4 săptămâni"
+        )
+    else:
+        evidence = (
+            f"Căutări pentru «{demand.category}»: {_count(recent, 'căutări')} în ultimele 4 "
+            "săptămâni"
+        )
     if change is not None:
         evidence += f", {_signed(change)} față de cele 4 dinainte"
     if yoy is not None:
@@ -486,8 +499,19 @@ def _opportunity(trend: MarketTrend, sentiment: SocialSentiment) -> str:
     return text
 
 
+def has_market_data(directive: MarketDirective) -> bool:
+    """Researcher-ul are ceva masurat de spus: trendul, licitatia, durerile sau webul."""
+    return (
+        directive.market_trend.direction != "unknown"
+        or directive.market_trend.season != "unknown"
+        or directive.competitor_activity.pressure != "unknown"
+        or bool(directive.social_sentiment.rising)
+        or bool(directive.web_findings)
+    )
+
+
 def researcher_position(directive: MarketDirective) -> str:
-    """Ce spune Researcher-ul fara LLM: concurenta, cererea, fereastra, durerea noua."""
+    """Ce spune Researcher-ul fara LLM: concurenta, cererea, fereastra, durerea, webul."""
     competitors = directive.competitor_activity
     trend = directive.market_trend
     parts = [f"Concurența: {_PRESSURE_WORDS[competitors.pressure]}. {competitors.evidence}"]
@@ -495,6 +519,9 @@ def researcher_position(directive: MarketDirective) -> str:
         parts.append(competitors.implication)
     parts.append(f"Cererea: {_DEMAND_WORDS[trend.direction]}. {trend.evidence}")
     parts.append(directive.opportunity)
+    web = web_position(directive)
+    if web:
+        parts.append(web)
     return " ".join(parts)
 
 
@@ -522,18 +549,10 @@ def build_market_directive(
     trend = market_trend(signals.demand, today=signals.today)
     sentiment = social_sentiment(signals.pains, period_days=signals.period_days)
     notes = list(signals.notes)
-    if signals.source == "demo":
-        notes.insert(
-            0,
-            "Date demonstrative: nu există încă surse de piață conectate (Auction Insights, "
-            "Keyword Planner, recenzii). Cifrele arată ce face Researcher-ul, nu piața ta.",
-        )
     if signals.web_note:
         notes.append(signals.web_note)
     directive = MarketDirective(
         client_account_id=client_account_id,
-        source=signals.source,
-        is_demo=signals.source == "demo",
         market=signals.market,
         period_days=signals.period_days,
         competitor_activity=competitors,
@@ -778,7 +797,7 @@ async def search_market_web(
     if failed == len(queries):
         return [], "failed", (
             "Căutarea pe web n-a răspuns acum (limită sau timeout): contextul de piață rămâne "
-            "cel demonstrativ."
+            "fără fragmente de pe web."
         )
     if found_any:
         return [], "empty", (

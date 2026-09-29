@@ -39,6 +39,8 @@ from ppc_agent.errors import SetupRequiredError
 _CENT = Decimal("0.01")
 
 _TIMESFM_CHECKPOINT = "google/timesfm-2.5-200m-pytorch"
+#: Fisierul greutatilor din checkpoint (``TimesFM_2p5_200M_torch.WEIGHTS_FILENAME``).
+_TIMESFM_WEIGHTS = "model.safetensors"
 _TIMESFM_MAX_CONTEXT = 1024
 _TIMESFM_MAX_HORIZON = 256
 # ~80% interval (percentilele 10-90) - acelasi nivel pe care TimesFM il da nativ
@@ -184,6 +186,16 @@ class MockForecaster(Forecaster):
         )
 
 
+def timesfm_cached(cache_dir: str | None = None) -> bool:
+    """Greutatile TimesFM sunt deja in cache-ul Hugging Face (``HF_HOME``)."""
+    from huggingface_hub import try_to_load_from_cache
+
+    found = try_to_load_from_cache(
+        _TIMESFM_CHECKPOINT, _TIMESFM_WEIGHTS, cache_dir=cache_dir
+    )
+    return isinstance(found, str)
+
+
 def _load_timesfm_model() -> Any:
     """Incarca + compileaza modelul TimesFM real - retea, la prima folosire.
 
@@ -194,7 +206,11 @@ def _load_timesfm_model() -> Any:
     """
     import timesfm
 
-    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(_TIMESFM_CHECKPOINT)
+    # Din cache intai: cu greutatile deja descarcate, nicio cerere in retea (nici
+    # verificarea de versiune) - rularile repetate nu mai consuma banda.
+    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
+        _TIMESFM_CHECKPOINT, local_files_only=timesfm_cached()
+    )
     model.compile(
         timesfm.ForecastConfig(
             max_context=_TIMESFM_MAX_CONTEXT,

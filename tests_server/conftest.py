@@ -22,6 +22,7 @@ from ppc_agent_server.jobs import synthetic, tasks
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
+from ppc_agent_server.services import market_trends
 from ppc_agent_server.services.llm_client import reset_llm_state
 from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.skills import web_search
@@ -66,6 +67,34 @@ def _no_pagespeed_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     Testele care verifica masuratoarea isi dau propriul ``measure``.
     """
     monkeypatch.setattr(tasks, "measure_mobile_speed", lambda url: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_site_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auditul SEO/GEO de noapte crawleaza site-ul clientului - niciodata din teste.
+
+    Testele auditului isi dau propriul ``audit``.
+    """
+    monkeypatch.setattr(tasks, "run_site_audit", lambda url, brand: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_google_trends(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Google Trends (``pytrends``) - niciodata real din teste.
+
+    Cererea "pica" (ramane necunoscuta, cu o nota); testele care o verifica isi dau
+    propria sursa. Cache-ul pe zi si pauza dupa esec se golesc intre teste.
+    """
+
+    def _offline(
+        keyword: str, geo: str, timeframe: str = market_trends.TIMEFRAME
+    ) -> list[market_trends.TrendPoint]:
+        raise market_trends.TrendsUnavailableError("fara retea in teste")
+
+    monkeypatch.setattr(market_trends, "pytrends_interest", _offline)
+    market_trends.google_trends.clear()
+    yield
+    market_trends.google_trends.clear()
 
 
 @pytest.fixture(autouse=True)

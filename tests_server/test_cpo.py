@@ -46,7 +46,7 @@ from tests_server.test_queen_council import (
     _StaticMarket,
     _StaticTechnical,
 )
-from tests_server.test_researcher import DEMO, LIVE, WEB
+from tests_server.test_researcher import LIVE, NO_MARKET, WEB
 from tests_server.test_technician import BROKEN_TAG, GA4_DOWN
 from tests_server.test_technician import _signals as _technical
 
@@ -120,7 +120,7 @@ def test_aligned_ads_that_still_lose_pivot_the_offer_toward_the_rising_pain() ->
     assert [(move.kind, move.rice) for move in product.moves] == [("pivot", 60)]
 
 
-@pytest.mark.parametrize("market", [None, DEMO], ids=["fara-piata", "piata-demo"])
+@pytest.mark.parametrize("market", [None, NO_MARKET], ids=["fara-piata", "piata-necunoscuta"])
 def test_without_a_real_market_signal_the_offer_is_tested_not_pivoted(
     market: MarketSignals | None,
 ) -> None:

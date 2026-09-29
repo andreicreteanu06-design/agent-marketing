@@ -10,7 +10,7 @@ fixture-urile din ``conftest.py`` pica testul daca ``problems`` nu e gol.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -157,11 +157,38 @@ class FakeJev:
         return LLMRouter(jev=self.client())
 
 
+def ndjson_chunks(text: str, *, model: str = OLLAMA_TEST_MODEL) -> list[bytes]:
+    """Raspunsul ``/api/chat`` in flux, ca serverul real: cate un rand JSON per fragment.
+
+    Fragmentele sunt cuvintele (cu spatiul lor), iar ultimul rand are ``done: true``
+    si mesajul gol - exact forma documentata a fluxului Ollama.
+    """
+    words = [word + " " for word in text.split(" ")]
+    words[-1] = words[-1][:-1]
+    lines = [
+        {"model": model, "message": {"role": "assistant", "content": word}, "done": False}
+        for word in words
+        if word
+    ]
+    lines.append(
+        {
+            "model": model,
+            "created_at": "2026-09-27T10:00:00Z",
+            "message": {"role": "assistant", "content": ""},
+            "done_reason": "stop",
+            "done": True,
+        }
+    )
+    return [json.dumps(line, ensure_ascii=False).encode() + b"\n" for line in lines]
+
+
 class FakeOllama:
-    """Ollama local simulat (``POST /api/chat``, fara streaming).
+    """Ollama local simulat (``POST /api/chat``, in flux - NDJSON, ca serverul real).
 
     ``replies``: raspunsul dupa promptul de sistem; ``reply``: pentru restul.
     ``down=True``: serverul nu e pornit (``ConnectError``); ``status`` != 200: eroare.
+    ``silent=True``: accepta conexiunea, dar nu trimite niciun token (termenul primului
+    token expira). ``stall_after=n``: trimite ``n`` fragmente, apoi tace.
     """
 
     def __init__(self, reply: str = "Mesajul modelului local.") -> None:
@@ -170,6 +197,8 @@ class FakeOllama:
         self.requests: list[dict[str, Any]] = []
         self.problems: list[str] = []
         self.down = False
+        self.silent = False
+        self.stall_after: int | None = None
         self.status = 200
         self.connections = 0
 
@@ -186,26 +215,30 @@ class FakeOllama:
             self.problems.append(problem)
             return httpx.Response(400, json={"error": problem})
         self.requests.append(body)
+        if self.silent:
+            raise httpx.ReadTimeout("niciun token", request=request)
         if self.status != 200:
             return httpx.Response(self.status, json={"error": "llama runner has terminated"})
         system = body["messages"][0]["content"]
+        chunks = ndjson_chunks(self.replies.get(system, self.reply), model=body["model"])
+        stall_after = self.stall_after
+
+        def stream() -> Iterator[bytes]:
+            for index, chunk in enumerate(chunks):
+                if stall_after is not None and index >= stall_after:
+                    raise httpx.ReadTimeout("generarea s-a blocat", request=request)
+                yield chunk
+
         return httpx.Response(
-            200,
-            json={
-                "model": body["model"],
-                "created_at": "2026-09-27T10:00:00Z",
-                "message": {"role": "assistant", "content": self.replies.get(system, self.reply)},
-                "done_reason": "stop",
-                "done": True,
-            },
+            200, headers={"content-type": "application/x-ndjson"}, content=stream()
         )
 
     @staticmethod
     def _problem(body: Any) -> str | None:
         if not isinstance(body, dict) or body.get("model") != OLLAMA_TEST_MODEL:
             return "«model» lipsește sau nu e cel configurat"
-        if body.get("stream") is not False:
-            return "«stream» trebuie să fie false (un singur răspuns)"
+        if body.get("stream") is not True:
+            return "«stream» trebuie să fie true (răspunsul vine în flux)"
         messages = body.get("messages")
         roles = [m.get("role") for m in messages] if isinstance(messages, list) else None
         if roles != ["system", "user"]:
@@ -215,6 +248,11 @@ class FakeOllama:
         options = body.get("options")
         if not isinstance(options, dict) or not set(options) <= {"temperature", "num_predict"}:
             return "«options» are doar temperature și num_predict"
+        keep_alive = body.get("keep_alive", "5m")
+        if not isinstance(keep_alive, str) or not keep_alive:
+            return "«keep_alive» e o durată, ca «30m»"
+        if not set(body) <= {"model", "messages", "stream", "options", "keep_alive"}:
+            return "chei necunoscute în cerere"
         return None
 
     def user_prompts(self) -> list[str]:

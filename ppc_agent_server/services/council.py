@@ -52,8 +52,8 @@ intra ca "Context Istoric" in faptele fiecarui membru si ale sintezei.
 Al patrulea e Researcher-ul (``researcher.py``): piata din jurul clientului -
 concurenta din licitatie, trendul cererii, durerile noi. Nu schimba ce trece si
 ce se taie; adauga contextul (``CouncilRuling.market_context``), ca decizia sa
-nu se ia "in vid". Doar din surse reale: datele demonstrative se vad in
-deliberare, marcate, dar nu intra in decizie, in sinteza sau in raspuns.
+nu se ia "in vid". Doar din surse reale: interesul de cautare din Google Trends
+si fragmentele de pe web; ce lipseste (licitatia, recenziile) se spune, nu se inventeaza.
 
 Al cincilea e CPO-ul (``cpo.py``): apara oferta. Cand CFO-ul gaseste CPA-ul peste
 tinta, CPO-ul spune daca vina e a mesajului (oferta ramane) sau a ofertei - si
@@ -71,7 +71,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -106,6 +106,7 @@ from ppc_agent_server.services.queen_agent import (
     BrandStrategyDirective,
     DirectiveStatus,
     MessageSource,
+    StreamingTextGenerator,
     TextGenerator,
     _lower_first,
     _numbers,
@@ -118,10 +119,9 @@ from ppc_agent_server.services.researcher import (
     MarketDirective,
     MarketIntelligenceSource,
     build_market_directive,
+    has_market_data,
     market_facts,
     researcher_position,
-    web_facts,
-    web_position,
 )
 from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
@@ -874,7 +874,7 @@ def _conflicts(
             )
         )
     spend_cut = next((idea for idea in cut if idea.kind in ("budget", "channel")), brand_cut)
-    trend = market.market_trend if market is not None and not market.is_demo else None
+    trend = market.market_trend if market is not None else None
     if (
         spend_cut is not None
         and trend is not None
@@ -950,7 +950,7 @@ def rule_on_question(
 
 def _cpc_answer(market: MarketDirective | None) -> str:
     """De ce s-a scumpit click-ul: licitatia (Researcher-ul). Fara date reale, spune ce lipseste."""
-    if market is None or market.is_demo or market.competitor_activity.pressure == "unknown":
+    if market is None or market.competitor_activity.pressure == "unknown":
         return (
             "De ce s-a scumpit click-ul nu pot spune încă: lipsesc datele licitației, adică "
             "cât plătesc concurenții pe aceleași cuvinte."
@@ -960,8 +960,8 @@ def _cpc_answer(market: MarketDirective | None) -> str:
 
 
 def _market_context(question: QuestionTopic, market: MarketDirective | None) -> str | None:
-    """Ce din piata tine de intrebare. Niciodata din date demonstrative."""
-    if market is None or market.is_demo:
+    """Ce din piata tine de intrebare - doar ce s-a masurat (trendul, durerile)."""
+    if market is None:
         return None
     topic = question.topic
     competitors = market.competitor_activity
@@ -1330,12 +1330,15 @@ STRATEGIST_SYSTEM_PROMPT = (
     "Ești Regina, strategul de brand al agenției AC Media, în consiliul care pregătește "
     "răspunsul pentru un client (proprietarul afacerii). Primești întrebarea lui și FAPTELE DE "
     "BRAND: clientul ideal simulat din căutări, psihologia lui de cumpărare, reclamele care îi "
-    "vorbesc sau nu, unghiul de copy.\n"
+    "vorbesc sau nu, unghiul de copy și, când e conectat, traficul din GA4 (Meta față de "
+    "Google organic) și pozițiile organice.\n"
     "Reguli stricte:\n"
     "1. Judeci DOAR din perspectiva brandului: ce îl atrage pe clientul ideal și ce îl "
     "respinge. Banii (bugete, CPA, rentabilitate) sunt treaba CFO-ului: nu îi judeca.\n"
     "2. Spui și DE CE, cu psihologia din FAPTE: cum decide publicul (Sistemul 1 sau Sistemul "
-    "2), ce îl oprește să cumpere, ce pârghie propunem. Nu adaugi alte concluzii psihologice.\n"
+    "2), ce îl oprește să cumpere, ce pârghie propunem. Nu adaugi alte concluzii psihologice. "
+    "Dacă traficul din Meta scade, spui ce arată organicul în aceeași perioadă (din FAPTE), "
+    "ca o corelare, nu ca o cauză.\n"
     "3. Folosești DOAR FAPTELE. Nicio cifră care nu apare în ele.\n"
     "4. Nu pretinzi că ai făcut ceva și nu promiți nimic: totul sunt propuneri care așteaptă "
     "aprobarea clientului.\n"
@@ -1473,7 +1476,7 @@ def build_chair_prompt(
 ) -> tuple[str, str]:
     """Promptul Reginei ca presedinte: parerile, replicile, toate faptele si decizia.
 
-    ``market_text`` doar din surse reale: datele demonstrative nu ajung la sinteza.
+    ``market_text`` doar cand Researcher-ul are date reale (trend, web, licitatie).
     """
     by_member = {opinion.member: opinion.opinion for opinion in opinions}
     technician = (
@@ -1536,8 +1539,6 @@ class CouncilOpinion(BaseModel):
     source: MessageSource
     model: str | None
     fallback_reason: str | None
-    #: Pozitie construita pe date demonstrative: se arata marcata, nu intra in decizie.
-    demo: bool = False
 
 
 class CouncilRebuttal(BaseModel):
@@ -1575,7 +1576,7 @@ class CouncilReply(BaseModel):
     generated_at: datetime
     #: Raportul Tehnicianului (tracking, viteza pe mobil, veto); ``None`` fara Tehnician.
     technical: TechnicianDirective | None = None
-    #: Contextul pietei (Researcher-ul); ``is_demo`` = ilustratie, nu fapte despre piata.
+    #: Contextul pietei (Researcher-ul): Google Trends, fragmentele de pe web.
     market: MarketDirective | None = None
     #: Contextul Istoric pe care l-a primit consiliul, cate un rand (memoria).
     history: list[str] = Field(default_factory=list)
@@ -1583,6 +1584,33 @@ class CouncilReply(BaseModel):
     product: ProductDirective | None = None
     #: Runda de replici: cine a pierdut o disputa ii raspunde celui care a castigat-o.
     rebuttals: list[CouncilRebuttal] = Field(default_factory=list)
+
+
+#: ``context`` = se aduna faptele (brand, trafic, bani, tehnic, piata) - o emite apelantul.
+CouncilStage = Literal["context", "deliberation", "rebuttals", "synthesis"]
+
+
+@dataclass(frozen=True, slots=True)
+class CouncilEvent:
+    """Un pas al deliberarii, in clipa in care se intampla (chatul in timp real).
+
+    ``stage``: incepe o etapa (``stage``); ``opinion`` / ``rebuttal``: un membru a
+    vorbit; ``token``: un fragment din sinteza Reginei, pe masura ce o scrie modelul
+    (``text``). Fragmentele sunt o CIORNA: raspunsul valabil e ``CouncilReply``-ul
+    final, care o inlocuieste - si care poate fi cel determinist, daca sinteza pica
+    sau nu trece verificarea.
+    """
+
+    kind: Literal["stage", "opinion", "rebuttal", "token"]
+    stage: CouncilStage | None = None
+    text: str = ""
+    opinion: CouncilOpinion | None = None
+    rebuttal: CouncilRebuttal | None = None
+
+
+#: Cine asculta deliberarea; e chemat din firele consiliului, deci trebuie sa fie sigur
+#: pe fire (o ``queue.Queue``, de exemplu).
+CouncilListener = Callable[[CouncilEvent], None]
 
 
 def clean_question(query: str) -> str:
@@ -1643,7 +1671,7 @@ def memories_from_reply(
     major = bool(entries) or bool(ruling.vetoed) or topic in ("budget", "channel")
     if not major:
         return []
-    if market is not None and not market.is_demo:
+    if market is not None and market.market_trend.direction != "unknown":
         noted = f"a notat: {_lower_first(compress(market.opportunity))}"
         entries.append(MemoryEntry(at, "cso", topic, noted))
     elif market is not None and market.web_findings:
@@ -1678,20 +1706,18 @@ _CPO_DECISIONS: dict[OfferStatus, str] = {
 _CPO_WHY: frozenset[OfferStatus] = frozenset({"pivot", "positioning_gap", "offer_gap"})
 
 
-def _demo_market_opinion(market: MarketDirective) -> CouncilOpinion:
-    """Pozitia Researcher-ului pe date demonstrative: afisata, marcata, fara LLM."""
-    return CouncilOpinion(
-        member="researcher",
-        title=MEMBER_TITLES["researcher"],
-        opinion=researcher_position(market),
-        source="template",
-        model=None,
-        fallback_reason=(
-            "Date demonstrative: nu există încă surse de piață conectate, deci poziția nu intră "
-            "în decizie."
-        ),
-        demo=True,
-    )
+def _safe_listener(listener: CouncilListener | None) -> CouncilListener:
+    """Ascultatorul, dar fara sa poata opri deliberarea: o eroare a lui doar se noteaza."""
+
+    def emit(event: CouncilEvent) -> None:
+        if listener is None:
+            return
+        try:
+            listener(event)
+        except Exception:  # chatul in flux e un plus: raspunsul final pleaca oricum
+            logger.exception("[Consiliu] ascultătorul a picat la evenimentul «%s»", event.kind)
+
+    return emit
 
 
 class QueenCouncil:
@@ -1724,7 +1750,13 @@ class QueenCouncil:
         self._scorer = scorer
         self._clock = clock
 
-    def evaluate_client_query(self, query: str, context: BrandStrategyDirective) -> CouncilReply:
+    def evaluate_client_query(
+        self,
+        query: str,
+        context: BrandStrategyDirective,
+        *,
+        on_event: CouncilListener | None = None,
+    ) -> CouncilReply:
         """Intrebarea clientului, trecuta prin consiliu.
 
         Pasi: faptele (brand + bani + tehnic + piata) -> verdictul CPO-ului pe oferta
@@ -1733,9 +1765,14 @@ class QueenCouncil:
         pas LLM care pica sau scrie ceva ce nu e in date e inlocuit cu varianta
         determinista, deci metoda nu pica din cauza modelului.
 
+        ``on_event`` primeste deliberarea pe masura ce se intampla (``CouncilEvent``):
+        etapele, fiecare parere cand e gata si sinteza token cu token, cand vocea stie
+        sa scrie in flux. Raspunsul valabil ramane cel intors.
+
         Raises:
             ValueError: intrebarea e goala sau prea lunga.
         """
+        emit = _safe_listener(on_event)
         question = clean_question(query)
         client_account_id = context.client_account_id
         finances = build_financial_snapshot(self._finances.load(client_account_id))
@@ -1764,18 +1801,25 @@ class QueenCouncil:
         money_facts = cfo_facts(finances)
         tech_facts = technician_facts(technical) if technical is not None else None
         product_facts = cpo_facts(product)
-        # Datele demonstrative de piata nu ajung la niciun LLM: ar deveni "fapte".
-        # Fragmentele gasite pe web sunt reale: ele ajung (RAG), si singure.
-        live_market = market is not None and not market.is_demo
-        market_text: str | None = None
-        if market is not None:
-            market_text = market_facts(market) if live_market else web_facts(market) or None
+        # Piata intra doar cu ce s-a gasit real: trendul Google Trends, fragmentele de pe
+        # web (verificate de Jev), licitatia cand exista. Fara nimic, Researcher-ul spune
+        # ce lipseste, fara LLM.
+        market_text = (
+            market_facts(market) if market is not None and has_market_data(market) else None
+        )
         has_brand = context.status == "ok"
         has_money = finances.status != "insufficient_data"
         has_tech = technical is not None and (
-            technical.tracking_status != "unknown" or technical.speed_status != "unknown"
+            technical.tracking_status != "unknown"
+            or technical.speed_status != "unknown"
+            or technical.site_audit is not None
         )
 
+        def _spoke(future: Future[CouncilOpinion]) -> None:
+            if not future.cancelled() and future.exception() is None:
+                emit(CouncilEvent("opinion", opinion=future.result()))
+
+        emit(CouncilEvent("stage", stage="deliberation"))
         with ThreadPoolExecutor(max_workers=5, thread_name_prefix="consiliu") as pool:
             strategist = pool.submit(
                 self._opinion,
@@ -1805,16 +1849,15 @@ class QueenCouncil:
                         fallback=technician_position(technical),
                     )
                 )
-            if market is not None and market_text is not None:
-                position = researcher_position(market) if live_market else web_position(market)
+            if market is not None:
                 members.append(
                     pool.submit(
                         self._opinion,
                         "researcher",
                         question,
-                        facts=_with_history(market_text),
-                        has_data=True,
-                        fallback=position,
+                        facts=_with_history(market_text or ""),
+                        has_data=market_text is not None,
+                        fallback=researcher_position(market),
                     )
                 )
             cpo = pool.submit(
@@ -1825,9 +1868,9 @@ class QueenCouncil:
                 has_data=product.status != "unknown",
                 fallback=product.summary,
             )
+            for future in (*members, cpo):
+                future.add_done_callback(_spoke)
             opinions = [member.result() for member in members]
-        if market is not None and market_text is None:
-            opinions.append(_demo_market_opinion(market))
         # CPO-ul vorbeste ultimul: judeca oferta pe concluziile celorlalti.
         opinions.append(cpo.result())
         # Runda de replici: cine a pierdut o disputa ii raspunde celui care a castigat-o.
@@ -1838,7 +1881,9 @@ class QueenCouncil:
             "researcher": market_text,
             "cpo": product_facts,
         }
-        rebuttals = self._rebuttal_round(question, ruling.conflicts, opinions, member_facts)
+        rebuttals = self._rebuttal_round(
+            question, ruling.conflicts, opinions, member_facts, emit=emit
+        )
 
         def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilReply:
             return CouncilReply(
@@ -1888,7 +1933,15 @@ class QueenCouncil:
                 product_facts=product_facts,
                 rebuttals=rebuttals,
             )
-            text, problem = self._ask(system=system, user=user, max_chars=MAX_REPLY_CHARS)
+            emit(CouncilEvent("stage", stage="synthesis"))
+            text, problem = self._ask(
+                system=system,
+                user=user,
+                max_chars=MAX_REPLY_CHARS,
+                on_token=(lambda chunk: emit(CouncilEvent("token", text=chunk)))
+                if on_event is not None
+                else None,
+            )
             if text is None:
                 logger.warning(
                     "[Consiliu] sinteza respinsa pentru clientul %s: %s", client_account_id, problem
@@ -1974,6 +2027,8 @@ class QueenCouncil:
         conflicts: Sequence[CouncilConflict],
         opinions: Sequence[CouncilOpinion],
         facts: dict[CouncilMember, str | None],
+        *,
+        emit: CouncilListener | None = None,
     ) -> list[CouncilRebuttal]:
         """A doua runda: fiecare membru care a pierdut o disputa raspunde o data, in paralel.
 
@@ -1986,6 +2041,13 @@ class QueenCouncil:
         if not firsts:
             return []
         said = {opinion.member: opinion.opinion for opinion in opinions}
+
+        def _replied(future: Future[CouncilRebuttal]) -> None:
+            if emit is not None and not future.cancelled() and future.exception() is None:
+                emit(CouncilEvent("rebuttal", rebuttal=future.result()))
+
+        if emit is not None:
+            emit(CouncilEvent("stage", stage="rebuttals"))
         with ThreadPoolExecutor(max_workers=len(firsts), thread_name_prefix="replici") as pool:
             futures = [
                 pool.submit(
@@ -1997,6 +2059,8 @@ class QueenCouncil:
                 )
                 for conflict in firsts.values()
             ]
+            for future in futures:
+                future.add_done_callback(_replied)
             return [future.result() for future in futures]
 
     def _rebuttal(
@@ -2027,11 +2091,29 @@ class QueenCouncil:
             return _reply(conflict.rebuttal, "template", f"{problem} - replica deterministă.")
         return _reply(text, "llm", None)
 
-    def _ask(self, *, system: str, user: str, max_chars: int) -> tuple[str | None, str | None]:
-        """``(text, None)`` sau ``(None, motivul)`` - vocea e optionala, nimic nu arunca."""
+    def _ask(
+        self,
+        *,
+        system: str,
+        user: str,
+        max_chars: int,
+        on_token: Callable[[str], None] | None = None,
+    ) -> tuple[str | None, str | None]:
+        """``(text, None)`` sau ``(None, motivul)`` - vocea e optionala, nimic nu arunca.
+
+        Cu ``on_token`` si o voce care scrie in flux, fiecare fragment pleaca imediat;
+        verificarea de mai jos se face tot pe textul intreg.
+        """
         assert self._voice is not None
         try:
-            raw = self._voice.complete(system=system, user=user)
+            if on_token is not None and isinstance(self._voice, StreamingTextGenerator):
+                parts: list[str] = []
+                for chunk in self._voice.stream(system=system, user=user):
+                    parts.append(chunk)
+                    on_token(chunk)
+                raw = "".join(parts)
+            else:
+                raw = self._voice.complete(system=system, user=user)
         except Exception as exc:  # vocea e optionala: orice eroare -> varianta determinista
             return None, f"Modelul nu a răspuns ({type(exc).__name__})"
         text = _tidy(raw)

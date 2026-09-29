@@ -41,6 +41,7 @@ from ppc_agent_server.models import (
     CreativeArtifact,
     Platform,
     ProposedChange,
+    SiteAuditSnapshot,
     SiteSpeedSample,
 )
 from ppc_agent_server.security import decrypt_secret
@@ -64,6 +65,9 @@ from ppc_agent_server.services.queen_signals import (
 )
 from ppc_agent_server.services.technician import evaluate_technical_health
 from ppc_agent_server.tracking.pipeline import to_ad_performance_state
+from seo_geo_agent.audit.issues import AUDIT_ISSUE_TYPES
+from seo_geo_agent.audit.service import AuditConfig, AuditResult, run_audit
+from seo_geo_agent.audit.url_policy import CrawlTargetBlockedError, normalize_and_validate_start_url
 from seo_geo_agent.external_data import fetch_pagespeed_insights
 from seo_geo_agent.settings import get_seo_geo_settings
 
@@ -619,8 +623,113 @@ def run_speed_check_job(
         }
 
 
+#: Auditul de noapte: destul cat sa prinda paginile care conteaza (acasa, servicii,
+#: contact), fara sa tina mentenanta clientului pe loc (limita ei e 600 s).
+SITE_AUDIT_MAX_PAGES = 25
+SITE_AUDIT_TIME_BUDGET_SECONDS = 120.0
+#: Cate tipuri de probleme se pastreaza pentru Tehnician - cele mai grave.
+SITE_AUDIT_TOP_ISSUES = 5
+_SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+
+SiteAuditRun = Callable[[str, str], AuditResult | None]
+
+
+def run_site_audit(url: str, brand: str) -> AuditResult | None:
+    """Motorul de audit al agentului SEO/GEO, pe site-ul clientului; ``None`` = tinta refuzata.
+
+    Aceeasi validare ca ``POST /api/v1/seo-geo/audit``: o adresa interna sau privata
+    nu se crawleaza (SSRF), nici cand vine din Setarile clientului.
+    """
+
+    async def _audit() -> AuditResult | None:
+        try:
+            start_url = await normalize_and_validate_start_url(url)
+        except (ValueError, CrawlTargetBlockedError):
+            return None
+        config = AuditConfig(
+            max_pages=SITE_AUDIT_MAX_PAGES,
+            time_budget_seconds=SITE_AUDIT_TIME_BUDGET_SECONDS,
+            brand=brand,
+        )
+        return await run_audit(start_url, config)
+
+    return asyncio.run(_audit())
+
+
+def _first_sentence(text: str, limit: int = 220) -> str:
+    sentence = text.split(". ")[0].strip().rstrip(".")
+    return sentence if len(sentence) <= limit else sentence[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+def audit_snapshot(client_account_id: int, result: AuditResult) -> SiteAuditSnapshot:
+    """Ce ramane din raportul complet: scorurile, numaratoarea si problemele cele mai grave."""
+    pages: dict[str, set[str]] = {}
+    for issue in result.issues:
+        pages.setdefault(issue.issue_type, set()).add(issue.page_url)
+    kinds = [
+        (issue_type, AUDIT_ISSUE_TYPES[issue_type], len(urls))
+        for issue_type, urls in pages.items()
+        if issue_type in AUDIT_ISSUE_TYPES
+    ]
+    kinds.sort(key=lambda kind: (_SEVERITY_RANK[kind[1].severity], -kind[2], kind[0]))
+    counts = {severity: 0 for severity in _SEVERITY_RANK}
+    for _, descriptor, _ in kinds:
+        counts[descriptor.severity] += 1
+    scores = result.scores
+    return SiteAuditSnapshot(
+        client_account_id=client_account_id,
+        url=result.start_url,
+        audited_at=result.finished_at,
+        pages_crawled=len(result.pages),
+        completed=result.completed,
+        seo_score=scores["seo"].score if "seo" in scores else None,
+        geo_score=scores["geo"].score if "geo" in scores else None,
+        critical_issues=counts["critical"],
+        warning_issues=counts["warning"],
+        info_issues=counts["info"],
+        top_issues=[
+            {
+                "type": issue_type,
+                "title": descriptor.title,
+                "severity": descriptor.severity,
+                "pages": affected,
+                "fix": _first_sentence(descriptor.how_to_fix),
+            }
+            for issue_type, descriptor, affected in kinds[:SITE_AUDIT_TOP_ISSUES]
+        ],
+    )
+
+
+def run_site_audit_job(
+    *, client_account_id: int, audit: SiteAuditRun | None = None
+) -> dict[str, Any]:
+    """Auditul tehnic SEO/GEO al site-ului clientului, rezumat pentru Tehnician.
+
+    Un rand nou ``SiteAuditSnapshot`` la fiecare audit (istoric). Fara domeniu in
+    Setari nu are ce audita; un audit refuzat (adresa interna) nu scrie nimic.
+    """
+    with Session(get_engine()) as session:
+        account = _require_client(session, client_account_id)
+        if not account.target_domain.strip():
+            return {"audited": False, "reason": "fara domeniu in Setari"}
+        url = site_url(account.target_domain)
+        # ``run_site_audit`` citit la apel: testele il inlocuiesc (``conftest.py``).
+        result = (audit or run_site_audit)(url, account.brand_name)
+        if result is None:
+            return {"audited": False, "url": url, "reason": "adresa refuzata de politica de crawl"}
+        snapshot = audit_snapshot(client_account_id, result)
+        session.add(snapshot)
+        session.commit()
+        return {
+            "audited": True,
+            "url": snapshot.url,
+            "pages": snapshot.pages_crawled,
+            "critical_issues": snapshot.critical_issues,
+        }
+
+
 def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
-    """Mentenanta de noapte pentru UN client: sincronizare, viteza, E2E, propuneri, oboseala.
+    """Mentenanta de noapte pentru UN client: sincronizare, viteza, audit, E2E, propuneri, oboseala.
 
     Micro-jobul pe care cron-ul ARQ il programeaza pentru fiecare client
     (``jobs/worker.py``), cu timeout-ul lui: un client lent sau o platforma
@@ -634,6 +743,7 @@ def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
     for step_name, job in (
         ("sync", run_metrics_sync_job),
         ("speed_check", run_speed_check_job),
+        ("site_audit", run_site_audit_job),
         ("tracking_contract", run_tracking_contract_job),
         ("propose", run_propose_job),
         ("fatigue_check", run_fatigue_check_job),

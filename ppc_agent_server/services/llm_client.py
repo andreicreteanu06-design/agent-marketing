@@ -10,8 +10,10 @@ Doua feluri de munca, doua modele:
   :meth:`~LLMRouter.jev_verify`.
 - **Sistemul 2 - Ollama** (``POST {OLLAMA_HOST}/api/chat``, pe masina noastra): tot
   textul scris pentru client - vocea Reginei, parerile consiliului, sinteza. Aici:
-  :meth:`LLMRouter.generate_text_local`; ruterul e si ``TextGenerator``-ul pe care il
-  primesc Regina si consiliul, deci orice generare trece pe acolo.
+  :meth:`LLMRouter.generate_text_local` (textul intreg) si
+  :meth:`LLMRouter.stream_text_local` (token cu token, pentru chatul in timp real);
+  ruterul e si ``TextGenerator``-ul pe care il primesc Regina si consiliul, deci orice
+  generare trece pe acolo.
 
 :class:`LLMRouter` trimite fiecare sarcina (``task_type``, vezi :data:`ROUTES`) la
 sistemul ei. Ce nu e configurat, sau nu raspunde, ridica :class:`LLMError`, iar
@@ -28,21 +30,25 @@ Jev, dupa documentatia lui (docs.typesafe.ai, ``jev-1.13``):
   nu se foloseste;
 - 429/529 (limita, suprasarcina) -> o singura reincercare, dupa ``retry-after``.
 
-Ollama, cand nu raspunde (nepornit, alta adresa, prea lent pentru masina): dupa o
-conexiune picata sau un timeout, apelurile cad direct pe template
-:data:`OLLAMA_COOLDOWN_SECONDS`, fara sa mai astepte fiecare un timeout.
+Ollama raspunde mereu in flux (``"stream": true``), ca pe CPU un raspuns lung sa nu
+mai loveasca un timeout total: cat timp vin tokeni, generarea continua. Circuit-breaker-ul
+sare doar cand Ollama nu raspunde deloc (conexiune picata) sau nu trimite niciun token
+in :data:`OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS` - atunci apelurile cad direct pe template
+:data:`OLLAMA_COOLDOWN_SECONDS`, fara sa mai astepte fiecare. Cererile catre acelasi
+server trec pe rand (:data:`OLLAMA_MAX_PARALLEL`), ca termenul primului token sa masoare
+modelul, nu coada din fata lui.
 
 Fara SDK-uri (``typesafe-sdk``, ``ollama``): doar ``httpx``, deja dependinta.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
-import re
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, TypeAlias, TypeVar
 
@@ -336,23 +342,50 @@ class JevClient:
 DEFAULT_OLLAMA_MODEL = "llama3"
 #: Serverul e local: daca nu accepta conexiunea in 2 s, nu e pornit.
 OLLAMA_CONNECT_TIMEOUT_SECONDS = 2.0
-#: Generarea pe CPU poate dura - ca la copywriterul din CLI.
-OLLAMA_TIMEOUT_SECONDS = 60.0
-#: Dupa o conexiune picata sau un timeout, cat timp apelurile cad direct pe template.
+#: Circuit-breaker-ul: fara niciun token in atat (modelul se incarca, citeste promptul
+#: sau e prea mare pentru masina), Ollama intra in pauza si raspunde template-ul. Tot
+#: atat poate tacea si in mijlocul raspunsului inainte sa-l socotim blocat.
+OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS = 10.0
+#: Plafonul unei generari intregi, cat timp tokenii curg: pe CPU, 450 de tokeni pot
+#: dura minute. Nu e un termen de raspuns, ci o plasa pentru un flux care nu se mai
+#: termina.
+OLLAMA_MAX_GENERATION_SECONDS = 300.0
+#: Cate generari lasam deodata pe acelasi server. Pe CPU, Ollama le-ar lua oricum pe
+#: rand; asteptand aici, termenul primului token masoara modelul, nu coada.
+OLLAMA_MAX_PARALLEL = 1
+#: Cat asteapta o cerere la coada inainte sa renunte (fara pauza pentru server: nu
+#: el a gresit, doar e ocupat).
+OLLAMA_QUEUE_TIMEOUT_SECONDS = 180.0
+#: Dupa o conexiune picata sau fara primul token, cat timp apelurile cad direct pe template.
 OLLAMA_COOLDOWN_SECONDS = 30.0
+#: Cat tine Ollama modelul in memorie dupa ultima cerere. Implicitul lui (5 min) il
+#: descarca intre doua conversatii, iar reincarcarea pe CPU depaseste singura termenul
+#: primului token.
+DEFAULT_OLLAMA_KEEP_ALIVE = "30m"
 _OLLAMA_PREFIX = "ollama/"
-#: Modelele care "gandesc" (qwen3, deepseek-r1) pot pune rationamentul in text.
-_THINKING = re.compile(r"^\s*<think>.*?</think>", re.DOTALL)
 
 #: Gazda Ollama -> momentul (``time.monotonic``) pana la care nu se mai incearca.
 _resting_until: dict[str, float] = {}
 _resting_lock = threading.Lock()
+#: Gazda Ollama -> cate generari pot rula deodata pe ea.
+_gates: dict[str, threading.BoundedSemaphore] = {}
+_gates_lock = threading.Lock()
 
 
 def reset_llm_state() -> None:
-    """Uita serverele Ollama gasite oprite - pentru teste."""
+    """Uita serverele Ollama gasite oprite si cozile lor - pentru teste."""
     with _resting_lock:
         _resting_until.clear()
+    with _gates_lock:
+        _gates.clear()
+
+
+def _gate(host: str, limit: int) -> threading.BoundedSemaphore:
+    with _gates_lock:
+        gate = _gates.get(host)
+        if gate is None:
+            gate = _gates[host] = threading.BoundedSemaphore(max(limit, 1))
+        return gate
 
 
 def ollama_model_tag(model: str) -> str:
@@ -365,15 +398,69 @@ class OllamaError(LLMError):
     """Ollama n-a dat un text utilizabil (prea lent, model lipsa, eroare, raspuns gol)."""
 
 
+class _ThinkingFilter:
+    """Scoate rationamentul modelelor care "gandesc" (qwen3, deepseek-r1) dintr-un flux.
+
+    Rationamentul vine primul, intre ``<think>`` si ``</think>``; nimic din el nu
+    ajunge la client. Un raspuns fara ``<think>`` la inceput trece neatins.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        #: ``start`` -> ``thinking`` -> ``answer`` (spatiile de dupa rationament se sar)
+        #: -> ``text``; sau direct ``start`` -> ``text``.
+        self._state: Literal["start", "thinking", "answer", "text"] = "start"
+
+    def feed(self, chunk: str) -> str:
+        if self._state == "text":
+            return chunk
+        self._buffer += chunk
+        if self._state == "start":
+            head = self._buffer.lstrip()
+            if len(head) < len(self._OPEN) and self._OPEN.startswith(head):
+                return ""  # inca poate fi inceputul lui <think>
+            if not head.startswith(self._OPEN):
+                self._state = "text"
+                return self._take()
+            self._state = "thinking"
+        if self._state == "thinking":
+            end = self._buffer.find(self._CLOSE)
+            if end < 0:
+                return ""
+            self._buffer = self._buffer[end + len(self._CLOSE) :]
+            self._state = "answer"
+        self._buffer = self._buffer.lstrip()
+        if not self._buffer:
+            return ""
+        self._state = "text"
+        return self._take()
+
+    def flush(self) -> str:
+        """Ce a ramas la finalul fluxului; un rationament neinchis nu e raspuns."""
+        return self._take() if self._state == "start" else ""
+
+    def _take(self) -> str:
+        text, self._buffer = self._buffer, ""
+        return text
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaChatClient:
-    """Chat cu un model Ollama local - implementeaza ``queen_agent.TextGenerator``."""
+    """Chat cu un model Ollama local - implementeaza ``queen_agent.StreamingTextGenerator``."""
 
     #: Adresa normalizata (``settings.normalize_ollama_host``), fara ``/`` la final.
     host: str
     model: str = DEFAULT_OLLAMA_MODEL
-    timeout: float = OLLAMA_TIMEOUT_SECONDS
     connect_timeout: float = OLLAMA_CONNECT_TIMEOUT_SECONDS
+    first_token_timeout: float = OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS
+    max_generation: float = OLLAMA_MAX_GENERATION_SECONDS
+    max_parallel: int = OLLAMA_MAX_PARALLEL
+    queue_timeout: float = OLLAMA_QUEUE_TIMEOUT_SECONDS
+    #: ``None`` = implicitul serverului Ollama.
+    keep_alive: str | None = DEFAULT_OLLAMA_KEEP_ALIVE
     #: Raspunsuri scurte si temperatura mica: formulare, nu creativitate - faptele vin din date.
     max_tokens: int = 450
     temperature: float = 0.3
@@ -382,30 +469,94 @@ class OllamaChatClient:
     clock: Callable[[], float] = time.monotonic
 
     def complete(self, *, system: str, user: str) -> str:
-        """Raspunsul modelului la cele doua mesaje.
+        """Raspunsul modelului la cele doua mesaje, intreg (adunat din flux).
 
         Raises:
             LLMUnavailableError: Ollama nu accepta conexiunea (sau n-a raspuns de
                 curand - atunci fara sa mai incerce).
-            OllamaError: n-a terminat la timp, sau a raspuns fara un text utilizabil.
+            OllamaError: niciun token la timp, generare intrerupta sau raspuns gol.
+        """
+        text = "".join(self.stream(system=system, user=user)).strip()
+        if not text:
+            raise OllamaError("Ollama a întors un mesaj gol")
+        return text
+
+    def stream(self, *, system: str, user: str) -> Iterator[str]:
+        """Raspunsul modelului, fragment cu fragment, pe masura ce il genereaza.
+
+        Nimic nu pleaca spre server pana la primul ``next()``. Erorile vin din
+        iterator: inainte de primul fragment (server oprit, niciun token la timp) sau
+        pe parcurs (generare blocata sau intrerupta) - apelantul decide ce face cu ce
+        a primit deja.
+
+        Raises:
+            LLMUnavailableError: Ollama nu accepta conexiunea (sau e in pauza).
+            OllamaError: niciun token in :attr:`first_token_timeout`, coada prea
+                lunga, eroare de la server, flux intrerupt.
         """
         if self._resting():
             raise LLMUnavailableError(
                 f"Ollama nu a răspuns de curând la {self.host} - reîncerc după pauză"
             )
-        payload = {
+        gate = _gate(self.host, self.max_parallel)
+        if not gate.acquire(timeout=self.queue_timeout):
+            raise OllamaError(
+                f"Ollama e ocupat cu alte generări de peste {self.queue_timeout:.0f} s"
+            )
+        try:
+            # Cat a stat la coada, cererea din fata poate sa fi pus serverul in pauza.
+            if self._resting():
+                raise LLMUnavailableError(
+                    f"Ollama nu a răspuns de curând la {self.host} - reîncerc după pauză"
+                )
+            yield from self._generate(system, user)
+        finally:
+            gate.release()
+
+    def _generate(self, system: str, user: str) -> Iterator[str]:
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "stream": False,
+            "stream": True,
             "options": {"temperature": self.temperature, "num_predict": self.max_tokens},
         }
-        timeout = httpx.Timeout(self.timeout, connect=self.connect_timeout)
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
+        # Termenul de citire e si termenul primului token: raspunsul incepe cu el.
+        timeout = httpx.Timeout(self.first_token_timeout, connect=self.connect_timeout)
+        started = self.clock()
+        thinking = _ThinkingFilter()
+        first_token = False
+        done = False
         try:
-            with httpx.Client(transport=self.transport, timeout=timeout) as client:
-                response = client.post(f"{self.host}/api/chat", json=payload)
+            with (
+                httpx.Client(transport=self.transport, timeout=timeout) as client,
+                client.stream("POST", f"{self.host}/api/chat", json=payload) as response,
+            ):
+                if response.status_code != 200:
+                    response.read()
+                    raise self._status_error(response)
+                for line in response.iter_lines():
+                    if not line.strip():
+                        continue
+                    content, done = self._chunk(line)
+                    elapsed = self.clock() - started
+                    if content:
+                        first_token = True
+                        visible = thinking.feed(content)
+                        if visible:
+                            yield visible
+                    elif not first_token and elapsed > self.first_token_timeout:
+                        raise self._no_first_token()
+                    if done:
+                        break
+                    if elapsed > self.max_generation:
+                        raise OllamaError(
+                            f"Ollama nu a terminat în {self.max_generation:.0f} s"
+                        )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             self._rest()
             raise LLMUnavailableError(
@@ -413,35 +564,55 @@ class OllamaChatClient:
                 "«ollama serve» sau corectează OLLAMA_HOST"
             ) from exc
         except httpx.TimeoutException as exc:
-            # Masina e prea lenta pentru model (sau inca il incarca): urmatoarele apeluri
-            # ar astepta la fel - sinteza consiliului, dupa membri, cade direct pe template.
-            self._rest()
+            if not first_token:
+                raise self._no_first_token() from exc
             raise OllamaError(
-                f"Ollama nu a terminat în {self.timeout:.0f} s (modelul «{self.model}» poate fi "
-                "prea mare pentru mașină)"
+                f"Ollama s-a oprit în mijlocul răspunsului (nimic nou în "
+                f"{self.first_token_timeout:.0f} s)"
             ) from exc
         except httpx.HTTPError as exc:
             raise OllamaError(f"Ollama nu a răspuns ({type(exc).__name__})") from exc
+        if not done:
+            raise OllamaError("Ollama a întrerupt generarea înainte de final")
+        tail = thinking.flush()
+        if tail:
+            yield tail
 
+    def _chunk(self, line: str) -> tuple[str, bool]:
+        """Un rand NDJSON din flux -> ``(text, done)``."""
+        try:
+            chunk = json.loads(line)
+        except ValueError as exc:
+            raise OllamaError("Ollama a întors un răspuns neașteptat (nu e JSON)") from exc
+        if not isinstance(chunk, dict):
+            raise OllamaError("Ollama a întors un răspuns neașteptat")
+        if chunk.get("error"):
+            raise OllamaError(f"Ollama a întrerupt generarea: {str(chunk['error'])[:200]}")
+        message = chunk.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        done = chunk.get("done") is True
+        if not isinstance(content, str):
+            if not done:
+                raise OllamaError("Ollama a întors un răspuns neașteptat")
+            content = ""
+        return content, done
+
+    def _status_error(self, response: httpx.Response) -> OllamaError:
         if response.status_code == 404:
-            raise OllamaError(
+            return OllamaError(
                 f"Ollama a răspuns 404: {_error_detail(response)} - dacă lipsește modelul: "
                 f"ollama pull {self.model}"
             )
-        if response.status_code != 200:
-            raise OllamaError(f"Ollama a răspuns {response.status_code}: {_error_detail(response)}")
-        try:
-            body = response.json()
-            content = body["message"]["content"]
-            done = body.get("done", True)
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise OllamaError("Ollama a întors un răspuns neașteptat") from exc
-        if done is False:
-            raise OllamaError("Ollama a întrerupt generarea înainte de final")
-        text = _THINKING.sub("", content, count=1).strip() if isinstance(content, str) else ""
-        if not text:
-            raise OllamaError("Ollama a întors un mesaj gol")
-        return text
+        return OllamaError(f"Ollama a răspuns {response.status_code}: {_error_detail(response)}")
+
+    def _no_first_token(self) -> OllamaError:
+        # Masina e prea lenta pentru model (sau inca il incarca): urmatoarele apeluri ar
+        # astepta la fel - sinteza consiliului, dupa membri, cade direct pe template.
+        self._rest()
+        return OllamaError(
+            f"Ollama n-a trimis niciun token în {self.first_token_timeout:.0f} s (modelul "
+            f"«{self.model}» poate fi prea mare pentru mașină)"
+        )
 
     def _resting(self) -> bool:
         with _resting_lock:
@@ -468,8 +639,9 @@ ROUTES: Mapping[TaskType, Backend] = {
 class LLMRouter:
     """Trimite fiecare sarcina la sistemul ei (:data:`ROUTES`).
 
-    E si vocea Reginei si a consiliului (``TextGenerator``): ``complete`` trece prin
-    :meth:`generate_text_local`, deci orice text generat ajunge doar la Ollama.
+    E si vocea Reginei si a consiliului (``StreamingTextGenerator``): ``complete`` trece
+    prin :meth:`generate_text_local`, ``stream`` prin :meth:`stream_text_local`, deci orice
+    text generat ajunge doar la Ollama.
     """
 
     def __init__(
@@ -520,11 +692,18 @@ class LLMRouter:
 
     # Sistemul 2 ----------------------------------------------------------------------
 
-    def generate_text_local(self, *, system: str, user: str) -> str:
-        """Textul, generat local de Ollama."""
+    def _local(self) -> OllamaChatClient:
         if ROUTES["generate"] != "ollama" or self._ollama is None:
             raise LLMUnavailableError("Ollama nu e configurat (OLLAMA_HOST gol)")
-        return self._ollama.complete(system=system, user=user)
+        return self._ollama
+
+    def generate_text_local(self, *, system: str, user: str) -> str:
+        """Textul, generat local de Ollama."""
+        return self._local().complete(system=system, user=user)
+
+    def stream_text_local(self, *, system: str, user: str) -> Iterator[str]:
+        """Textul, generat local de Ollama, fragment cu fragment (vezi ``OllamaChatClient``)."""
+        return self._local().stream(system=system, user=user)
 
     @property
     def model(self) -> str:
@@ -534,6 +713,9 @@ class LLMRouter:
     def complete(self, *, system: str, user: str) -> str:
         return self.generate_text_local(system=system, user=user)
 
+    def stream(self, *, system: str, user: str) -> Iterator[str]:
+        return self.stream_text_local(system=system, user=user)
+
 
 def llm_router_from_settings(settings: ServerSettings) -> LLMRouter:
     """Ruterul din ``.env``: fara ``JEV_API_KEY`` nu exista Sistemul 1, fara
@@ -542,5 +724,11 @@ def llm_router_from_settings(settings: ServerSettings) -> LLMRouter:
     ollama = None
     if settings.ollama_host:
         model = ollama_model_tag(settings.ollama_model) or DEFAULT_OLLAMA_MODEL
-        ollama = OllamaChatClient(host=settings.ollama_host, model=model)
+        ollama = OllamaChatClient(
+            host=settings.ollama_host,
+            model=model,
+            first_token_timeout=settings.ollama_first_token_timeout,
+            max_parallel=settings.ollama_max_parallel,
+            keep_alive=settings.ollama_keep_alive or None,
+        )
     return LLMRouter(jev=jev, ollama=ollama)

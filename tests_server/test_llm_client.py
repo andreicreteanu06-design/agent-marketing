@@ -30,6 +30,7 @@ from ppc_agent_server.services.llm_client import (
     OllamaError,
     Score,
     ScoreAnswer,
+    _ThinkingFilter,
     llm_router_from_settings,
 )
 from ppc_agent_server.settings import DEFAULT_OLLAMA_HOST, ServerSettings, normalize_ollama_host
@@ -242,9 +243,37 @@ def test_ollama_chat_request_and_answer(fake_ollama: FakeOllama) -> None:
     assert body == {
         "model": "llama3",
         "messages": [{"role": "system", "content": "rol"}, {"role": "user", "content": "fapte"}],
-        "stream": False,
+        "stream": True,
         "options": {"temperature": 0.3, "num_predict": 450},
+        "keep_alive": "30m",
     }
+
+
+def test_the_answer_arrives_token_by_token(fake_ollama: FakeOllama) -> None:
+    fake_ollama.reply = "Contul e rentabil, deci creștem treptat."
+
+    chunks = list(fake_ollama.client().stream(system="s", user="u"))
+
+    assert chunks == ["Contul ", "e ", "rentabil, ", "deci ", "creștem ", "treptat."]
+    assert "".join(chunks) == fake_ollama.reply
+
+
+def test_nothing_is_sent_before_the_first_read(fake_ollama: FakeOllama) -> None:
+    stream = fake_ollama.client().stream(system="s", user="u")
+
+    assert fake_ollama.connections == 0
+    assert next(stream) == "Mesajul "
+    assert fake_ollama.connections == 1
+
+
+def test_the_server_default_keep_alive_can_be_kept(fake_ollama: FakeOllama) -> None:
+    client = OllamaChatClient(
+        host=OLLAMA_TEST_HOST, keep_alive=None, transport=httpx.MockTransport(fake_ollama)
+    )
+
+    client.complete(system="s", user="u")
+
+    assert "keep_alive" not in fake_ollama.requests[0]
 
 
 def test_the_reasoning_of_thinking_models_never_reaches_the_client(
@@ -253,12 +282,39 @@ def test_the_reasoning_of_thinking_models_never_reaches_the_client(
     fake_ollama.reply = "<think>\nClientul vrea bani...\n</think>\n\nRăspunsul final."
 
     assert fake_ollama.client().complete(system="s", user="u") == "Răspunsul final."
+    streamed = list(fake_ollama.client().stream(system="s", user="u"))
+    assert "".join(streamed) == "Răspunsul final."
+    assert not any("think" in chunk or "Clientul" in chunk for chunk in streamed)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (["<th", "ink>plan</th", "ink>", "\n\nGata."], "Gata."),
+        (["  <think>", "doar gânduri"], ""),
+        (["<th", "is is not a tag"], "<this is not a tag"),
+        (["Direct", " răspunsul."], "Direct răspunsul."),
+    ],
+)
+def test_the_thinking_filter_works_across_chunk_boundaries(
+    chunks: list[str], expected: str
+) -> None:
+    thinking = _ThinkingFilter()
+
+    text = "".join(thinking.feed(chunk) for chunk in chunks) + thinking.flush()
+
+    assert text == expected
 
 
 def _ollama(response: httpx.Response) -> OllamaChatClient:
     return OllamaChatClient(
         host=OLLAMA_TEST_HOST, transport=httpx.MockTransport(lambda request: response)
     )
+
+
+def _ndjson(*lines: dict[str, Any]) -> httpx.Response:
+    body = b"".join(json.dumps(line).encode() + b"\n" for line in lines)
+    return httpx.Response(200, content=body)
 
 
 @pytest.mark.parametrize(
@@ -269,11 +325,13 @@ def _ollama(response: httpx.Response) -> OllamaChatClient:
             "not found - dacă lipsește modelul: ollama pull llama3",
         ),
         (httpx.Response(500, json={"error": "llama runner process has terminated"}), "500"),
-        (httpx.Response(200, text="nu e json"), "neașteptat"),
-        (httpx.Response(200, json={"done": True}), "neașteptat"),
-        (httpx.Response(200, json={"message": {"content": "   "}, "done": True}), "gol"),
-        (httpx.Response(200, json={"message": {"content": None}, "done": True}), "gol"),
-        (httpx.Response(200, json={"message": {"content": "Jum"}, "done": False}), "întrerupt"),
+        (httpx.Response(200, text="nu e json"), "nu e JSON"),
+        (_ndjson({"done": True}), "gol"),
+        (_ndjson({"message": {"content": "   "}, "done": True}), "gol"),
+        (_ndjson({"message": {"content": None}, "done": False}), "neașteptat"),
+        (_ndjson({"message": {"content": "Jum"}, "done": False}), "întrerupt"),
+        (_ndjson({"message": {"content": "Jum"}, "done": False}, {"error": "out of memory"}),
+         "întrerupt generarea: out of memory"),
     ],
 )
 def test_unusable_ollama_answers_raise(response: httpx.Response, expected: str) -> None:
@@ -304,20 +362,87 @@ def test_ollama_down_fails_fast_until_the_cooldown_passes(fake_ollama: FakeOllam
     assert fake_ollama.connections == 2
 
 
-def test_a_model_too_slow_for_the_machine_is_not_waited_on_twice() -> None:
-    calls: list[httpx.Request] = []
+def test_no_first_token_in_time_trips_the_circuit_breaker(fake_ollama: FakeOllama) -> None:
+    fake_ollama.silent = True
+    client = fake_ollama.client()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        raise httpx.ReadTimeout("prea lent", request=request)
-
-    client = OllamaChatClient(host=OLLAMA_TEST_HOST, transport=httpx.MockTransport(handler))
-    with pytest.raises(OllamaError, match="nu a terminat în 60 s"):
+    with pytest.raises(OllamaError, match="n-a trimis niciun token în 10 s"):
         client.complete(system="s", user="u")
     # Sinteza consiliului, dupa membrii care au asteptat deja: direct pe template.
     with pytest.raises(LLMUnavailableError, match="de curând"):
         client.complete(system="s", user="u")
-    assert len(calls) == 1
+    assert fake_ollama.connections == 1
+
+
+def test_bytes_without_a_single_token_still_count_as_no_first_token() -> None:
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 4.0  # fiecare rand gol din flux "dureaza" 4 s
+        return now[0]
+
+    empty = {"message": {"role": "assistant", "content": ""}, "done": False}
+    client = OllamaChatClient(
+        host=OLLAMA_TEST_HOST,
+        transport=httpx.MockTransport(lambda request: _ndjson(*[empty] * 5)),
+        clock=clock,
+    )
+
+    with pytest.raises(OllamaError, match="niciun token în 10 s"):
+        client.complete(system="s", user="u")
+    with pytest.raises(LLMUnavailableError, match="de curând"):
+        client.complete(system="s", user="u")
+
+
+def test_a_slow_model_that_keeps_writing_is_never_cut(fake_ollama: FakeOllama) -> None:
+    """Cat timp curg tokeni, generarea nu are termen de raspuns (doar plasa de 300 s)."""
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 9.0  # 9 s intre tokeni: peste cele 60 s de odinioara, la final
+        return now[0]
+
+    fake_ollama.reply = " ".join(["cuvânt"] * 12)
+    client = OllamaChatClient(
+        host=OLLAMA_TEST_HOST, transport=httpx.MockTransport(fake_ollama), clock=clock
+    )
+
+    assert client.complete(system="s", user="u") == fake_ollama.reply
+
+
+def test_a_generation_stuck_midway_fails_without_resting_the_server(
+    fake_ollama: FakeOllama,
+) -> None:
+    fake_ollama.reply = "Unu doi trei patru."
+    fake_ollama.stall_after = 2
+    client = fake_ollama.client()
+    received: list[str] = []
+
+    with pytest.raises(OllamaError, match="s-a oprit în mijlocul răspunsului"):
+        for chunk in client.stream(system="s", user="u"):
+            received.append(chunk)
+
+    assert received == ["Unu ", "doi "]
+    fake_ollama.stall_after = None
+    assert client.complete(system="s", user="u") == "Unu doi trei patru."
+
+
+def test_generations_on_one_server_wait_their_turn(fake_ollama: FakeOllama) -> None:
+    client = OllamaChatClient(
+        host=OLLAMA_TEST_HOST,
+        transport=httpx.MockTransport(fake_ollama),
+        max_parallel=1,
+        queue_timeout=0.05,
+    )
+    first = client.stream(system="s", user="u")
+    assert next(first) == "Mesajul "  # prima generare tine locul
+
+    with pytest.raises(OllamaError, match="ocupat"):
+        client.complete(system="s", user="u")
+    assert fake_ollama.connections == 1  # a doua n-a plecat spre server
+
+    first.close()  # consumatorul renunta: locul se elibereaza
+    assert client.complete(system="s", user="u") == fake_ollama.reply
 
 
 # --- ruterul ----------------------------------------------------------------------------
@@ -376,7 +501,10 @@ def test_the_router_is_the_voice_and_writes_only_through_ollama(
     assert router.voice is router
     assert router.model == "llama3"
     assert router.complete(system="s", user="u") == fake_ollama.reply
-    assert len(fake_ollama.requests) == 1 and fake_jev.requests == []
+    assert "".join(router.stream(system="s", user="u")) == fake_ollama.reply
+    assert len(fake_ollama.requests) == 2 and fake_jev.requests == []
+    with pytest.raises(LLMUnavailableError, match="OLLAMA_HOST"):
+        next(LLMRouter().stream_text_local(system="s", user="u"))
 
 
 # --- setarile -----------------------------------------------------------------------------
@@ -394,6 +522,25 @@ def test_router_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         ServerSettings(ollama_host="localhost", ollama_model="ollama/qwen2.5:7b")
     )
     assert custom.model == "qwen2.5:7b"
+
+
+def test_the_streaming_limits_come_from_the_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OLLAMA_FIRST_TOKEN_TIMEOUT", "15")
+    monkeypatch.setenv("OLLAMA_MAX_PARALLEL", "4")
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "2h")
+
+    settings = ServerSettings(_env_file=None, ollama_host="localhost")
+    client = llm_router_from_settings(settings)._local()
+
+    assert (client.first_token_timeout, client.max_parallel, client.keep_alive) == (
+        15.0,
+        4,
+        "2h",
+    )
+    defaults = ServerSettings(_env_file=None, ollama_host="localhost", ollama_keep_alive="")
+    assert llm_router_from_settings(defaults)._local().keep_alive is None
+    with pytest.raises(ValidationError):
+        ServerSettings(_env_file=None, ollama_first_token_timeout=0)
 
 
 def test_settings_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:

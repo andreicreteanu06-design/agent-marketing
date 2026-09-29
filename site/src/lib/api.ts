@@ -13,6 +13,34 @@ export class ApiError extends Error {
   }
 }
 
+const OFFLINE_MESSAGE =
+  "Nu se poate contacta serverul. Verifică conexiunea și încearcă din nou.";
+
+/** Eroarea unui raspuns ne-2xx, cu mesajul serverului ("detail") cand exista. */
+async function apiError(response: Response): Promise<ApiError> {
+  let detail = response.statusText || "A apărut o eroare neașteptată.";
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === "object" && "detail" in body) {
+      const rawDetail = (body as { detail: unknown }).detail;
+      if (typeof rawDetail === "string") {
+        detail = rawDetail;
+      } else if (Array.isArray(rawDetail)) {
+        // Erorile de validare (422) vin ca lista, cate una per camp; mesajul
+        // nostru e precedat de prefixul Pydantic "Value error, ".
+        const messages = rawDetail
+          .map((item) => (item && typeof item === "object" && "msg" in item ? String(item.msg) : null))
+          .filter((msg): msg is string => msg !== null)
+          .map((msg) => msg.replace(/^Value error, /, ""));
+        if (messages.length > 0) detail = messages.join(" ");
+      }
+    }
+  } catch {
+    // raspuns fara corp JSON valid - pastreaza statusText
+  }
+  return new ApiError(response.status, detail);
+}
+
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
@@ -21,32 +49,10 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
       headers: { "Content-Type": "application/json", ...options.headers },
     });
   } catch {
-    throw new ApiError(0, "Nu se poate contacta serverul. Verifică conexiunea și încearcă din nou.");
+    throw new ApiError(0, OFFLINE_MESSAGE);
   }
 
-  if (!response.ok) {
-    let detail = response.statusText || "A apărut o eroare neașteptată.";
-    try {
-      const body: unknown = await response.json();
-      if (body && typeof body === "object" && "detail" in body) {
-        const rawDetail = (body as { detail: unknown }).detail;
-        if (typeof rawDetail === "string") {
-          detail = rawDetail;
-        } else if (Array.isArray(rawDetail)) {
-          // Erorile de validare (422) vin ca lista, cate una per camp; mesajul
-          // nostru e precedat de prefixul Pydantic "Value error, ".
-          const messages = rawDetail
-            .map((item) => (item && typeof item === "object" && "msg" in item ? String(item.msg) : null))
-            .filter((msg): msg is string => msg !== null)
-            .map((msg) => msg.replace(/^Value error, /, ""));
-          if (messages.length > 0) detail = messages.join(" ");
-        }
-      }
-    } catch {
-      // raspuns fara corp JSON valid - pastreaza statusText
-    }
-    throw new ApiError(response.status, detail);
-  }
+  if (!response.ok) throw await apiError(response);
 
   // 204 (ex. deconectarea unei integrari) nu are corp - response.json() ar arunca.
   if (response.status === 204) return undefined as T;
@@ -319,8 +325,6 @@ export interface CouncilOpinion {
   source: MessageSource;
   model: string | null;
   fallback_reason: string | null;
-  /** Pozitie pe date demonstrative: se arata marcata, nu intra in decizie. */
-  demo?: boolean;
 }
 
 export interface CouncilRuling {
@@ -495,11 +499,12 @@ export interface ProductDirective {
   generated_at: string;
 }
 
-/** Contextul pietei (ppc_agent_server/services/researcher.py). is_demo = ilustratie, nu fapte. */
+/**
+ * Contextul pietei (ppc_agent_server/services/researcher.py), doar din surse reale:
+ * Google Trends si cautarea pe web. Ce lipseste ramane "unknown", nu se inventeaza.
+ */
 export interface MarketDirective {
   client_account_id: number;
-  source: "live" | "demo";
-  is_demo: boolean;
   market: string;
   period_days: number;
   competitor_activity: {
@@ -549,4 +554,98 @@ export function askQueen(token: string, message: string): Promise<QueenChatReply
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ message }),
   });
+}
+
+/** Etapele deliberarii, in ordinea in care le anunta serverul. */
+export type CouncilStage = "context" | "deliberation" | "rebuttals" | "synthesis";
+
+export interface QueenStreamHandlers {
+  onStage?: (stage: CouncilStage) => void;
+  /** Un membru al consiliului a vorbit (in ordinea in care termina, nu fix). */
+  onOpinion?: (opinion: CouncilOpinion) => void;
+  onRebuttal?: (rebuttal: CouncilRebuttal) => void;
+  /** Un fragment din sinteza Reginei, pe masura ce o scrie modelul: CIORNA. */
+  onToken?: (text: string) => void;
+}
+
+function sseEvent(block: string): { name: string; data: unknown } | null {
+  let name = "message";
+  const data: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith(":")) continue; // comentariu: consiliul inca delibereaza
+    if (line.startsWith("event:")) name = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (data.length === 0) return null;
+  try {
+    return { name, data: JSON.parse(data.join("\n")) as unknown };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Aceeasi intrebare, in flux (Server-Sent Events, POST /api/v1/queen/chat cu
+ * Accept: text/event-stream): etapele, fiecare parere cand e gata, sinteza Reginei
+ * token cu token si, la final, raspunsul valabil - intors de functie, care
+ * inlocuieste ciorna (poate fi cel determinist, daca modelul a picat sau a scris
+ * ceva ce nu e in date). EventSource nu poate trimite POST cu token, deci fetch.
+ */
+export async function askQueenStream(
+  token: string,
+  message: string,
+  handlers: QueenStreamHandlers = {},
+  signal?: AbortSignal
+): Promise<QueenChatReply> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/v1/queen/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ message }),
+      signal,
+    });
+  } catch (err: unknown) {
+    if (signal?.aborted) throw err;
+    throw new ApiError(0, OFFLINE_MESSAGE);
+  }
+  if (!response.ok) throw await apiError(response);
+  // Un server (sau proxy) care raspunde JSON: acelasi raspuns, fara flux.
+  const type = response.headers.get("content-type") ?? "";
+  if (!type.includes("text/event-stream") || !response.body) {
+    return (await response.json()) as QueenChatReply;
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let reply: QueenChatReply | null = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value.replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const event = sseEvent(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+      if (!event) continue;
+      const data = event.data as Record<string, unknown>;
+      if (event.name === "stage") handlers.onStage?.(data.stage as CouncilStage);
+      else if (event.name === "opinion") handlers.onOpinion?.(data as unknown as CouncilOpinion);
+      else if (event.name === "rebuttal") handlers.onRebuttal?.(data as unknown as CouncilRebuttal);
+      else if (event.name === "token") handlers.onToken?.(String(data.text ?? ""));
+      else if (event.name === "reply") reply = data as unknown as QueenChatReply;
+      else if (event.name === "error") {
+        throw new ApiError(503, String(data.detail ?? "Consiliul nu a putut răspunde acum."));
+      }
+    }
+  }
+  if (!reply) {
+    throw new ApiError(0, "Conexiunea s-a închis înainte de răspuns. Încearcă din nou.");
+  }
+  return reply;
 }

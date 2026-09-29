@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_SQLITE_URL = "sqlite:///./ppc_agent_server.db"
@@ -122,8 +122,17 @@ class ServerSettings(BaseSettings):
     # Necompletat => DEFAULT_OLLAMA_MODEL din services/llm_client.py ("llama3", acelasi
     # ca la copywriterul din CLI - un singur `ollama pull`). Accepta si "ollama/<tag>".
     ollama_model: str = ""
+    # Circuit-breaker-ul: fara niciun token in atatea secunde, Ollama intra in pauza si
+    # raspunde template-ul. Cat timp tokenii curg, generarea nu mai are termen de raspuns.
+    ollama_first_token_timeout: float = Field(default=10.0, gt=0)
+    # Cate generari deodata pe serverul Ollama. 1 pe CPU (le-ar lua oricum pe rand);
+    # cu GPU, cat OLLAMA_NUM_PARALLEL-ul serverului.
+    ollama_max_parallel: int = Field(default=1, ge=1)
+    # Cat tine Ollama modelul incarcat intre cereri (ex. "30m", "2h", "-1" = mereu).
+    # Necompletat => implicitul serverului (5 min), dupa care prima cerere il reincarca.
+    ollama_keep_alive: str = "30m"
 
-    @field_validator("jev_api_key", "ollama_model")
+    @field_validator("jev_api_key", "ollama_model", "ollama_keep_alive")
     @classmethod
     def _no_blanks(cls, value: str) -> str:
         value = value.strip()

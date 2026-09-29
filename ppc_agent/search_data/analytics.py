@@ -174,6 +174,20 @@ class AnalyticsDataClient:
             )
         return totals
 
+    def channel_sessions(self, *, start_date: date, end_date: date) -> dict[str, int]:
+        """Sesiunile pe grupul de canale implicit GA4 ("Paid Social", "Organic Search"...)."""
+        rows = self.run_report(
+            start_date=start_date,
+            end_date=end_date,
+            dimensions=["sessionDefaultChannelGroup"],
+            metrics=["sessions"],
+        )
+        return {
+            row["sessionDefaultChannelGroup"]: _int(row["sessions"])
+            for row in rows
+            if row["sessionDefaultChannelGroup"]
+        }
+
     def landing_pages(
         self, *, start_date: date, end_date: date, limit: int = 50
     ) -> list[LandingPageTotals]:

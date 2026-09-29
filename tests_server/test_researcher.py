@@ -1,8 +1,9 @@
 """Researcher-ul (CSO): contextul pietei, determinist, si locul lui in consiliu.
 
-Regulile se verifica pe semnale "live" construite in test. Motorul demonstrativ
-(``market_demo.py``) se verifica separat: determinist, arata fiecare regula si nu
-ajunge niciodata in decizie, in sinteza sau in raspunsul catre client.
+Regulile se verifica pe semnale construite in test. Sursele sunt doar reale (Google
+Trends, cautarea pe web); fara ele, nimic nu se inventeaza: piata ramane necunoscuta,
+iar Researcher-ul spune ce lipseste, fara LLM. Google Trends are testele lui in
+``test_market_trends.py``.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from sqlmodel import Session
 
 from ppc_agent_server.services.council import QuestionTopic, classify_question
 from ppc_agent_server.services.humanizer import ANALYST_VOICE, ai_tells
-from ppc_agent_server.services.market_demo import SEASON_INDEX, demo_market_signals
+from ppc_agent_server.services.market_trends import TrendPoint, TrendsUnavailableError
 from ppc_agent_server.services.queen_signals import ClientMarketSignals
 from ppc_agent_server.services.researcher import (
     RELEVANCE_QUESTION,
@@ -38,6 +39,7 @@ from ppc_agent_server.services.researcher import (
     WebFinding,
     build_market_directive,
     competitor_activity,
+    has_market_data,
     market_facts,
     market_focus,
     market_trend,
@@ -51,7 +53,11 @@ from tests_server.test_queen_agent import NOW
 from tests_server.test_queen_council import RESEARCHER_SAYS, _council, _CouncilVoice, _directive
 from tests_server.test_queen_router import signed_in  # noqa: F401 - fixture
 
-TODAY = NOW.date()  # 25 septembrie: octombrie e varf de sezon in indicele demo
+TODAY = NOW.date()  # 25 septembrie: octombrie e varf de sezon in indicele de mai jos
+
+#: Sezonul unui service auto, ianuarie..decembrie (media anului = 1): schimbul de
+#: anvelope urca martie-aprilie si octombrie-noiembrie.
+SEASON_INDEX = (0.82, 0.78, 1.02, 1.22, 1.04, 0.95, 0.90, 0.84, 1.00, 1.24, 1.18, 1.01)
 
 AUCTION = AuctionSnapshot(
     competitors_before=5,
@@ -78,7 +84,6 @@ PAINS = (
     PainTopic("programare în weekend", "service auto sambata", 10, 19),
 )
 LIVE = MarketSignals(
-    source="live",
     market="service auto, București",
     today=TODAY,
     period_days=28,
@@ -86,7 +91,18 @@ LIVE = MarketSignals(
     demand=DEMAND,
     pains=PAINS,
 )
-DEMO = demo_market_signals("autofix", TODAY)
+#: Nisa necunoscuta: nicio sursa n-a avut ce masura - si nimic nu se inventeaza.
+NO_MARKET = MarketSignals(
+    market="România", today=TODAY, period_days=28, auction=None, demand=None, location="România"
+)
+#: Cererea din Google Trends: indice 0-100, nu cautari.
+TRENDS_DEMAND = replace(
+    DEMAND,
+    weekly=[50, 52, 51, 53, 60, 62, 61, 63],
+    same_weeks_last_year=210,
+    unit="index",
+    source="Google Trends",
+)
 
 
 def _directive_for(signals: MarketSignals) -> MarketDirective:
@@ -178,6 +194,18 @@ def test_the_season_and_the_trend_decide_the_window(
     assert trend.window.startswith(window)
 
 
+def test_a_google_trends_series_speaks_in_index_points_not_searches() -> None:
+    trend = market_trend(TRENDS_DEMAND, today=TODAY)
+
+    assert (trend.direction, trend.season) == ("growing", "rising")
+    assert (trend.change, trend.year_over_year) == (0.1942, 0.1714)
+    assert trend.evidence.startswith(
+        "Interesul de căutare pentru «service auto» (Google Trends): indice mediu 61,5 din 100 "
+        "în ultimele 4 săptămâni, +19% față de cele 4 dinainte și +17% față de anul trecut."
+    )
+    assert "căutări în ultimele" not in trend.evidence
+
+
 def test_a_short_series_has_no_trend() -> None:
     trend = market_trend(replace(DEMAND, weekly=[1000] * 5), today=TODAY)
 
@@ -210,7 +238,8 @@ def test_a_quiet_market_says_so() -> None:
 def test_the_directive_puts_competitors_demand_and_pains_together() -> None:
     directive = MarketResearcher(_Static(LIVE), clock=lambda: NOW).evaluate_market_context(42)
 
-    assert (directive.source, directive.is_demo, directive.generated_at) == ("live", False, NOW)
+    assert directive.generated_at == NOW
+    assert has_market_data(directive)
     assert directive.opportunity.endswith(
         "Mesajul care prinde acum: «prețul afișat înainte de programare»."
     )
@@ -219,40 +248,31 @@ def test_the_directive_puts_competitors_demand_and_pains_together() -> None:
     assert directive.notes == []
 
 
-def test_demo_data_is_always_marked_as_such() -> None:
-    directive = _directive_for(DEMO)
+def test_without_sources_nothing_is_invented() -> None:
+    directive = _directive_for(NO_MARKET)
 
-    assert (directive.source, directive.is_demo) == ("demo", True)
-    assert directive.notes[0].startswith("Date demonstrative")
+    assert directive.competitor_activity.pressure == "unknown"
+    assert (directive.market_trend.direction, directive.market_trend.season) == (
+        "unknown",
+        "unknown",
+    )
+    assert directive.social_sentiment.rising == []
+    assert not has_market_data(directive)
+    # Nu mai exista date demonstrative, deci nici marcajul lor.
+    assert not {"source", "is_demo"} & set(directive.model_dump())
 
 
 def test_no_researcher_text_sounds_generated() -> None:
     texts: list[str] = []
-    for signals in (LIVE, DEMO, replace(LIVE, auction=None, demand=None, pains=())):
+    for signals in (
+        LIVE,
+        NO_MARKET,
+        replace(LIVE, auction=None, demand=TRENDS_DEMAND, pains=()),
+        replace(LIVE, auction=None, demand=None, pains=()),
+    ):
         directive = _directive_for(signals)
         texts.extend([directive.summary, market_facts(directive), directive.opportunity])
     assert [(text[:60], ai_tells(text)) for text in texts if ai_tells(text)] == []
-
-
-# --- motorul demonstrativ -------------------------------------------------------------------
-
-
-def test_the_demo_is_stable_per_client_and_day() -> None:
-    assert demo_market_signals("autofix", TODAY) == DEMO
-    assert demo_market_signals("alt-service", TODAY) != DEMO
-    assert demo_market_signals("autofix", date(2026, 9, 26)) != DEMO
-
-
-def test_the_demo_shows_every_rule_with_illustrative_names_only() -> None:
-    directive = _directive_for(DEMO)
-
-    assert directive.competitor_activity.pressure == "rising"
-    assert directive.market_trend.season == "rising"
-    assert directive.market_trend.direction == "growing"
-    assert directive.social_sentiment.rising
-    assert DEMO.auction is not None
-    assert all(move.name.startswith("Concurentul ") for move in DEMO.auction.movers)
-    assert "demonstrativ" in directive.market
 
 
 # --- vocea ----------------------------------------------------------------------------------
@@ -293,23 +313,23 @@ class _Static:
 QUESTION = "Merită să cresc bugetul?"
 
 
-def test_demo_market_data_is_shown_but_never_decides_or_reaches_an_llm() -> None:
+def test_without_market_data_the_researcher_says_so_without_an_llm() -> None:
     voice = _CouncilVoice()
-    reply = _council(voice=voice, market=DEMO).evaluate_client_query(QUESTION, _directive())
+    reply = _council(voice=voice, market=NO_MARKET).evaluate_client_query(QUESTION, _directive())
     without = _council(voice=_CouncilVoice()).evaluate_client_query(QUESTION, _directive())
 
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert opinion.demo is True and opinion.source == "template"
+    assert opinion.source == "template"
+    assert opinion.fallback_reason is not None and opinion.fallback_reason.startswith("Fără date")
     assert reply.market is not None and opinion.opinion == reply.market.summary
     assert reply.ruling.market_context is None
     assert reply.ruling == without.ruling
     assert "researcher" not in voice.roles
-    chair = voice.prompt("chair")
-    assert "FAPTE DE PIAȚĂ" not in chair and "Concurentul" not in chair
+    assert "FAPTE DE PIAȚĂ" not in voice.prompt("chair")
 
 
-def test_demo_market_data_stays_out_of_the_deterministic_reply() -> None:
-    reply = _council(market=DEMO).evaluate_client_query(QUESTION, _directive())
+def test_an_unknown_market_stays_out_of_the_deterministic_reply() -> None:
+    reply = _council(market=NO_MARKET).evaluate_client_query(QUESTION, _directive())
     without = _council().evaluate_client_query(QUESTION, _directive())
 
     assert reply.reply == without.reply
@@ -363,7 +383,7 @@ def test_a_live_auction_answers_why_the_click_got_pricier() -> None:
 
 
 def test_without_real_auction_data_the_council_says_what_is_missing() -> None:
-    reply = _council(market=DEMO).evaluate_client_query(CPC_QUESTION, _directive())
+    reply = _council(market=NO_MARKET).evaluate_client_query(CPC_QUESTION, _directive())
 
     assert reply.ruling.decision.startswith("De ce s-a scumpit click-ul nu pot spune încă")
     assert "Concurentul" not in reply.reply
@@ -381,7 +401,7 @@ def test_a_live_researcher_speaks_with_market_facts_only() -> None:
     assert "PĂREREA RESEARCHER-ULUI" in chair and RESEARCHER_SAYS in chair
     assert "Contextul pieței (Researcher): CPC-ul urcă" in chair
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert (opinion.source, opinion.opinion, opinion.demo) == ("llm", RESEARCHER_SAYS, False)
+    assert (opinion.source, opinion.opinion) == ("llm", RESEARCHER_SAYS)
 
 
 def test_a_researcher_that_invents_a_market_number_falls_back() -> None:
@@ -397,20 +417,45 @@ def test_a_researcher_that_invents_a_market_number_falls_back() -> None:
 # --- sursa si ruta ----------------------------------------------------------------------------
 
 
-def test_the_demo_source_is_seeded_by_the_client_brand(session: Session) -> None:
+class _Trends:
+    """Google Trends din teste: seria data sau o eroare, plus ce s-a cerut."""
+
+    def __init__(
+        self, points: list[TrendPoint] | None = None, error: Exception | None = None
+    ) -> None:
+        self.points = points or []
+        self.error = error
+        self.asked: list[tuple[str, str]] = []
+
+    def weekly_interest(self, keyword: str, *, geo: str) -> list[TrendPoint]:
+        self.asked.append((keyword, geo))
+        if self.error is not None:
+            raise self.error
+        return self.points
+
+
+def _weeks(values: Sequence[int]) -> list[TrendPoint]:
+    """Saptamani consecutive care se termina pe 20 septembrie 2026."""
+    first = date(2026, 9, 20).toordinal() - 7 * (len(values) - 1)
+    return [
+        TrendPoint(week=date.fromordinal(first + 7 * index), value=value)
+        for index, value in enumerate(values)
+    ]
+
+
+def test_without_the_client_searches_nothing_is_searched_or_invented(session: Session) -> None:
     account = _client_account(session)
-    account.brand_name = "autofix"
-    session.add(account)
-    session.commit()
+    trends = _Trends(_weeks([50] * 60))
 
-    signals = ClientMarketSignals(session, today=lambda: TODAY).load(account.id or 0)
+    signals = ClientMarketSignals(session, today=lambda: TODAY, trends=trends).load(
+        account.id or 0
+    )
 
-    demo = demo_market_signals("autofix", TODAY)
-    assert signals.auction == demo.auction
-    assert (signals.demand, signals.pains) == (demo.demand, demo.pains)
-    # Fara cautarile clientului nu exista nisa - deci nicio cautare pe web.
+    assert (signals.auction, signals.demand, tuple(signals.pains)) == (None, None, ())
+    # Fara cautarile clientului nu exista nisa - deci nicio cautare, nici in Trends.
     assert (signals.niche, signals.location, signals.web_status) == ("", "România", "off")
     assert signals.web_note.startswith("Nișa nu se poate deduce încă")
+    assert trends.asked == []
     with pytest.raises(LookupError):
         ClientMarketSignals(session).load(999_999)
 
@@ -669,9 +714,11 @@ def test_the_loader_searches_the_niche_and_city_of_the_client(session: Session) 
         seen.append(query)
         return _found(query, "yably.ro")
 
-    signals = ClientMarketSignals(session, today=lambda: TODAY, registry=_skills(search)).load(
-        account.id or 0, SERVICE_QUERIES
-    )
+    trends = _Trends(_weeks([40] * 52 + [50, 52, 51, 53, 60, 62, 61, 63]))
+
+    signals = ClientMarketSignals(
+        session, today=lambda: TODAY, registry=_skills(search), trends=trends
+    ).load(account.id or 0, SERVICE_QUERIES)
 
     assert (signals.niche, signals.location, signals.web_status) == (
         "service auto",
@@ -679,6 +726,55 @@ def test_the_loader_searches_the_niche_and_city_of_the_client(session: Session) 
         "ok",
     )
     assert "competitori service auto București" in seen
+    # Cererea: Google Trends pe nisa, in tara clientului - reala, nu demonstrativa.
+    assert trends.asked == [("service auto", "RO")]
+    assert signals.demand is not None
+    assert (signals.demand.unit, signals.demand.source) == ("index", "Google Trends")
+    assert signals.demand.weekly[-8:] == [50, 52, 51, 53, 60, 62, 61, 63]
+    assert (signals.market, signals.auction, signals.notes) == (
+        "service auto, București",
+        None,
+        [],
+    )
+    directive = build_market_directive(account.id or 0, signals, generated_at=NOW)
+    assert directive.market_trend.direction == "growing"
+
+
+def test_when_google_trends_refuses_the_demand_stays_unknown(session: Session) -> None:
+    account = _client_account(session)
+    refused = TrendsUnavailableError("Google Trends n-a răspuns (TooManyRequestsError)")
+    trends = _Trends(error=refused)
+
+    signals = ClientMarketSignals(
+        session, today=lambda: TODAY, registry=_skills(lambda query: []), trends=trends
+    ).load(account.id or 0, SERVICE_QUERIES)
+
+    assert signals.demand is None
+    [note] = signals.notes
+    assert note.startswith("Google Trends nu a răspuns acum pentru «service auto»")
+    directive = build_market_directive(account.id or 0, signals, generated_at=NOW)
+    assert directive.market_trend.direction == "unknown"
+    assert not has_market_data(directive)
+
+
+def test_a_hanging_google_trends_never_holds_the_researcher(session: Session) -> None:
+    account = _client_account(session)
+
+    class _Slow(_Trends):
+        def weekly_interest(self, keyword: str, *, geo: str) -> list[TrendPoint]:
+            time.sleep(0.5)
+            return _weeks([50] * 60)
+
+    signals = ClientMarketSignals(
+        session,
+        today=lambda: TODAY,
+        registry=_skills(lambda query: []),
+        trends=_Slow(),
+        trends_wait=0.05,
+    ).load(account.id or 0, SERVICE_QUERIES)
+
+    assert signals.demand is None
+    assert signals.notes[0].startswith("Google Trends n-a răspuns în 0 s")
 
 
 def test_the_loader_passes_the_jev_verifier_to_the_search(
@@ -688,7 +784,11 @@ def test_the_loader_passes_the_jev_verifier_to_the_search(
     fake_jev.noul_rule = _about_car_service
 
     signals = ClientMarketSignals(
-        session, today=lambda: TODAY, registry=_skills(_mixed_results), verifier=fake_jev.router()
+        session,
+        today=lambda: TODAY,
+        registry=_skills(_mixed_results),
+        verifier=fake_jev.router(),
+        trends=_Trends(),
     ).load(account.id or 0, SERVICE_QUERIES)
 
     assert [finding.source for finding in signals.web] == ["titan.ro"]
@@ -696,7 +796,8 @@ def test_the_loader_passes_the_jev_verifier_to_the_search(
 
 
 WEB = replace(
-    DEMO,
+    NO_MARKET,
+    market="service auto, București",
     niche="service auto",
     location="București",
     web=_found("competitori service auto București", "yably.ro", "cylex.ro"),
@@ -704,7 +805,7 @@ WEB = replace(
 )
 
 
-def test_real_web_findings_reach_the_researcher_llm_but_demo_numbers_do_not() -> None:
+def test_real_web_findings_reach_the_researcher_llm_without_invented_numbers() -> None:
     voice = _CouncilVoice({"researcher": "Piața din București e plină: yably.ro listează top."})
     reply = _council(voice=voice, market=WEB).evaluate_client_query(QUESTION, _directive())
 
@@ -714,7 +815,7 @@ def test_real_web_findings_reach_the_researcher_llm_but_demo_numbers_do_not() ->
     chair = voice.prompt("chair")
     assert "FAPTE DE PIAȚĂ" in chair and "yably.ro" in chair and "Concurentul" not in chair
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert (opinion.source, opinion.demo) == ("llm", False)
+    assert opinion.source == "llm"
     # Fragmentele nu muta decizia.
     assert reply.ruling.market_context is None
 
@@ -723,8 +824,8 @@ def test_without_a_voice_the_researcher_cites_the_web_sources() -> None:
     reply = _council(market=WEB).evaluate_client_query(QUESTION, _directive())
 
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert opinion.demo is False
-    assert opinion.opinion.startswith("Pe web, pentru «service auto» în București: 2 surse locale.")
+    assert opinion.source == "template"
+    assert "Pe web, pentru «service auto» în București: 2 surse locale." in opinion.opinion
     assert "yably.ro: «Titlu yably.ro» - Fragment yably.ro" in opinion.opinion
 
 
@@ -752,17 +853,17 @@ def market_client(signed_in: Signed) -> Iterator[Signed]:  # noqa: F811
     yield signed_in
 
 
-def test_the_market_route_returns_the_marked_demo_context(market_client: Signed) -> None:
+def test_the_market_route_returns_only_measured_context(market_client: Signed) -> None:
     client, _, headers, account_id = market_client
 
     response = client.get("/api/v1/queen/market", headers=headers)
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert (body["client_account_id"], body["source"], body["is_demo"]) == (
-        account_id,
-        "demo",
-        True,
-    )
-    assert body["notes"][0].startswith("Date demonstrative")
+    assert body["client_account_id"] == account_id
+    assert not {"source", "is_demo"} & set(body)
+    # In teste, DuckDuckGo si Google Trends "pica" (conftest): nimic nu se inventeaza.
+    assert body["competitor_activity"]["pressure"] == "unknown"
+    assert body["market_trend"]["direction"] == "unknown"
+    assert not any(note.startswith("Date demonstrative") for note in body["notes"])
     assert client.get("/api/v1/queen/market").status_code == 401

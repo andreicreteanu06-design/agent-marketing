@@ -16,7 +16,13 @@ adevarate si daca site-ul poate converti traficul platit:
 2. **Viteza pe mobil** (Core Web Vitals): ultima masuratoare PageSpeed Insights
    pe mobil a agentului SEO/GEO, salvata noaptea (``SiteSpeedSample``). Pragurile
    sunt ale Google: LCP bun pana la 2,5 s, slab peste 4 s; CLS 0,1 si 0,25; TBT
-   (proxy-ul de laborator pentru INP) 200 si 600 ms; scorul 90 si 50.
+   (proxy-ul de laborator pentru INP) 200 si 600 ms; scorul 90 si 50. Cand Google
+   are date de la utilizatori reali (CrUX, p75), ele se spun alaturi.
+3. **Auditul tehnic SEO/GEO**: ultimul crawl al site-ului facut noaptea de motorul de
+   audit al agentului SEO/GEO (``SiteAuditSnapshot``) - scorurile SEO si GEO si
+   problemele cele mai grave, cu reparatia. E context pentru consiliu: nu schimba
+   starea si nu declanseaza veto (un audit gaseste probleme de continut, nu dovezi ca
+   banii se pierd).
 
 Veto-ul (Smart Veto Engine) se sprijina DOAR pe dovezi, nu pe euristici - un
 fals pozitiv ar opri reclamele unui client sanatos. Se declanseaza numai pentru:
@@ -63,6 +69,7 @@ SpeedMetricKey = Literal["lcp", "cls", "tbt", "performance_score"]
 #: ``money``: nicio decizie pe bani (tracking picat); ``spend``: nicio cheltuiala
 #: in plus (site lent pe mobil); ``none``: fara veto.
 VetoScope = Literal["none", "spend", "money"]
+AuditSeverity = Literal["critical", "warning", "info"]
 VetoCode = Literal[
     "SITE_UNAVAILABLE", "CRITICAL_JOURNEY_BROKEN", "ATTRIBUTION_BROKEN", "MOBILE_LCP_CRITICAL"
 ]
@@ -86,6 +93,10 @@ SPEED_MAX_AGE_DAYS = 14
 EVIDENCE_MAX_AGE_DAYS = 3
 #: Mediana LCP de laborator peste asta, la doua verificari la rand = veto.
 LCP_CRITICAL_MS = 4000
+#: Un audit mai vechi de atat nu mai descrie site-ul de azi: se spune, dar ca vechi.
+AUDIT_MAX_AGE_DAYS = 14
+#: Cate probleme din audit ajung in faptele Tehnicianului - cele mai grave primele.
+MAX_AUDIT_ISSUES = 3
 
 STATUS_WORDS: dict[HealthStatus, str] = {
     "green": "verde",
@@ -129,8 +140,10 @@ class MobileSpeed:
     lcp_ms: int | None
     cls: float | None
     tbt_ms: int | None
-    #: Date de teren CrUX (p75), cand Google le are.
+    #: Date de teren CrUX (p75, utilizatori reali), cand Google le are.
     field_lcp_ms: int | None = None
+    field_cls: float | None = None
+    field_inp_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +164,33 @@ class SyntheticEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class AuditIssue:
+    """Un tip de problema gasit de auditul SEO/GEO, pe cate pagini, cu reparatia."""
+
+    title: str
+    severity: AuditSeverity
+    pages: int
+    fix: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SiteAudit:
+    """Ultimul audit tehnic SEO/GEO al site-ului (``SiteAuditSnapshot``)."""
+
+    audited_at: datetime
+    url: str
+    pages_crawled: int
+    #: ``False`` = crawl-ul s-a oprit din buget: raport partial.
+    completed: bool
+    seo_score: int | None
+    geo_score: int | None
+    critical: int
+    warnings: int
+    #: Cele mai grave primele.
+    issues: Sequence[AuditIssue] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class TechnicalSignals:
     """Tot ce stie Tehnicianul despre un client."""
 
@@ -164,6 +204,7 @@ class TechnicalSignals:
     #: Masuratoarea de dinainte - LCP critic cere doua la rand.
     previous_mobile_speed: MobileSpeed | None = None
     evidence: SyntheticEvidence | None = None
+    site_audit: SiteAudit | None = None
 
 
 class TechnicalSignalsSource(Protocol):
@@ -209,6 +250,26 @@ class MobileSpeedCheck(BaseModel):
     evidence: str
     #: Reparatiile, in ordinea castigului, doar pentru metricile care nu sunt bune.
     fixes: list[str]
+    #: Utilizatorii reali (CrUX, p75), cand Google are date; nu schimba verdictul.
+    field_evidence: str | None = None
+
+
+class SiteAuditCheck(BaseModel):
+    """Rezumatul ultimului audit tehnic SEO/GEO, cum il vede Tehnicianul."""
+
+    audited_at: datetime
+    url: str
+    #: ``False`` = mai vechi de :data:`AUDIT_MAX_AGE_DAYS`.
+    fresh: bool
+    pages_crawled: int
+    completed: bool
+    seo_score: int | None
+    geo_score: int | None
+    critical: int
+    warnings: int
+    evidence: str
+    #: Cele mai grave probleme, fiecare cu reparatia.
+    issues: list[str]
 
 
 class TechnicianDirective(BaseModel):
@@ -229,6 +290,8 @@ class TechnicianDirective(BaseModel):
     warnings: list[str] = []
     #: Rezumatul ultimului test sintetic E2E; ``None`` = n-a rulat sau e prea vechi.
     synthetic: str | None = None
+    #: Ultimul audit tehnic SEO/GEO; ``None`` = n-a rulat inca.
+    site_audit: SiteAuditCheck | None = None
     #: Pozitia Tehnicianului, in vocea lui (scurta, de inginer).
     summary: str
     #: Reparatiile, cele care ridica veto-ul primele.
@@ -579,6 +642,72 @@ def check_mobile_speed(
         metrics=metrics,
         evidence=evidence,
         fixes=fixes,
+        field_evidence=_field_evidence(sample),
+    )
+
+
+def _field_evidence(sample: MobileSpeed) -> str | None:
+    """Ce traiesc utilizatorii reali (CrUX, p75): LCP, INP, CLS - doar cele raportate."""
+    readings: list[str] = []
+    if sample.field_lcp_ms is not None:
+        readings.append(f"LCP {_metric_value('lcp', sample.field_lcp_ms)}")
+    if sample.field_inp_ms is not None:
+        readings.append(f"INP {sample.field_inp_ms} ms")
+    if sample.field_cls is not None:
+        readings.append(f"CLS {_metric_value('cls', sample.field_cls)}")
+    if not readings:
+        return None
+    return f"Utilizatorii reali (Chrome, percentila 75): {', '.join(readings)}."
+
+
+_AUDIT_SEVERITY_WORDS: dict[AuditSeverity, str] = {
+    "critical": "critică",
+    "warning": "avertisment",
+    "info": "informativă",
+}
+
+
+def check_site_audit(audit: SiteAudit | None, *, today: date) -> SiteAuditCheck | None:
+    """Rezumatul auditului SEO/GEO: scorurile, problemele grave si reparatiile lor."""
+    if audit is None:
+        return None
+    fresh = (today - audit.audited_at.date()).days <= AUDIT_MAX_AGE_DAYS
+    scores = [
+        f"{name} {score} din 100"
+        for name, score in (("SEO", audit.seo_score), ("GEO", audit.geo_score))
+        if score is not None
+    ]
+    partial = "" if audit.completed else " (parțial: crawl-ul s-a oprit din buget)"
+    evidence = (
+        f"Auditul tehnic din {_day(audit.audited_at.date())} pe "
+        f"{_count(audit.pages_crawled, 'pagini', 'pagină')}{partial}"
+    )
+    evidence += f": scor {', '.join(scores)}" if scores else ""
+    evidence += (
+        f"; {_count(audit.critical, 'probleme critice', 'problemă critică')}, "
+        f"{_count(audit.warnings, 'avertismente', 'avertisment')}."
+    )
+    if not fresh:
+        evidence += (
+            f" E mai vechi de {AUDIT_MAX_AGE_DAYS} zile: poate să nu mai descrie site-ul de azi."
+        )
+    issues = [
+        f"{issue.title} ({_AUDIT_SEVERITY_WORDS[issue.severity]}, "
+        f"{_count(issue.pages, 'pagini', 'pagină')})" + (f": {issue.fix}" if issue.fix else "")
+        for issue in audit.issues[:MAX_AUDIT_ISSUES]
+    ]
+    return SiteAuditCheck(
+        audited_at=audit.audited_at,
+        url=audit.url,
+        fresh=fresh,
+        pages_crawled=audit.pages_crawled,
+        completed=audit.completed,
+        seo_score=audit.seo_score,
+        geo_score=audit.geo_score,
+        critical=audit.critical,
+        warnings=audit.warnings,
+        evidence=evidence,
+        issues=issues,
     )
 
 
@@ -758,6 +887,7 @@ def evaluate_technical_health(
         veto_code=code,
         warnings=warnings,
         synthetic=_synthetic_line(evidence) if evidence is not None else None,
+        site_audit=check_site_audit(signals.site_audit, today=signals.today),
         summary="",
         recommendations=recommendations,
         notes=notes,
@@ -794,6 +924,12 @@ def technician_position(directive: TechnicianDirective) -> str:
         parts = [f"Tracking: {word}. Nicio sursă de conversii conectată."]
     speed = directive.mobile_speed
     parts.append(f"Mobil: {STATUS_WORDS[speed.status]}. {speed.evidence}")
+    audit = directive.site_audit
+    if audit is not None and audit.fresh and audit.critical and audit.issues:
+        parts.append(
+            f"Auditul SEO/GEO: {_count(audit.critical, 'probleme critice', 'problemă critică')}, "
+            f"prima: {audit.issues[0]}."
+        )
     if directive.veto_code is not None:
         parts.append(_VETO_LINES[directive.veto_code])
     elif directive.warnings:
@@ -825,6 +961,14 @@ def technician_facts(directive: TechnicianDirective) -> str:
         f"{metric.label}: {metric.value}; pragul Google: {metric.threshold}."
         for metric in speed.metrics
     )
+    if speed.field_evidence is not None:
+        lines.append(speed.field_evidence)
+    audit = directive.site_audit
+    if audit is not None:
+        lines.append(f"Audit tehnic SEO/GEO (crawl real al site-ului): {audit.evidence}")
+        lines.extend(f"Problemă din audit: {issue}" for issue in audit.issues)
+    else:
+        lines.append("Auditul tehnic SEO/GEO n-a rulat încă: rulează noaptea, în worker.")
     if directive.synthetic is not None:
         lines.append(directive.synthetic)
     lines.append(f"Veto (obligatoriu): {directive.veto_reason or 'niciunul'}")
@@ -836,12 +980,14 @@ def technician_facts(directive: TechnicianDirective) -> str:
 
 TECHNICIAN_SYSTEM_PROMPT = (
     "Ești Tehnicianul (CTO-ul) din consiliul agenției AC Media: răspunzi de infrastructura de "
-    "conversie a clientului, adică tracking-ul conversiilor și viteza site-ului pe mobil. "
+    "conversie a clientului, adică tracking-ul conversiilor, viteza site-ului pe mobil și "
+    "sănătatea lui tehnică (auditul SEO/GEO). "
     "Primești întrebarea clientului (proprietarul afacerii) și FAPTELE TEHNICE, calculate "
     "determinist.\n"
     "Reguli stricte:\n"
     "1. Judeci DOAR partea tehnică: ajung conversiile în platformă, se încarcă site-ul repede "
-    "pe mobil? Brandul și rentabilitatea sunt treaba celorlalți membri.\n"
+    "pe mobil, ce probleme tehnice a găsit auditul? Brandul și rentabilitatea sunt treaba "
+    "celorlalți membri.\n"
     "2. Stările din FAPTE (verde, galben, roșu, necunoscut) și veto-ul sunt obligatorii: nu le "
     "contrazici și nu le îndulcești. Dacă există veto, spui pe ce și de ce.\n"
     "3. Folosești DOAR FAPTELE. Nicio cifră, metrică sau prag care nu apare în ele. Dacă datele "

@@ -9,7 +9,7 @@ gaseste contul nerentabil, desparte doua cauze care arata la fel in cifre:
   rescrie mesajul (CPO-ul o apara);
 - **oferta**: reclamele ii vorbesc deja clientului ideal si tot pierd bani ->
   oferta nu convinge. Pivotarea se propune doar spre un semnal real: durerea care
-  creste in piata (Researcher-ul, niciodata din date demonstrative) sau segmentul
+  creste in piata (Researcher-ul, doar din date masurate) sau segmentul
   care cumpara mai usor decat cauta. Fara semnal, oferta se testeaza, nu se schimba.
 
 Framework-uri de produs (idei din menkesu/awesome-pm-skills, niciun rand copiat):
@@ -306,7 +306,7 @@ def evaluate_offer(
     best = best_fit_segment(directive)
     gap = best if best is not None and best.key != avatar.key else None
     pain: PainSignal | None = None
-    if market is not None and not market.is_demo and market.social_sentiment.rising:
+    if market is not None and market.social_sentiment.rising:
         pain = market.social_sentiment.rising[0]
     misaligned = directive.misaligned_ads
     losing = [

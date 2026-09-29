@@ -567,6 +567,32 @@ class SiteSpeedSample(SQLModel, table=True):
     measured_at: datetime = Field(default_factory=_now, index=True)
 
 
+class SiteAuditSnapshot(SQLModel, table=True):
+    """Rezumatul unui audit tehnic SEO/GEO al site-ului unui client.
+
+    Scris noaptea de ``jobs/tasks.py::run_site_audit_job`` cu motorul de audit al
+    agentului SEO/GEO (``seo_geo_agent.audit.service.run_audit``). Agentul isi tine
+    rapoartele doar in memoria procesului; aici ramane ce ii trebuie Tehnicianului
+    (``services/technician.py``): scorurile, cate probleme pe severitate si cele mai
+    grave, cu reparatia. Istoric, nu suprascriere.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    url: str
+    audited_at: datetime = Field(default_factory=_now, index=True)
+    pages_crawled: int = 0
+    #: ``False`` = crawl-ul s-a oprit din buget (pagini sau timp): raport partial.
+    completed: bool = True
+    seo_score: int | None = None
+    geo_score: int | None = None
+    critical_issues: int = 0
+    warning_issues: int = 0
+    info_issues: int = 0
+    #: Cele mai grave tipuri de probleme: ``type``, ``title``, ``severity``, ``pages``, ``fix``.
+    top_issues: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+
+
 class TrackingEvidence(SQLModel, table=True):
     """Pachetul de dovezi al unui test sintetic de tracking (Playwright, in worker).
 

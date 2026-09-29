@@ -33,3 +33,9 @@ mcp>=2,<3
 # Cautarea pe web a Researcher-ului (services/researcher.py): DuckDuckGo, fara cheie.
 # (Fostul duckduckgo-search, redenumit ddgs de autori; acelasi DDGS().text().)
 ddgs>=9.16,<10
+# Cererea reala a Researcher-ului (services/market_trends.py): Google Trends prin
+# clientul neoficial, fara cheie. requests vine cu el.
+pytrends>=4.9.2,<5
+# Modelele GGUF pentru Ollama pe CPU (ppc_agent_server/hf_manager.py) si cache-ul
+# Hugging Face (TimesFM, din cache intai).
+huggingface_hub>=1.0,<2

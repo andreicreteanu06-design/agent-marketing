@@ -8,9 +8,12 @@ o sursa falsa. Rutele trebuie sa raspunda 200 cu un mesaj utilizabil in orice si
 
 from __future__ import annotations
 
+import json
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -30,6 +33,9 @@ from ppc_agent_server.services.council import (
     CFO_SYSTEM_PROMPT,
     CHAIR_SYSTEM_PROMPT,
     STRATEGIST_SYSTEM_PROMPT,
+    CouncilEvent,
+    CouncilListener,
+    CouncilReply,
 )
 from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT, EFFORT_LEVELS, IMPACT_LEVELS
 from ppc_agent_server.services.llm_client import LLMRouter
@@ -232,9 +238,11 @@ def test_chat_reply_is_deliberated_by_the_council_through_the_local_model(
         ("researcher", "template"),
         ("cpo", "llm"),
     ]
-    # Researcher-ul are doar date demonstrative: se vede, marcat, dar nu ajunge la niciun LLM.
-    assert body["opinions"][3]["demo"] is True
-    assert body["market"]["is_demo"] is True
+    # Researcher-ul n-are date masurate (in teste, webul si Google Trends "pica"): spune
+    # ce lipseste, din template, fara LLM - si nu inventeaza nimic.
+    assert body["opinions"][3]["fallback_reason"].startswith("Fără date")
+    assert body["market"]["market_trend"]["direction"] == "unknown"
+    assert not {"source", "is_demo"} & set(body["market"])
     assert body["ruling"]["market_context"] is None
     assert body["product"]["status"] == "fit"
     # Cinci generari locale: cei patru membri cu date reale, apoi sinteza. Fara Jev,
@@ -245,6 +253,150 @@ def test_chat_reply_is_deliberated_by_the_council_through_the_local_model(
     assert chair[0]["content"] == CHAIR_SYSTEM_PROMPT
     assert "«Merită să cresc bugetul?»" in chair[1]["content"]
     assert "DECIZIA CONSILIULUI" in chair[1]["content"]
+
+
+# --- chatul in flux (Server-Sent Events) ---------------------------------------------------
+
+_SSE = {"Accept": "text/event-stream"}
+
+
+def _events(text: str) -> list[tuple[str, Any]]:
+    """Fluxul SSE -> ``(eveniment, date)``; comentariile (``: ...``) se sar."""
+    events: list[tuple[str, Any]] = []
+    for block in text.split("\n\n"):
+        lines = [line for line in block.splitlines() if line and not line.startswith(":")]
+        if not lines:
+            continue
+        name = next(line[len("event: ") :] for line in lines if line.startswith("event: "))
+        data = next(line[len("data: ") :] for line in lines if line.startswith("data: "))
+        events.append((name, json.loads(data)))
+    return events
+
+
+def _stream(
+    client: TestClient, headers: dict[str, str], message: str
+) -> tuple[str, list[tuple[str, Any]]]:
+    response = client.post(_CHAT_URL, headers={**headers, **_SSE}, json={"message": message})
+    assert response.status_code == 200, response.text
+    return response.headers["content-type"], _events(response.text)
+
+
+def test_chat_streams_the_deliberation_token_by_token(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    app.dependency_overrides[queen.get_llm_router] = _council_ollama(fake_ollama).router
+
+    content_type, events = _stream(client, headers, "Merită să cresc bugetul?")
+
+    assert content_type.startswith("text/event-stream")
+    names = [name for name, _ in events]
+    assert names[:2] == ["stage", "stage"]
+    assert [data["stage"] for name, data in events if name == "stage"] == [
+        "context",
+        "deliberation",
+        "synthesis",
+    ]
+    assert names[-2:] == ["reply", "done"]
+    # Fiecare parere pleaca in clipa in care e gata, inainte de sinteza.
+    opinions = [data["member"] for name, data in events if name == "opinion"]
+    assert sorted(opinions) == ["cfo", "cpo", "researcher", "strategist", "technician"]
+    assert names.index("token") > max(i for i, name in enumerate(names) if name == "opinion")
+    # Tokenii sunt sinteza Reginei, cuvant cu cuvant; raspunsul final e acelasi text.
+    tokens = [data["text"] for name, data in events if name == "token"]
+    assert len(tokens) > 10
+    assert "".join(tokens) == _COUNCIL_ANSWERS[CHAIR_SYSTEM_PROMPT]
+    reply = events[-2][1]
+    assert (reply["source"], reply["reply"]) == ("llm", _COUNCIL_ANSWERS[CHAIR_SYSTEM_PROMPT])
+    # Acelasi raspuns ca varianta JSON: un CouncilReply intreg.
+    assert CouncilReply.model_validate(reply).opinions
+
+
+def test_a_rejected_draft_is_replaced_by_the_deterministic_reply(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    chair = "Dublează bugetul: vei avea 40% mai mulți clienți."
+    app.dependency_overrides[queen.get_llm_router] = _council_ollama(fake_ollama, chair).router
+
+    _, events = _stream(client, headers, "Pot dubla bugetul?")
+
+    # Ciorna a curs spre client...
+    assert "".join(data["text"] for name, data in events if name == "token") == chair
+    # ...dar raspunsul valabil e cel determinist, care o inlocuieste.
+    reply = next(data for name, data in events if name == "reply")
+    assert reply["source"] == "template"
+    assert "40%" not in reply["reply"] and reply["reply"].startswith("Da, dar controlat")
+
+
+def test_without_a_first_token_the_circuit_breaker_sends_the_deterministic_reply(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    fake_ollama.silent = True
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
+
+    _, events = _stream(client, headers, "Ce zici de TikTok?")
+
+    assert not [name for name, _ in events if name == "token"]
+    reply = next(data for name, data in events if name == "reply")
+    assert reply["source"] == "template"
+    assert reply["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
+    # Primul membru care n-a primit niciun token a pus serverul in pauza: restul
+    # (si sinteza) n-au mai asteptat.
+    assert fake_ollama.connections == 1
+    assert all(
+        data["source"] == "template" for name, data in events if name == "opinion"
+    )
+
+
+def test_without_a_voice_the_stream_still_ends_with_a_reply(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int], session: Session
+) -> None:
+    client, _, headers, account_id = signed_in
+    _seed(session, account_id)
+
+    _, events = _stream(client, headers, "E rentabilă campania?")
+
+    names = [name for name, _ in events]
+    assert "token" not in names and names[-2:] == ["reply", "done"]
+    assert events[-2][1]["source"] == "template"
+
+
+def test_the_stream_is_rate_limited_before_it_starts(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+) -> None:
+    client, _, headers, _ = signed_in
+    for _ in range(6):
+        client.post(_CHAT_URL, headers={**headers, **_SSE}, json={"message": "Salut"})
+
+    response = client.post(_CHAT_URL, headers={**headers, **_SSE}, json={"message": "Salut"})
+
+    assert response.status_code == 429
+    assert response.headers["content-type"].startswith("application/json")
+
+
+def test_a_long_deliberation_keeps_the_connection_alive() -> None:
+    def slow(on_event: CouncilListener) -> CouncilReply:
+        on_event(CouncilEvent("stage", stage="deliberation"))
+        time.sleep(0.2)
+        raise RuntimeError("baza de date a picat")
+
+    chunks = list(queen.council_event_stream(slow, keepalive=0.02))
+
+    assert any(chunk.startswith(": ") for chunk in chunks)  # comentariu SSE, nu eveniment
+    assert [name for name, _ in _events("".join(chunks))] == ["stage", "error", "done"]
+    error = _events("".join(chunks))[1][1]
+    assert error == {"detail": queen.STREAM_ERROR}
 
 
 def test_chat_without_a_key_answers_from_the_deterministic_council(

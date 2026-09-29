@@ -7,6 +7,9 @@ pur si le primeste gata adunate (:class:`~ppc_agent_server.services.queen_agent.
   DOAR cand Search Console e conectat (``live``). Datele demonstrative ale
   paginii "Trafic & Pozitii" (un service auto inventat) nu au voie sa ajunga
   intr-o directiva pentru un client real;
+- **traficul** (pentru Regina, ``organic_context.py``): sesiunile pe canal din GA4
+  (Meta fata de Google organic), click-urile si pozitia medie din Search Console -
+  tot doar ``live`` - si pozitiile urmarite in SERP (``SerpPosition``);
 - **termenii platiti** (cu conversii) vin din ``SearchTermConversion``;
 - **reclamele live** sunt cele pe care agentul le-a pus in cont si inca
   ruleaza: campaniile Meta lansate prin aprobare (textul e in propunerea
@@ -17,22 +20,27 @@ pur si le primeste gata adunate (:class:`~ppc_agent_server.services.queen_agent.
   fereastra, plafonul zilnic al contului si propunerile in asteptare;
 - **datele tehnice** (pentru Tehnician, ``technician.py``): conversiile zi de zi
   - Google Ads din ``SearchTermConversion`` (cu click-urile zilei), comenzile si
-  apelurile din ``ConversionEvent`` (pe sursa webhook-ului) - si ultima
-  masuratoare PageSpeed pe mobil (``SiteSpeedSample``);
+  apelurile din ``ConversionEvent`` (pe sursa webhook-ului) -, ultima
+  masuratoare PageSpeed pe mobil (``SiteSpeedSample``, cu datele CrUX) si ultimul
+  audit tehnic SEO/GEO al site-ului (``SiteAuditSnapshot``);
 - **memoria consiliului** (``memory.py``): ``MemoryStream`` + propunerile
   respinse sau esuate din ``ProposedChange``, ca istoric;
-- **piata** (pentru Researcher, ``researcher.py``): licitatia, cererea si
-  mentiunile sunt demonstrative (``market_demo.py``) - nu exista inca surse; cautarea
-  pe web e reala, pe nisa si orasul scoase din cautarile clientului.
+- **piata** (pentru Researcher, ``researcher.py``): cererea din Google Trends
+  (``market_trends.py``) si cautarea pe web, amandoua reale, pe nisa si orasul scoase
+  din cautarile clientului. Licitatia si durerile din recenzii nu au inca o sursa:
+  raman necunoscute.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from functools import partial
 from typing import Any, Protocol
 
 import httpx
@@ -51,11 +59,18 @@ from ppc_agent_server.models import (
     MemoryStream,
     ProposedChange,
     SearchTermConversion,
+    SerpPosition,
+    SerpSource,
+    SiteAuditSnapshot,
     SiteSpeedSample,
     TrackingEvidence,
 )
 from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
-from ppc_agent_server.services.market_demo import demo_market_signals
+from ppc_agent_server.services.market_trends import (
+    TrendsSource,
+    google_trends,
+    load_trend_demand,
+)
 from ppc_agent_server.services.memory import (
     DEDUPE_DAYS,
     FAILED_LOOKBACK_DAYS,
@@ -64,26 +79,50 @@ from ppc_agent_server.services.memory import (
     MemoryEntry,
     compress,
 )
+from ppc_agent_server.services.organic_context import (
+    ChannelSessions,
+    KeywordRank,
+    OrganicSearchTotals,
+    OrganicSignals,
+)
 from ppc_agent_server.services.queen_agent import BrandSignals, LiveAd, SearchSignal
 from ppc_agent_server.services.researcher import (
+    DemandSeries,
     MarketSignals,
     RelevanceVerifier,
+    WebStatus,
     market_focus,
     search_market_web,
 )
 from ppc_agent_server.services.technician import (
+    AuditIssue,
+    AuditSeverity,
     DailyConversions,
     MobileSpeed,
+    SiteAudit,
     SyntheticEvidence,
     TechnicalSignals,
     TrackingStream,
 )
 from ppc_agent_server.skills import SkillRegistry, skill_registry
+from ppc_agent_server.skills.web_search import WebFinding
 from seo_geo_agent.audit.geo_reporters import brand_token_from_url
-from seo_geo_agent.services.intelligence import Window
+from seo_geo_agent.services.intelligence import DailySearch, Window
+
+logger = logging.getLogger("ppc_agent_server.services.queen_signals")
 
 #: Fereastra de cautari organice - aceeasi ca implicita paginii "Trafic & Pozitii".
 ORGANIC_WINDOW_DAYS = 28
+#: Cat asteapta Researcher-ul Google Trends (trei cereri: cookie, token, seria).
+TRENDS_WAIT_SECONDS = 20.0
+#: Perioada comparata de Researcher (licitatie, mentiuni) - aceeasi ca traficul.
+MARKET_PERIOD_DAYS = 28
+#: Firele pentru Google Trends (cereri blocante, cu termenele lor in ``market_trends``).
+_TRENDS_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="google-trends")
+
+
+def _utc_today() -> date:
+    return datetime.now(tz=UTC).date()
 
 
 class SeoIntentSource(Protocol):
@@ -140,6 +179,130 @@ class SearchConsoleIntent:
             )
             for stat in stats
         ], []
+
+
+class OrganicTrafficSource(Protocol):
+    """Traficul unui client din conturile Google conectate (GA4, Search Console)."""
+
+    def load(self, account: ClientAccount) -> OrganicSignals: ...
+
+
+def _search_totals(
+    now: Sequence[DailySearch], before: Sequence[DailySearch]
+) -> OrganicSearchTotals:
+    def _position(rows: Sequence[DailySearch]) -> float | None:
+        impressions = sum(row.impressions for row in rows)
+        if not impressions:
+            return None
+        return round(sum(row.position * row.impressions for row in rows) / impressions, 1)
+
+    return OrganicSearchTotals(
+        clicks_now=sum(row.clicks for row in now),
+        clicks_before=sum(row.clicks for row in before),
+        impressions_now=sum(row.impressions for row in now),
+        impressions_before=sum(row.impressions for row in before),
+        position_now=_position(now),
+        position_before=_position(before),
+    )
+
+
+class GoogleOrganicTraffic:
+    """GA4 (sesiunile pe canal) si Search Console (click-uri, pozitia medie). Doar ``live``.
+
+    Un cont neconectat nu primeste date demonstrative: nota spune ce lipseste.
+    """
+
+    def __init__(
+        self,
+        *,
+        today: Callable[[], date] = date.today,
+        transport: httpx.BaseTransport | None = None,
+        days: int = ORGANIC_WINDOW_DAYS,
+    ) -> None:
+        self._today = today
+        self._transport = transport
+        self._days = days
+
+    def load(self, account: ClientAccount) -> OrganicSignals:
+        # Importuri tarzii, ca la ``SearchConsoleIntent``: altfel import circular.
+        from ppc_agent_server.google_integrations import google_oauth_client
+        from ppc_agent_server.routers.seo_intelligence import DATA_LAG_DAYS
+        from ppc_agent_server.seo_intelligence import Ga4AnalyticsSource, build_sources
+
+        today = self._today()
+        sources = build_sources(
+            account, oauth=google_oauth_client(), transport=self._transport, today=today
+        )
+        window = Window.ending(today - timedelta(days=DATA_LAG_DAYS), self._days)
+        notes: list[str] = []
+        channels: list[ChannelSessions] = []
+        if sources.analytics_status == "live" and isinstance(
+            sources.analytics, Ga4AnalyticsSource
+        ):
+            try:
+                channels = sources.analytics.channels(window)
+            except (PpcAgentError, httpx.HTTPError) as exc:
+                notes.append(
+                    f"GA4 nu a răspuns ({type(exc).__name__}): traficul pe canale lipsește."
+                )
+        else:
+            notes.append(
+                "GA4 nu e conectat: nu pot compara traficul din Meta cu cel din Google organic."
+            )
+        search: OrganicSearchTotals | None = None
+        if sources.search_status == "live" and sources.search is not None:
+            try:
+                search = _search_totals(
+                    sources.search.daily(window), sources.search.daily(window.previous)
+                )
+            except (PpcAgentError, httpx.HTTPError) as exc:
+                notes.append(
+                    f"Search Console nu a răspuns ({type(exc).__name__}): lipsesc click-urile "
+                    "organice."
+                )
+        return OrganicSignals(
+            window_days=self._days, channels=channels, search=search, notes=notes
+        )
+
+
+def _bare_domain(value: str) -> str:
+    host = value.strip().lower()
+    host = host.split("://", 1)[-1].split("/", 1)[0]
+    return host.removeprefix("www.")
+
+
+def load_keyword_ranks(
+    session: Session, account: ClientAccount, *, today: date, days: int = ORGANIC_WINDOW_DAYS
+) -> list[KeywordRank]:
+    """Pozitiile urmarite ale site-ului (OpenSERP): ultima verificare din fiecare perioada.
+
+    Doar cuvintele verificate in AMBELE perioade; un rand cu ``rank=None`` inseamna
+    "verificat, nu apare" si se pastreaza ca atare.
+    """
+    domain = _bare_domain(account.target_domain)
+    if not domain:
+        return []
+    start = datetime.combine(today - timedelta(days=days), time.min, tzinfo=UTC)
+    since = start - timedelta(days=days)
+    rows = session.exec(
+        select(SerpPosition)
+        .where(SerpPosition.client_account_id == account.id)
+        .where(SerpPosition.source == SerpSource.OPENSERP)
+        .where(SerpPosition.checked_on >= since)
+        .order_by(SerpPosition.checked_on)  # type: ignore[arg-type]
+    ).all()
+    before: dict[str, float | None] = {}
+    now: dict[str, float | None] = {}
+    for row in rows:
+        if _bare_domain(row.domain) != domain:
+            continue  # pozitiile concurentilor
+        # Ordonate crescator: ultima verificare din fiecare perioada ramane.
+        target = now if _utc(row.checked_on) >= start else before
+        target[row.keyword] = row.rank
+    return [
+        KeywordRank(keyword=keyword, rank_before=before[keyword], rank_now=now[keyword])
+        for keyword in sorted(before.keys() & now.keys())
+    ]
 
 
 @dataclass(slots=True)
@@ -277,11 +440,15 @@ class DbBrandSignals:
         session: Session,
         *,
         seo_intent: SeoIntentSource | None = None,
+        traffic: OrganicTrafficSource | None = None,
         days: int = DEFAULT_WINDOW_DAYS,
+        today: Callable[[], date] = _utc_today,
     ) -> None:
         self._session = session
         self._seo_intent = seo_intent or SearchConsoleIntent()
+        self._traffic = traffic or GoogleOrganicTraffic()
         self._days = days
+        self._today = today
 
     def load(self, client_account_id: int) -> BrandSignals:
         account = self._session.get(ClientAccount, client_account_id)
@@ -299,7 +466,23 @@ class DbBrandSignals:
             searches=[*organic, *paid],
             ads=load_live_ads(self._session, client_account_id),
             notes=notes,
+            organic=self._organic(account),
         )
+
+    def _organic(self, account: ClientAccount) -> OrganicSignals:
+        """Traficul (GA4, Search Console) si pozitiile urmarite; un cont care pica nu opreste."""
+        try:
+            traffic = self._traffic.load(account)
+        except Exception as exc:  # traficul e context pentru Regina, nu o conditie
+            logger.warning("[Regina] traficul organic pentru %s: %r", account.id, exc)
+            traffic = OrganicSignals(
+                window_days=ORGANIC_WINDOW_DAYS,
+                notes=[f"Traficul din Google nu s-a putut citi ({type(exc).__name__})."],
+            )
+        keywords = load_keyword_ranks(
+            self._session, account, today=self._today(), days=traffic.window_days
+        )
+        return replace(traffic, keywords=keywords)
 
 
 def _launched_headlines(session: Session, client_account_id: int) -> dict[str, str]:
@@ -377,10 +560,6 @@ class DbFinancialSignals:
             window_days=self._days,
             notes=notes,
         )
-
-
-def _utc_today() -> date:
-    return datetime.now(tz=UTC).date()
 
 
 class DbTechnicalSignals:
@@ -464,6 +643,11 @@ class DbTechnicalSignals:
             .limit(2)
         ).all()
         speeds = [_mobile_speed(sample) for sample in samples]
+        audit = self._session.exec(
+            select(SiteAuditSnapshot)
+            .where(SiteAuditSnapshot.client_account_id == client_account_id)
+            .order_by(SiteAuditSnapshot.audited_at.desc())  # type: ignore[attr-defined]
+        ).first()
         latest = self._session.exec(
             select(TrackingEvidence)
             .where(TrackingEvidence.client_account_id == client_account_id)
@@ -483,6 +667,7 @@ class DbTechnicalSignals:
             previous_mobile_speed=speeds[1] if len(speeds) > 1 else None,
             evidence=_synthetic_evidence(latest) if latest is not None else None,
             notes=notes,
+            site_audit=_site_audit(audit) if audit is not None else None,
         )
 
 
@@ -495,6 +680,39 @@ def _mobile_speed(sample: SiteSpeedSample) -> MobileSpeed:
         cls=sample.layout_shift,
         tbt_ms=sample.tbt_ms,
         field_lcp_ms=sample.field_lcp_ms,
+        field_cls=sample.field_cls,
+        field_inp_ms=sample.field_inp_ms,
+    )
+
+
+_AUDIT_SEVERITIES: dict[str, AuditSeverity] = {
+    "critical": "critical", "warning": "warning", "info": "info"
+}
+
+
+def _site_audit(row: SiteAuditSnapshot) -> SiteAudit:
+    issues = [
+        AuditIssue(
+            title=str(item.get("title", "")),
+            severity=_AUDIT_SEVERITIES[str(item.get("severity"))],
+            pages=int(item.get("pages", 0)),
+            fix=str(item.get("fix", "")),
+        )
+        for item in row.top_issues
+        if isinstance(item, dict)
+        and item.get("title")
+        and str(item.get("severity")) in _AUDIT_SEVERITIES
+    ]
+    return SiteAudit(
+        audited_at=_utc(row.audited_at),
+        url=row.url,
+        pages_crawled=row.pages_crawled,
+        completed=row.completed,
+        seo_score=row.seo_score,
+        geo_score=row.geo_score,
+        critical=row.critical_issues,
+        warnings=row.warning_issues,
+        issues=issues,
     )
 
 
@@ -521,12 +739,12 @@ def _synthetic_evidence(row: TrackingEvidence) -> SyntheticEvidence:
 class ClientMarketSignals:
     """:class:`~ppc_agent_server.services.researcher.MarketIntelligenceSource` a unui client.
 
-    Licitatia, cererea si mentiunile: demonstrative (seed = brandul, stabile toata
-    ziua, marcate ``source="demo"``) - nu exista inca API-uri pentru ele. Cautarea
-    pe web: reala, pe nisa si orasul din ``queries`` (cautarile clientului), prin
-    abilitatea ``web_search``; fara cautari, nu se cauta nimic. ``registry`` (registrul
-    de abilitati) e injectabil in teste. ``verifier`` (Jev) pastreaza doar fragmentele
-    despre nisa; ``None`` = toate.
+    Doar surse reale, pe nisa si orasul din ``queries`` (cautarile clientului), in
+    paralel: interesul de cautare din Google Trends (``trends``) si cautarea pe web
+    (abilitatea ``web_search``; ``verifier`` - Jev - pastreaza doar fragmentele despre
+    nisa, ``None`` = toate). Fara cautari nu se deduce nisa, deci nu se cauta nimic.
+    Licitatia si durerile din recenzii n-au inca sursa: raman goale (necunoscute).
+    ``registry`` si ``trends`` sunt injectabile in teste.
     """
 
     def __init__(
@@ -536,11 +754,15 @@ class ClientMarketSignals:
         today: Callable[[], date] = _utc_today,
         registry: SkillRegistry = skill_registry,
         verifier: RelevanceVerifier | None = None,
+        trends: TrendsSource = google_trends,
+        trends_wait: float = TRENDS_WAIT_SECONDS,
     ) -> None:
         self._session = session
         self._today = today
         self._registry = registry
         self._verifier = verifier
+        self._trends = trends
+        self._trends_wait = trends_wait
 
     def load(self, client_account_id: int, queries: Sequence[str] = ()) -> MarketSignals:
         account = self._session.get(ClientAccount, client_account_id)
@@ -548,28 +770,65 @@ class ClientMarketSignals:
             raise LookupError(f"clientul {client_account_id} nu exista")
         today = self._today()
         brand = _brand(account)
-        signals = demo_market_signals(brand or account.name or str(client_account_id), today)
         country = "România" if account.geo.upper() == "RO" else account.geo
         niche, location = market_focus(queries, brand=brand, country=country)
+        signals = MarketSignals(
+            market=location,
+            today=today,
+            period_days=MARKET_PERIOD_DAYS,
+            auction=None,
+            demand=None,
+            location=location,
+        )
         if not niche:
             return replace(
                 signals,
-                location=location,
                 web_note="Nișa nu se poate deduce încă (lipsesc căutările clientului): nu "
-                "s-a căutat pe web.",
+                "s-a căutat nici pe web, nici în Google Trends.",
             )
-        findings, status, note = asyncio.run(
-            search_market_web(
-                niche,
-                location,
-                year=today.year,
-                registry=self._registry,
-                verifier=self._verifier,
-            )
+        (findings, status, note), (demand, trend_note) = asyncio.run(
+            self._research(niche, location, geo=account.geo, country=country, year=today.year)
         )
         return replace(
-            signals, niche=niche, location=location, web=findings, web_status=status, web_note=note
+            signals,
+            market=f"{niche}, {location}",
+            demand=demand,
+            notes=[trend_note] if trend_note else [],
+            niche=niche,
+            web=findings,
+            web_status=status,
+            web_note=note,
         )
+
+    async def _research(
+        self, niche: str, location: str, *, geo: str, country: str, year: int
+    ) -> tuple[tuple[list[WebFinding], WebStatus, str], tuple[DemandSeries | None, str]]:
+        """Cautarea pe web si Google Trends, in paralel; niciuna nu arunca."""
+        # Pe un executor propriu, nu pe cel implicit: ``asyncio.run`` asteapta la final
+        # firele celui implicit, iar un Google Trends blocat ar tine Researcher-ul pe loc
+        # dincolo de ``trends_wait``.
+        trend = asyncio.get_running_loop().run_in_executor(
+            _TRENDS_POOL,
+            partial(load_trend_demand, self._trends, niche, geo=geo, country=country),
+        )
+        web, demand = await asyncio.gather(
+            search_market_web(
+                niche, location, year=year, registry=self._registry, verifier=self._verifier
+            ),
+            asyncio.wait_for(trend, self._trends_wait),
+            return_exceptions=True,
+        )
+        if isinstance(web, BaseException):
+            logger.warning("[Researcher] cautarea pe web a picat: %r", web)
+            web = ([], "failed", "Căutarea pe web n-a răspuns acum.")
+        if isinstance(demand, BaseException):
+            logger.warning("[Researcher] Google Trends n-a raspuns la timp: %r", demand)
+            demand = (
+                None,
+                f"Google Trends n-a răspuns în {self._trends_wait:.0f} s: trendul cererii rămâne "
+                "necunoscut.",
+            )
+        return web, demand
 
 
 def _proposal_topic(resource_type: str) -> str:

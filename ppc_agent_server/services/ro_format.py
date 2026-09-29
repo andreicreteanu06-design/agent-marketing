@@ -33,3 +33,9 @@ def rate(value: float) -> str:
     """O rata 0-1 cu o zecimala, fara ",0": "6,7%", "12%"."""
     text = f"{value * 100:.1f}".replace(".", ",").removesuffix(",0")
     return f"{text}%"
+
+
+def decimal(value: float, digits: int = 1) -> str:
+    """Un numar cu zecimale, fara zerouri inutile: "62,5", "62"."""
+    text = f"{value:.{digits}f}".rstrip("0").rstrip(".") if digits else f"{value:.0f}"
+    return text.replace(".", ",")

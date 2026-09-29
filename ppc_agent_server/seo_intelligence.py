@@ -31,6 +31,7 @@ from ppc_agent_server.google_integrations import GoogleOAuthClient
 from ppc_agent_server.jobs.tasks import _app_config_for
 from ppc_agent_server.models import ClientAccount
 from ppc_agent_server.security import decrypt_secret
+from ppc_agent_server.services.organic_context import ChannelSessions
 from seo_geo_agent.services.intelligence import (
     AnalyticsSource,
     DailySearch,
@@ -112,6 +113,16 @@ class Ga4AnalyticsSource:
         return [
             PageTraffic(row.path, row.sessions, row.engaged_sessions)
             for row in self._client.landing_pages(start_date=window.start, end_date=window.end)
+        ]
+
+    def channels(self, window: Window) -> list[ChannelSessions]:
+        """Sesiunile pe canal, in ``window`` si in perioada egala de dinainte (Regina)."""
+        before = window.previous
+        now = self._client.channel_sessions(start_date=window.start, end_date=window.end)
+        then = self._client.channel_sessions(start_date=before.start, end_date=before.end)
+        return [
+            ChannelSessions(channel, now.get(channel, 0), then.get(channel, 0))
+            for channel in sorted(now.keys() | then.keys())
         ]
 
 

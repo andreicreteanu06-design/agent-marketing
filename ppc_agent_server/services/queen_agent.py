@@ -63,11 +63,11 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -81,6 +81,12 @@ from ppc_agent_server.services.cognitive import (
     cognitive_profile,
 )
 from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
+from ppc_agent_server.services.organic_context import (
+    OrganicContext,
+    OrganicSignals,
+    build_organic_context,
+    organic_facts,
+)
 from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
@@ -168,6 +174,8 @@ class BrandSignals:
     ads: Sequence[LiveAd]
     #: Ce lipseste si de ce (ex. Search Console neconectat) - ajunge in directiva.
     notes: Sequence[str] = ()
+    #: Traficul din GA4, Google organic si pozitiile urmarite; ``None`` = necitit.
+    organic: OrganicSignals | None = None
 
 
 class BrandSignalsSource(Protocol):
@@ -640,6 +648,8 @@ class BrandStrategyDirective(BaseModel):
     cognitive_profile: CognitiveProfile | None
     data_basis: DataBasis
     notes: list[str]
+    #: Traficul Meta fata de Google organic (GA4, Search Console, pozitiile urmarite).
+    organic_context: OrganicContext | None = None
 
     @property
     def misaligned_ads(self) -> list[AdAlignment]:
@@ -1078,6 +1088,7 @@ def build_directive(
         ads_with_performance=sum(ad.spend is not None for ad in signals.ads),
     )
     notes = [*signals.notes, _DEMOGRAPHICS_NOTE]
+    organic = build_organic_context(signals.organic) if signals.organic is not None else None
 
     if not attribution.is_sufficient() or not segments:
         queries = _count(attribution.queries_attributed, "căutări atribuite", "căutare atribuită")
@@ -1103,6 +1114,7 @@ def build_directive(
             cognitive_profile=None,
             data_basis=basis,
             notes=notes,
+            organic_context=organic,
         )
 
     top = segments[0]
@@ -1136,6 +1148,7 @@ def build_directive(
         cognitive_profile=psychology,
         data_basis=basis,
         notes=notes,
+        organic_context=organic,
     )
 
 
@@ -1156,6 +1169,13 @@ class TextGenerator(Protocol):
     def model(self) -> str: ...
 
     def complete(self, *, system: str, user: str) -> str: ...
+
+
+@runtime_checkable
+class StreamingTextGenerator(TextGenerator, Protocol):
+    """Un LLM care poate da textul si pe masura ce il scrie (chatul in timp real)."""
+
+    def stream(self, *, system: str, user: str) -> Iterator[str]: ...
 
 
 MessageSource = Literal["llm", "template"]
@@ -1195,7 +1215,8 @@ CMO_SYSTEM_PROMPT = (
     "clientului; tu doar le explici.\n"
     "3. Structură: cine e publicul ideal și pe ce se bazează concluzia; cum decide și ce îl "
     "oprește să cumpere (psihologia din FAPTE); ce reclamă nu îi vorbește și de ce; ce am "
-    "propus și că totul așteaptă aprobarea lui.\n"
+    "propus și că totul așteaptă aprobarea lui. Când FAPTELE au traficul Meta față de Google "
+    "organic, spui într-o frază ce arată, ca o corelare, nu ca o cauză.\n"
     "4. Maximum 150 de cuvinte, la persoana I plural («am observat»), adresându-te cu «tu». "
     "Fără markdown, fără liste, fără linkuri.\n\n"
     f"{CONSULTANT_VOICE}"
@@ -1236,6 +1257,8 @@ def cmo_facts(directive: BrandStrategyDirective) -> str:
         )
     for adjustment in directive.targeting_adjustments:
         lines.append(f"Ajustare Meta Ads: {adjustment.suggestion} Motiv: {adjustment.reason}")
+    if directive.organic_context is not None:
+        lines.extend(organic_facts(directive.organic_context))
     lines.append(
         "Starea deciziilor: toate sunt propuneri care așteaptă aprobarea clientului; "
         "nimic nu s-a aplicat încă."

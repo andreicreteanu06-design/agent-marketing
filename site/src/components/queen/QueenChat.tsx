@@ -28,9 +28,11 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   ApiError,
-  askQueen,
+  askQueenStream,
   QUEEN_MAX_QUESTION_CHARS,
   type CognitiveProfile,
+  type CouncilOpinion,
+  type CouncilStage,
   type CouncilTopic,
   type FinancialStatus,
   type HealthStatus,
@@ -87,32 +89,39 @@ const CHANNEL_NAME: Record<string, string> = {
 };
 
 /**
- * Pasii deliberarii: datele, apoi cei cinci membri (pe server IN PARALEL, aici
- * pe rand, ca sa se vada fiecare), runda de replici, apoi sinteza Reginei.
- * Durata reala nu se stie dinainte (un apel HTTP), deci fazele avanseaza pe un
- * ceas si ultima ramane activa pana vine raspunsul.
+ * Deliberarea, asa cum o transmite serverul (Server-Sent Events): etapa curenta,
+ * membrii care au vorbit deja (pe server in paralel, deci in ordinea in care
+ * termina) si ciorna sintezei, token cu token. Raspunsul final o inlocuieste.
  */
-const DELIBERATION_STEPS: { label: string; phase: number }[] = [
-  { label: "Datele contului: căutări, reclame, cheltuieli", phase: 0 },
-  { label: "Regina citește psihologia clientului ideal", phase: 1 },
-  { label: "Agentul CFO analizează rentabilitatea", phase: 2 },
-  { label: "Tehnicianul verifică tracking-ul și viteza pe mobil", phase: 3 },
-  { label: "Researcher-ul citește piața și concurența", phase: 4 },
-  { label: "CPO-ul judecă oferta și poziționarea", phase: 5 },
-  { label: "Runda de replici: cine pierde o dispută răspunde", phase: 6 },
-  { label: "Sinteza: ce trece, ce se taie", phase: 7 },
+interface LiveDeliberation {
+  stage: CouncilStage;
+  spoke: CouncilOpinion["member"][];
+  rebuttals: number;
+  draft: string;
+}
+
+const LIVE_START: LiveDeliberation = { stage: "context", spoke: [], rebuttals: 0, draft: "" };
+
+const MEMBER_STEPS: { member: CouncilOpinion["member"]; label: string }[] = [
+  { member: "strategist", label: "Regina citește psihologia clientului ideal" },
+  { member: "cfo", label: "Agentul CFO analizează rentabilitatea" },
+  { member: "technician", label: "Tehnicianul verifică tracking-ul, viteza și auditul site-ului" },
+  { member: "researcher", label: "Researcher-ul citește piața: Google Trends și concurența" },
+  { member: "cpo", label: "CPO-ul judecă oferta și poziționarea" },
 ];
-const DELIBERATION_HEADLINES = [
-  "Regina își convoacă consiliul…",
-  "Regina citește psihologia clientului…",
-  "CFO-ul calculează rentabilitatea…",
-  "Tehnicianul verifică site-ul și tracking-ul…",
-  "Researcher-ul scanează piața…",
-  "CPO-ul verifică dacă oferta se potrivește pieței…",
-  "Membrii se contrazic: cine a pierdut o dispută replică…",
-  "Regina taie ideile proaste și formulează răspunsul…",
-];
-const PHASE_DELAYS_MS = [700, 1500, 2300, 3100, 3900, 4700, 5500];
+
+const STAGE_HEADLINES: Record<CouncilStage, string> = {
+  context: "Regina își convoacă consiliul…",
+  deliberation: "Consiliul deliberează…",
+  rebuttals: "Membrii se contrazic: cine a pierdut o dispută replică…",
+  synthesis: "Regina taie ideile proaste și formulează răspunsul…",
+};
+
+const STAGE_ORDER: CouncilStage[] = ["context", "deliberation", "rebuttals", "synthesis"];
+
+function reached(live: LiveDeliberation, stage: CouncilStage): boolean {
+  return STAGE_ORDER.indexOf(live.stage) >= STAGE_ORDER.indexOf(stage);
+}
 
 function time(iso: string): string {
   const date = new Date(iso);
@@ -157,22 +166,69 @@ function StepIcon({ state }: { state: "done" | "active" | "pending" }) {
   return <span className="h-4 w-4 rounded-full border border-border-strong" />;
 }
 
-/** Starea "consiliul delibereaza" - distincta de un simplu spinner. */
-function Deliberation() {
-  const [phase, setPhase] = useState(0);
+type StepState = "done" | "active" | "pending";
 
-  useEffect(() => {
-    const timers = PHASE_DELAYS_MS.map((delay, index) =>
-      window.setTimeout(() => setPhase(index + 1), delay)
+function deliberationSteps(live: LiveDeliberation): { label: string; state: StepState }[] {
+  const deliberating = live.stage === "deliberation";
+  const steps: { label: string; state: StepState }[] = [
+    {
+      label: "Datele contului: căutări, trafic GA4, reclame, cheltuieli",
+      state: live.stage === "context" ? "active" : "done",
+    },
+    ...MEMBER_STEPS.map(({ member, label }) => ({
+      label,
+      state: (live.spoke.includes(member) || reached(live, "rebuttals")
+        ? "done"
+        : deliberating
+          ? "active"
+          : "pending") as StepState,
+    })),
+  ];
+  if (live.stage === "rebuttals" || live.rebuttals > 0) {
+    steps.push({
+      label: "Runda de replici: cine pierde o dispută răspunde",
+      state: live.stage === "rebuttals" ? "active" : "done",
+    });
+  }
+  steps.push({
+    label: "Sinteza: ce trece, ce se taie",
+    state: live.stage === "synthesis" ? "active" : "pending",
+  });
+  return steps;
+}
+
+/**
+ * Starea "consiliul delibereaza": pasii bifati pe masura ce vin evenimentele reale,
+ * apoi sinteza Reginei scrisa in timp real (o ciorna, pana vine raspunsul final).
+ */
+function Deliberation({ live }: { live: LiveDeliberation }) {
+  if (live.draft) {
+    return (
+      <div className="flex gap-3" role="status" aria-live="polite" aria-busy="true">
+        <QueenAvatar active />
+        <div className="min-w-0 flex-1">
+          <span className="text-sm font-semibold text-foreground">Regina</span>
+          <div className="mt-1.5 rounded-2xl rounded-tl-md border border-border-subtle bg-white/[0.03] px-4 py-3.5">
+            <p className="whitespace-pre-line text-[15px] leading-relaxed text-foreground">
+              {live.draft}
+              <span
+                aria-hidden
+                className="ml-0.5 inline-block h-[1.1em] w-[2px] translate-y-[3px] animate-pulse bg-brand-cyan motion-reduce:animate-none"
+              />
+            </p>
+            <p className="mt-3 text-[11px] text-foreground-muted">
+              Se scrie acum · verificat pe datele contului la final
+            </p>
+          </div>
+        </div>
+      </div>
     );
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, []);
-
+  }
   return (
     <div className="flex gap-3" role="status" aria-live="polite">
       <QueenAvatar active />
       <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-border-subtle bg-white/[0.02] px-4 py-3.5">
-        <p className="text-sm font-medium text-foreground">{DELIBERATION_HEADLINES[phase]}</p>
+        <p className="text-sm font-medium text-foreground">{STAGE_HEADLINES[live.stage]}</p>
         <div
           aria-hidden
           className="mt-3 h-px w-full overflow-hidden bg-border-subtle"
@@ -180,22 +236,19 @@ function Deliberation() {
           <div className="h-px w-1/3 animate-[council-scan_1.6s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-brand-cyan to-transparent motion-reduce:animate-none" />
         </div>
         <ul className="mt-3 space-y-2">
-          {DELIBERATION_STEPS.map((step) => {
-            const state = phase > step.phase ? "done" : phase === step.phase ? "active" : "pending";
-            return (
-              <li
-                key={step.label}
-                className={cn(
-                  "flex items-center gap-2.5 text-[13px] transition-colors duration-300",
-                  state === "pending" ? "text-foreground-muted/50" : "text-foreground-muted",
-                  state === "active" && "text-foreground"
-                )}
-              >
-                <StepIcon state={state} />
-                {step.label}
-              </li>
-            );
-          })}
+          {deliberationSteps(live).map((step) => (
+            <li
+              key={step.label}
+              className={cn(
+                "flex items-center gap-2.5 text-[13px] transition-colors duration-300",
+                step.state === "pending" ? "text-foreground-muted/50" : "text-foreground-muted",
+                step.state === "active" && "text-foreground"
+              )}
+            >
+              <StepIcon state={step.state} />
+              {step.label}
+            </li>
+          ))}
         </ul>
       </div>
     </div>
@@ -399,25 +452,14 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
           <div
             key={opinion.member}
             className={cn(
-              "rounded-xl border bg-background/60 p-3.5",
-              opinion.demo ? "border-dashed border-border-strong" : "border-border-subtle",
+              "rounded-xl border border-border-subtle bg-background/60 p-3.5",
               opinion.member !== "strategist" && opinion.member !== "cfo" && "md:col-span-2"
             )}
           >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
-                {opinion.title}
-              </p>
-              {opinion.demo && <Badge variant="warning">Demonstrativ</Badge>}
-            </div>
-            <p
-              className={cn(
-                "mt-2 text-[13px] leading-relaxed",
-                opinion.demo ? "text-foreground/70" : "text-foreground/90"
-              )}
-            >
-              {opinion.opinion}
+            <p className="text-[11px] font-medium uppercase tracking-widest text-foreground-muted">
+              {opinion.title}
             </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-foreground/90">{opinion.opinion}</p>
             {opinion.member === "cpo" && reply.product && reply.product.moves.length > 0 && (
               <ol className="mt-2 space-y-1" aria-label="Mutările de ofertă, după RICE">
                 {reply.product.moves.map((move, index) => (
@@ -436,17 +478,10 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
                 {reply.market.web_findings.map((finding) => finding.source).join(" · ")}
               </p>
             )}
-            {opinion.demo ? (
+            {opinion.source === "template" && (
               <p className="mt-2 text-[11px] text-foreground-muted" title={opinion.fallback_reason ?? undefined}>
-                Date demonstrative, nu cifrele pieței tale: nu intră în decizie până nu conectăm surse
-                reale de piață.
+                Poziție deterministă, din datele contului
               </p>
-            ) : (
-              opinion.source === "template" && (
-                <p className="mt-2 text-[11px] text-foreground-muted" title={opinion.fallback_reason ?? undefined}>
-                  Poziție deterministă, din datele contului
-                </p>
-              )
             )}
           </div>
         ))}
@@ -654,29 +689,37 @@ function QueenIntro() {
 
 /**
  * Chatul cu Regina: intrebari libere despre campanii, raspunsuri deliberate de
- * consiliu (POST /api/v1/queen/chat). Pagina e protejata client-side, ca restul
- * contului: fara token (sau cu unul expirat - 401) clientul ajunge la login.
+ * consiliu (POST /api/v1/queen/chat, in flux - vezi askQueenStream). Pagina e
+ * protejata client-side, ca restul contului: fara token (sau cu unul expirat -
+ * 401) clientul ajunge la login.
  */
 export function QueenChat() {
   const router = useRouter();
   const reduceMotion = useReducedMotion();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
-  const [pending, setPending] = useState(false);
+  const [live, setLive] = useState<LiveDeliberation | null>(null);
+  const pending = live !== null;
   const nextId = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
   }, [router]);
 
-  // Ultimul mesaj (sau deliberarea) mereu in vedere.
+  // Plecat de pe pagina: nu mai ascultam fluxul (consiliul termina oricum pe server).
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  // Ultimul mesaj (sau deliberarea, sau ciorna care se scrie) mereu in vedere.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    container.scrollTo({ top: container.scrollHeight, behavior: reduceMotion ? "auto" : "smooth" });
-  }, [turns, pending, reduceMotion]);
+    // In timpul scrierii, fara animatie: fiecare token ar porni alt scroll lin.
+    const smooth = !reduceMotion && !live?.draft;
+    container.scrollTo({ top: container.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }, [turns, live, reduceMotion]);
 
   const push = useCallback((turn: NewTurn) => {
     nextId.current += 1;
@@ -691,11 +734,30 @@ export function QueenChat() {
         router.replace("/login");
         return;
       }
-      setPending(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setLive(LIVE_START);
       try {
-        const reply = await askQueen(token, question);
+        const reply = await askQueenStream(
+          token,
+          question,
+          {
+            onStage: (stage) => setLive((current) => current && { ...current, stage }),
+            onOpinion: (opinion) =>
+              setLive(
+                (current) => current && { ...current, spoke: [...current.spoke, opinion.member] }
+              ),
+            onRebuttal: () =>
+              setLive((current) => current && { ...current, rebuttals: current.rebuttals + 1 }),
+            onToken: (text) =>
+              setLive((current) => current && { ...current, draft: current.draft + text }),
+          },
+          controller.signal
+        );
+        // Raspunsul valabil inlocuieste ciorna (poate fi cel determinist).
         push({ kind: "queen", reply });
       } catch (err: unknown) {
+        if (controller.signal.aborted) return;
         if (err instanceof ApiError && err.status === 401) {
           clearToken();
           router.replace("/login");
@@ -705,8 +767,11 @@ export function QueenChat() {
           err instanceof ApiError ? err.message : "Consiliul nu a putut răspunde acum.";
         push({ kind: "error", text, question });
       } finally {
-        setPending(false);
-        inputRef.current?.focus();
+        if (abortRef.current === controller) abortRef.current = null;
+        if (!controller.signal.aborted) {
+          setLive(null);
+          inputRef.current?.focus();
+        }
       }
     },
     [push, router]
@@ -807,9 +872,9 @@ export function QueenChat() {
           </motion.div>
         ))}
 
-        {pending && (
+        {live && (
           <motion.div {...enter} transition={{ duration: 0.35, ease: EASE_OUT }}>
-            <Deliberation />
+            <Deliberation live={live} />
           </motion.div>
         )}
       </div>

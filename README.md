@@ -544,9 +544,9 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `DELETE /api/v1/integrations/{gsc\|ga4}` | Deconectare: revoca token-ul la Google si il sterge |
 | `GET /api/v1/seo/intelligence?days=7\|28\|90` | Trafic (GA4) + pozitii (Search Console) + volume (Keyword Planner) + recomandari, pentru pagina "Trafic & Pozitii" |
 | `GET /api/v1/queen/client-message` | Agentul Regina explica clientului, ca un CMO, publicul ideal si ce a propus (vezi mai jos) |
-| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician + Researcher + CPO) |
-| `GET /api/v1/queen/market` | Contextul pietei al Researcher-ului: concurenta, trendul cererii, durerile noi (azi demonstrativ, vezi mai jos) |
-| `GET /api/v1/queen/technician` | Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil, veto si reparatii (vezi mai jos) |
+| `POST /api/v1/queen/chat` | Chatul cu Regina: `{"message"}` -> `{"reply", ...}`, deliberat de consiliu (brand + CFO + Tehnician + Researcher + CPO); cu `Accept: text/event-stream`, in flux (SSE, vezi mai jos) |
+| `GET /api/v1/queen/market` | Contextul pietei al Researcher-ului: trendul cererii din Google Trends si cautarea pe web, reale (vezi mai jos) |
+| `GET /api/v1/queen/technician` | Raportul Tehnicianului: tracking verde/rosu, viteza pe mobil (cu CrUX), auditul tehnic SEO/GEO, veto si reparatii (vezi mai jos) |
 
 #### Agentul Regina: `GET /api/v1/queen/client-message`
 
@@ -566,6 +566,13 @@ EXPLICA clientului:
   30 de secunde: apelurile urmatoare cad direct pe template, fara sa astepte.
 - Modelul e local (`POST {OLLAMA_HOST}/api/chat`, `services/llm_client.py`, doar
   `httpx`): faptele clientului nu parasesc masina.
+- **Traficul (GA4) si pozitiile organice** (`services/organic_context.py`), cand
+  GA4/Search Console sunt conectate: sesiunile pe canal, ultimele 28 de zile fata de
+  cele 28 dinainte (*Paid Social* = Meta, *Organic Search* = Google), click-urile si
+  pozitia medie din Search Console si pozitiile urmarite in SERP. Corelarea e
+  determinista: Meta -10% si organic +10% -> "o parte din cerere pare sa vina acum pe
+  organic"; scad amandoua -> cererea/sezonul; scade doar Meta -> campaniile. Sub 50 de
+  sesiuni pe canal nu se judeca. Regina o spune ca pe o corelare, nu ca pe o cauza.
 
 #### Arhitectura hibrida: Sistemul 1 (Jev) si Sistemul 2 (Ollama)
 
@@ -573,7 +580,7 @@ EXPLICA clientului:
 
 | Sarcina | Sistem | Unde se foloseste |
 |---------|--------|-------------------|
-| `generate` -> `generate_text_local()` | Ollama, local | Mesajul CMO, parerile consiliului, sinteza Reginei |
+| `generate` -> `generate_text_local()` / `stream_text_local()` | Ollama, local | Mesajul CMO, parerile consiliului, sinteza Reginei (in flux, in chat) |
 | `score` -> `jev_score()` | Jev | CPO-ul: impactul si efortul fiecarei mutari RICE (o cerere pentru toate) |
 | `verify` -> `jev_verify()` | Jev | Researcher-ul: "e fragmentul web despre nisa clientului?" (o cerere pe fragment, in paralel) |
 | `classify` -> `jev_classify()` | Jev | Disponibil (Choice); rutarea intrebarilor ramane deocamdata pe reguli |
@@ -588,6 +595,41 @@ RICE din tabel, toate fragmentele web. Decizia consiliului nu depinde de niciun 
 
 In Docker, doar containerul `api` ajunge la Ollama de pe host
 (`host.docker.internal`, vezi comentariile din `docker-compose.yml`).
+
+**Ollama in flux, cu circuit-breaker pe primul token.** Toate generarile merg cu
+`"stream": true`: cat timp vin tokeni, generarea nu mai are termen de raspuns (pe CPU,
+450 de tokeni pot dura minute; plasa e de 300 s). Circuit-breaker-ul sare doar cand
+Ollama nu accepta conexiunea sau nu trimite niciun token in
+`OLLAMA_FIRST_TOKEN_TIMEOUT` secunde (10) - atunci serverul intra 30 s in pauza si
+raspunde varianta determinista. Generarile catre acelasi server trec pe rand
+(`OLLAMA_MAX_PARALLEL`, 1 pe CPU): cele cinci pareri ale consiliului nu mai stau
+simultan in coada lui Ollama, deci termenul primului token masoara modelul, nu coada.
+`OLLAMA_KEEP_ALIVE` (30m) tine modelul incarcat intre conversatii: reincarcarea lui
+pe CPU depaseste singura cele 10 s.
+
+**Modele mici pentru CPU** (`python -m ppc_agent_server.hf_manager`): aduce de pe
+Hugging Face un GGUF cuantizat Q4_K_M (`huggingface_hub`, din cache intai - a doua
+rulare nu descarca nimic), il urca in Ollama ca blob si creeaza modelul
+(`/api/create`) doar pe CPU (`num_gpu 0` - pe un GPU integrat, backend-ul GPU al
+Ollama a scos text fara sens cu Qwen2.5; `--allow-gpu` il lasa sa decida) si cu
+context de 8192 de tokeni (sinteza consiliului are ~5000), apoi il masoara pe un
+prompt de marimea celor din consiliu:
+
+```
+python -m ppc_agent_server.hf_manager models      # presetari, licente, marimi
+python -m ppc_agent_server.hf_manager install     # implicit qwen2.5-1.5b (Apache-2.0, 1,1 GB)
+python -m ppc_agent_server.hf_manager benchmark   # primul token si durata, pe masina ta
+python -m ppc_agent_server.hf_manager cache       # ce e in cache-ul Hugging Face
+```
+
+Apoi `OLLAMA_MODEL=qwen2.5-1.5b-q4km` in `.env`. Pe CPU, primul token depinde mai
+ales de lungimea promptului (faptele consiliului, 1-2k tokeni), nu de raspuns: de
+aceea `benchmark` masoara, nu promite. Qwen2.5-3B are licenta de cercetare (fara uz
+comercial) si se instaleaza doar cu `--allow-noncommercial`; Gemma 3 4B scrie cea
+mai buna romana dintre cele mici, dar e de ~2,5 ori mai lent decat 1.5B.
+TimesFM (prognoza din CLI) se incarca acum din cache fara nicio cerere in retea,
+cand greutatile exista deja; embeddings-urile agentului SEO/GEO sunt apeluri la
+Inference API (nimic descarcat local).
 
 #### Chatul cu Regina: `POST /api/v1/queen/chat`
 
@@ -611,6 +653,24 @@ Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliu
    ("CPA-ul contului coboara sub tinta de 80 RON", "testul E2E confirma tracking-ul"),
    care ajunge si in raspunsul catre client. Decizia nu se negociaza: o dau regulile.
 5. **Sinteza Reginei**, care comunica decizia, cine a cedat in fata cui si cand se rediscuta.
+
+**In flux (Server-Sent Events).** Cu `Accept: text/event-stream`, aceeasi deliberare
+vine pe masura ce se intampla - pagina `/cont/regina` o foloseste:
+
+| Eveniment | Cand | `data` |
+|-----------|------|--------|
+| `stage` | incepe o etapa | `{"stage": "context" \| "deliberation" \| "rebuttals" \| "synthesis"}` |
+| `opinion` / `rebuttal` | un membru a vorbit | `CouncilOpinion` / `CouncilRebuttal` |
+| `token` | un fragment din sinteza Reginei | `{"text"}` - o CIORNA |
+| `reply` | la final | `CouncilReply`, acelasi ca varianta JSON |
+| `error`, apoi `done` | deliberarea a picat / fluxul s-a terminat | `{"detail"}` / `{}` |
+
+Tokenii sunt ciorna: garda (`check_council_text`) se aplica pe textul intreg, iar
+`reply` il inlocuieste - cu varianta determinista, daca sinteza a picat sau a adus
+cifre care nu sunt in date. Fara niciun token in primele 10 s, circuit-breaker-ul
+trimite direct raspunsul determinist. Cat delibereaza consiliul, un comentariu SSE la
+15 s tine conexiunea deschisa prin proxy-uri; limitarea (429) se verifica inainte sa
+inceapa fluxul. Fara antetul `Accept`, ruta raspunde JSON, ca inainte.
 
 Fiecare text LLM trece prin `check_council_text`: nicio cifra in afara datelor (ale
 clientului pot fi repetate, nu "calculate mai departe"), niciun link, nicio actiune
@@ -673,6 +733,7 @@ adevarate si daca site-ul poate converti traficul platit:
 | Tracking-ul conversiilor | serii zilnice pe 30 de zile: conversiile Google Ads (`SearchTermConversion`, cu click-urile zilei) si comenzile/apelurile din webhook-uri (`ConversionEvent`, pe sursa) | conversiile tac de cel putin 3 zile, desi ritmul de dinainte cerea cel putin 3 (Poisson, ~5%) si click-urile au continuat; sau 300+ click-uri fara nicio conversie |
 | Viteza pe mobil | mediana a 3 rulari PageSpeed Insights (strategia mobil, in paralel), facute noaptea si salvate in `SiteSpeedSample`, plus datele de teren CrUX (p75) cand Google le are | LCP peste 4 s, CLS peste 0,25, TBT peste 600 ms sau scor sub 50 (pragurile Google); intre praguri: galben |
 | Testul sintetic E2E | un Chromium real (Playwright, doar in worker) parcurge site-ul: consimtamant, CTA, evenimentele GA4/Meta din contract - `TrackingEvidence` | site-ul nu da 2xx, CTA-ul lipseste sau nu e interactiv, ori un eveniment din contract nu primeste 2xx de la platforma |
+| Auditul tehnic SEO/GEO | motorul de audit al agentului SEO/GEO, noaptea (`run_site_audit_job`, 25 de pagini, 120 s): scorurile SEO/GEO, problemele pe severitate si cele mai grave cu reparatia - `SiteAuditSnapshot` | niciodata: e context in faptele lui (o problema de continut nu dovedeste ca se pierd bani); peste 14 zile se spune ca e vechi |
 
 Cand si click-urile au scazut, vina nu e a tracking-ului (reclamele livreaza mai
 putin) - starea ramane necunoscuta, nu rosie. Fara date, starea e `unknown`, nu
@@ -770,16 +831,19 @@ deciziile sa nu se ia doar pe datele interne ale clientului.
 | Trendul cererii | ultimele 4 saptamani fata de cele 4 dinainte (+/-10%), fata de anul trecut, plus sezonul (indicele lunar): sezon care porneste = fereastra de oportunitate, sezon care se stinge = fara teste noi |
 | Ce cauta piata | temele (durerile) din cautari si recenzii care cresc cu 25%+, din cel putin 20 de mentiuni |
 
-**Azi datele sunt demonstrative** (`services/market_demo.py`, acelasi tipar ca
-`intelligence_demo.py`): nu exista inca surse de piata conectate. Sunt deterministe
-(seed = brandul clientului + ziua), marcate `is_demo`, cu nume ilustrative
-("Concurentul A"). Consiliul le arata in deliberare, cu eticheta "Demonstrativ",
-dar nu le trimite la niciun LLM, nu le pune in decizie si nu le spune clientului ca
-fapte despre piata lui. Cand se conecteaza o sursa reala (Auction Insights, Keyword
-Planner, recenzii), aceleasi reguli dau `CouncilRuling.market_context` - contextul
-pietei pentru intrebare, care explica decizia fara s-o schimbe. O intrebare despre
-pretul click-ului ("de ce a crescut CPC-ul?") primeste raspunsul din licitatie; fara
-date reale de licitatie, consiliul spune ca le lipsesc, nu ghiceste.
+**Datele sunt doar reale.** Cererea vine din **Google Trends** (`services/market_trends.py`,
+prin `pytrends`, fara cheie): interesul saptamanal pe 5 ani pentru nisa clientului, in
+tara lui - indice 0-100, nu cautari, iar textele spun asta. Din aceeasi serie: ultimele 4
+saptamani fata de cele 4 dinainte, aceleasi saptamani de anul trecut si sezonul (media
+fiecarei luni pe toti anii). O cerere per nisa si tara pe zi (cache pe proces); un refuz
+al Google (429) se tine minte 15 minute, ca sa nu fie repetat la fiecare intrebare; un
+Google Trends blocat nu tine Researcher-ul pe loc mai mult de 20 s. Licitatia si durerile
+din recenzii nu au inca sursa (Google Ads nu expune Auction Insights prin API): raman
+necunoscute si se spune asta. Cand exista trendul, aceleasi reguli dau
+`CouncilRuling.market_context` - contextul pietei pentru intrebare, care explica decizia
+fara s-o schimbe. O intrebare despre pretul click-ului ("de ce a crescut CPC-ul?")
+primeste raspunsul din licitatie; fara date de licitatie, consiliul spune ca le lipsesc,
+nu ghiceste. Fara nimic masurat, Researcher-ul vorbeste din template, fara LLM.
 
 **Cautarea pe web (ca Perplexity), reala:** nisa si orasul se scot din cautarile
 clientului (`market_focus`: cel mai lung grup de cuvinte repetat in cautari, fara
@@ -791,8 +855,8 @@ Researcher-ului, care are voie sa formuleze EXCLUSIV din ele: garda respinge ori
 cifra din afara lor, linkurile si sfaturile generice ("Silicon Valley", "growth
 hacking", "startup"). Cautarile ruleaza in paralel (fire separate), cu timeout de
 8 s; un timeout sau o limita DuckDuckGo nu opreste chatul - Researcher-ul spune ca n-a
-mers. Rezultatele se tin minte o zi, in proces. Datele demonstrative (licitatie,
-cerere) tot nu ajung la niciun LLM.
+mers. Rezultatele se tin minte o zi, in proces. Cautarea pe web si Google Trends
+ruleaza in paralel.
 
 Vocea lui (`ANALYST_VOICE` din `humanizer.py`): analist de intelligence comercial -
 cota de piata, miscarile competitorilor, ferestrele de oportunitate - asertiv, scurt,
