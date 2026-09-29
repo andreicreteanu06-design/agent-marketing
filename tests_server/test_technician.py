@@ -7,7 +7,6 @@ ruta se verifica pe SQLite, fara nicio cerere catre Google.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -26,10 +25,9 @@ from ppc_agent_server.models import (
     SiteSpeedSample,
     TrackingEvidence,
 )
-from ppc_agent_server.services.humanizer import ENGINEER_VOICE, ai_tells
+from ppc_agent_server.services.humanizer import ai_tells
 from ppc_agent_server.services.queen_signals import DbTechnicalSignals
 from ppc_agent_server.services.technician import (
-    TECHNICIAN_SYSTEM_PROMPT,
     DailyConversions,
     HealthStatus,
     MobileSpeed,
@@ -43,12 +41,7 @@ from ppc_agent_server.services.technician import (
 )
 from tests_server.test_jobs_tasks import _client_account
 from tests_server.test_queen_agent import NOW
-from tests_server.test_queen_council import (
-    TECHNICIAN_SAYS,
-    _council,
-    _CouncilVoice,
-    _directive,
-)
+from tests_server.test_queen_council import _council, _CouncilVoice, _directive
 from tests_server.test_queen_router import signed_in  # noqa: F401 - fixture
 
 TODAY = NOW.date()
@@ -389,32 +382,6 @@ def test_no_deterministic_technician_text_sounds_generated() -> None:
     assert [(text[:60], ai_tells(text)) for text in texts if ai_tells(text)] == []
 
 
-def test_the_technician_prompt_speaks_like_a_senior_engineer_after_the_factual_rules() -> None:
-    assert TECHNICIAN_SYSTEM_PROMPT.endswith(ENGINEER_VOICE)
-    assert TECHNICIAN_SYSTEM_PROMPT.index("Nicio cifră, metrică sau prag") < (
-        TECHNICIAN_SYSTEM_PROMPT.index("VOCEA (regulile de mai sus au prioritate")
-    )
-    for asked in (
-        "inginer senior de performanță web",
-        "extrem de scurt, precis, analitic",
-        "de două până la cinci cuvinte",
-        "Diateza activă",
-        "Fără liniuțe",
-        "dinamic",
-        "crucial",
-        "esențial",
-        "tapiserie",
-        "aprofundare",
-        "a rezona / rezonare",
-        "în concluzie",
-        "«Să analizăm»",
-        "«Este important să notăm»",
-    ):
-        assert asked in ENGINEER_VOICE
-    # Fara cifre de copiat ca fapte.
-    assert re.search(r"\d", ENGINEER_VOICE) is None
-
-
 # --- veto-ul in consiliu -------------------------------------------------------------------
 
 
@@ -502,53 +469,38 @@ def test_without_a_veto_the_council_rules_as_before() -> None:
     )
 
 
-def test_the_technician_speaks_in_the_council_with_only_technical_facts() -> None:
+def test_the_technician_position_and_the_veto_reach_the_synthesis() -> None:
     voice = _CouncilVoice()
     technical = _signals(BROKEN_TAG, evidence=GA4_DOWN)
     reply = _council(voice=voice, technical=technical).evaluate_client_query(
         "Merită să cresc bugetul?", _directive()
     )
 
+    assert voice.roles == ["chair"]
     # Veto-ul opreste cresterea de buget sustinuta de CFO: CFO-ul ii raspunde Tehnicianului.
-    assert voice.roles == ["cfo", "chair", "cpo", "rebuttal", "strategist", "technician"]
     [rebuttal] = reply.rebuttals
     assert (rebuttal.member, rebuttal.replying_to, rebuttal.conflict) == (
         "cfo", "technician", "veto"
     )
-    assert "SE REDISCUTĂ CÂND: testul E2E confirmă" in voice.prompt("rebuttal")
-    technician = voice.prompt("technician")
-    assert "FAPTE TEHNICE" in technician
-    assert "Stare tracking (calculată determinist, obligatorie): roșu." in technician
-    assert "Verdict financiar" not in technician and "Unghiul de copy propus" not in technician
-    assert "FAPTE TEHNICE" not in voice.prompt("cfo")
+    assert rebuttal.reopen_when.startswith("testul E2E confirmă")
+    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "technician"]
+    assert reply.technical is not None
+    assert (opinion.source, opinion.opinion, opinion.title) == (
+        "template",
+        reply.technical.summary,
+        "Tehnicianul · tracking și viteză",
+    )
     chair = voice.prompt("chair")
     for part in (
-        "PĂREREA TEHNICIANULUI",
-        TECHNICIAN_SAYS,
+        f"PĂREREA TEHNICIANULUI:\n{opinion.opinion}",
+        "FAPTE TEHNICE",
+        "Stare tracking (calculată determinist, obligatorie): roșu.",
         "Veto-ul Tehnicianului (obligatoriu): Tracking-ul e picat",
         "Oprit de veto-ul Tehnicianului: creșterea treptată",
         "RUNDA DE REPLICI:\n- CFO · rentabilitate, către Tehnicianul · tracking și viteză:",
         "Se rediscută când testul E2E confirmă că tracking-ul trimite din nou conversiile.",
     ):
         assert part in chair
-    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "technician"]
-    assert (opinion.source, opinion.opinion, opinion.title) == (
-        "llm",
-        TECHNICIAN_SAYS,
-        "Tehnicianul · tracking și viteză",
-    )
-
-
-def test_a_technician_that_claims_a_repair_is_replaced_by_its_diagnosis() -> None:
-    voice = _CouncilVoice({"technician": "Am reparat tag-ul Google. Conversiile vin din nou."})
-    reply = _council(voice=voice, technical=_signals(BROKEN_TAG)).evaluate_client_query(
-        "Merită să cresc bugetul?", _directive()
-    )
-
-    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "technician"]
-    assert reply.technical is not None
-    assert (opinion.source, opinion.opinion) == ("template", reply.technical.summary)
-    assert opinion.fallback_reason is not None and "pretindea" in opinion.fallback_reason
 
 
 def test_without_technical_data_the_technician_is_not_asked() -> None:
@@ -557,7 +509,7 @@ def test_without_technical_data_the_technician_is_not_asked() -> None:
         "Merită să cresc bugetul?", _directive()
     )
 
-    assert "technician" not in voice.roles
+    assert voice.roles == ["chair"]
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "technician"]
     assert opinion.source == "template"
     assert opinion.fallback_reason is not None and "Fără date" in opinion.fallback_reason

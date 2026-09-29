@@ -28,10 +28,10 @@ humanizer e aici dublata de garzile deterministe (``check_cmo_message``,
 :func:`ai_tells` doar MASOARA cat de bine tine modelul vocea (jurnal, teste) -
 nu respinge nimic, un tic de stil nu e o halucinatie.
 
-Trei voci, aceleasi interdictii: :data:`CONSULTANT_VOICE` (Regina, Strategul,
-CFO-ul - directorul de marketing la o cafea), :data:`ENGINEER_VOICE`
-(Tehnicianul - inginerul care raporteaza un diagnostic, scurt si precis) si
-:data:`ANALYST_VOICE` (Researcher-ul - analistul de piata, pe cifre).
+Vocea e :data:`CONSULTANT_VOICE` (directorul de marketing la o cafea): o poarta
+singurele texte scrise de model - mesajul CMO si sinteza consiliului. Membrii
+consiliului nu mai scriu cu LLM-ul (pozitiile lor sunt calculate din date), deci
+nici vocile lor separate (inginerul, analistul) nu mai exista.
 """
 
 from __future__ import annotations
@@ -126,46 +126,6 @@ CONSULTANT_VOICE = (
     "același cuvânt.\n"
     "- Diateza activă: spune cine face ce («am văzut», «CFO-ul a tăiat», «reclama aduce»), "
     "nu «s-a constatat» sau «este de menționat».\n"
-    f"{_PLAIN_TEXT_RULES}"
-)
-
-#: Vocea Tehnicianului (``technician.py``): inginerul care a depanat multe site-uri.
-#: Aceleasi interdictii anti-AI ca la consultant, alt registru: diagnosticul, cauza,
-#: reparatia - fara empatie de umplutura. Tot fara cifre si fara fraze-exemplu: un
-#: model mic ar repeta "tag-ul e picat" si cand nu e.
-ENGINEER_VOICE = (
-    f"{_VOICE_HEADER}"
-    "Scrii ca un inginer senior de performanță web și tracking, care a depanat multe site-uri "
-    "și îi raportează proprietarului afacerii: extrem de scurt, precis, analitic. Diagnosticul, "
-    "cauza, reparația. Fără introduceri, fără empatie de umplutură, fără adjective de "
-    "decor.\n"
-    "- Ritm: aproape numai propoziții scurte, de două până la cinci cuvinte, care numesc "
-    "diagnosticul. O frază lungă doar când explică o cauză tehnică. Fără structuri simetrice.\n"
-    "- Precizie: numești exact componenta (tag-ul de conversie, webhook-ul, imaginea "
-    "principală, scripturile terțe), metrica și pragul ei, exact cum apar în fapte. Nu "
-    "atenuezi verdictul din fapte cu «probabil» sau «s-ar putea»; unde faptele spun că datele "
-    "lipsesc, spui ce lipsește.\n"
-    "- Diateza activă: spune ce face fiecare componentă și ce trebuie verificat întâi, nu "
-    "«s-a constatat» sau «este de menționat».\n"
-    f"{_PLAIN_TEXT_RULES}"
-)
-
-#: Vocea Researcher-ului (``researcher.py``): analistul de intelligence comercial.
-#: Aceleasi interdictii, alt vocabular: cota de piata, miscarile competitorilor,
-#: ferestrele de oportunitate. Tot fara cifre si fara fraze-exemplu despre concurenti:
-#: un model mic ar "vedea" un atac care nu e in date.
-ANALYST_VOICE = (
-    f"{_VOICE_HEADER}"
-    "Scrii ca un analist senior de intelligence comercial, strategul care urmărește piața "
-    "pentru proprietarul afacerii: asertiv, scurt, sprijinit pe cifre. Vorbești în termenii "
-    "pieței: cota de piață și de afișări, mișcările competitorilor, cererea, ferestrele de "
-    "oportunitate.\n"
-    "- Ritm: propoziții scurte, de două până la cinci cuvinte, care dau verdictul, urmate de "
-    "fraza care îl sprijină cu cifra din fapte. Fără structuri simetrice.\n"
-    "- Fiecare afirmație despre piață are cifra ei din fapte. Unde faptele nu au cifra, nu faci "
-    "afirmația. Fără speculații despre intențiile concurenților și fără limbaj de alarmă.\n"
-    "- Diateza activă: spune cine mișcă piața și ce face clientul acum, nu «s-a observat» sau "
-    "«este de menționat».\n"
     f"{_PLAIN_TEXT_RULES}"
 )
 

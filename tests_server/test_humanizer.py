@@ -13,9 +13,7 @@ import re
 import pytest
 
 from ppc_agent_server.services.council import (
-    CFO_SYSTEM_PROMPT,
     CHAIR_SYSTEM_PROMPT,
-    STRATEGIST_SYSTEM_PROMPT,
     check_council_text,
 )
 from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
@@ -38,8 +36,6 @@ from tests_server.test_queen_council import (
 
 CLIENT_FACING_PROMPTS = {
     "cmo": (CMO_SYSTEM_PROMPT, "Nu inventa cifre"),
-    "strategist": (STRATEGIST_SYSTEM_PROMPT, "Nicio cifră care nu apare în ele"),
-    "cfo": (CFO_SYSTEM_PROMPT, "orice cifră din răspuns trebuie să apară în FAPTE"),
     "chair": (CHAIR_SYSTEM_PROMPT, "nu inventa cifre"),
 }
 

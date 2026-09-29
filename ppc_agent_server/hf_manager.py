@@ -1,10 +1,10 @@
 """Modele GGUF de pe Hugging Face pentru Ollama pe CPU, si cache-ul Hugging Face.
 
-Vocea consiliului (Sistemul 2, ``services/llm_client.py``) ruleaza pe Ollama, local.
-Pe CPU, un model de 8B (``llama3``, implicitul) citeste promptul consiliului prea
-incet ca primul token sa vina in termenul circuit-breaker-ului
-(``OLLAMA_FIRST_TOKEN_TIMEOUT``, 10 s). Utilitarul aduce o varianta cuantizata mica
-(Q4_K_M) si o incarca direct in Ollama-ul local:
+Vocea consiliului (Sistemul 2, ``services/llm_client.py``) ruleaza pe Ollama, local,
+si scrie un singur text: sinteza Reginei. Pe CPU, un model de 8B (``llama3``,
+implicitul) citeste promptul ei (~5000 de tokeni) prea incet ca primul token sa vina
+in termenul circuit-breaker-ului (``OLLAMA_FIRST_TOKEN_TIMEOUT``, 180 s). Utilitarul
+aduce o varianta cuantizata mica (Q4_K_M) si o incarca direct in Ollama-ul local:
 
 1. **descarca** fisierul GGUF cu ``huggingface_hub`` - intai din cache
    (``local_files_only``), abia apoi din retea; a doua rulare nu mai descarca nimic;
@@ -16,7 +16,7 @@ incet ca primul token sa vina in termenul circuit-breaker-ului
    masina de dezvoltare), iar tinta e oricum CPU-ul. Contextul implicit e 8192 de
    tokeni: sinteza consiliului are ~5000 si ar fi fost taiata la 4096;
 4. **il masoara** (``benchmark``): timpul pana la primul token si viteza, pe un prompt
-   de marimea celor din consiliu. Pe CPU, primul token depinde mai ales de lungimea
+   de marimea sintezei consiliului. Pe CPU, primul token depinde mai ales de lungimea
    promptului (citirea lui), nu de lungimea raspunsului - de aceea masuram, nu promitem.
 
 Licentele conteaza: platforma e comerciala. Presetarile cu licenta necomerciala (Qwen2.5
@@ -51,7 +51,10 @@ import httpx
 from huggingface_hub import hf_hub_download, scan_cache_dir
 from huggingface_hub.errors import CacheNotFound, LocalEntryNotFoundError
 
-from ppc_agent_server.services.llm_client import OllamaChatClient
+from ppc_agent_server.services.llm_client import (
+    OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS,
+    OllamaChatClient,
+)
 from ppc_agent_server.settings import get_server_settings, normalize_ollama_host
 
 #: Checkpoint-ul TimesFM folosit de ``ppc_agent.decision.forecasting``.
@@ -61,7 +64,9 @@ _CHUNK = 1 << 20
 #: Urcarea unui GGUF de 1-3 GB in Ollama, pe loopback: generos.
 UPLOAD_TIMEOUT_SECONDS = 600.0
 #: Tinta primului token, aceeasi ca circuit-breaker-ul consiliului.
-FIRST_TOKEN_TARGET_SECONDS = 10.0
+FIRST_TOKEN_TARGET_SECONDS = OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS
+#: Promptul sintezei consiliului (singurul apel LLM), masurat: 12-13k caractere.
+SYNTHESIS_PROMPT_CHARS = 12500
 #: Contextul modelului creat: sinteza consiliului are ~5000 de tokeni (fapte + pareri).
 DEFAULT_NUM_CTX = 8192
 
@@ -93,7 +98,7 @@ PRESETS: dict[str, GgufPreset] = {
             1.12,
             "Apache-2.0",
             True,
-            "Cel mai rapid pe CPU; cea mai buna sansa la primul token sub 10 s.",
+            "Cel mai rapid pe CPU: sinteza consiliului porneste in ~100 s pe 8 nuclee.",
         ),
         GgufPreset(
             "llama3.2-3b",
@@ -319,7 +324,7 @@ class BenchmarkResult:
 def benchmark(
     client: OllamaChatClient,
     *,
-    prompt_chars: int = 6000,
+    prompt_chars: int = SYNTHESIS_PROMPT_CHARS,
     clock: Callable[[], float] = time.perf_counter,
 ) -> BenchmarkResult:
     """Primul token si durata totala pe un prompt de marimea celor din consiliu."""
@@ -437,9 +442,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_cmd = commands.add_parser("benchmark", help="primul token și viteza, pe CPU")
     bench_cmd.add_argument("--model", default=PRESETS[DEFAULT_PRESET].ollama_name)
     bench_cmd.add_argument("--host", help="adresa Ollama (implicit OLLAMA_HOST)")
-    bench_cmd.add_argument("--prompt-chars", type=int, default=6000)
+    bench_cmd.add_argument("--prompt-chars", type=int, default=SYNTHESIS_PROMPT_CHARS)
     bench_cmd.add_argument(
-        "--timeout", type=float, default=300.0, help="cât așteaptă primul token (secunde)"
+        "--timeout",
+        type=float,
+        default=FIRST_TOKEN_TARGET_SECONDS,
+        help="cât așteaptă primul token (secunde)",
     )
     cache_cmd = commands.add_parser("cache", help="ce e în cache-ul Hugging Face")
     cache_cmd.add_argument("--cache-dir")

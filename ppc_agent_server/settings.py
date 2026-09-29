@@ -124,7 +124,8 @@ class ServerSettings(BaseSettings):
     ollama_model: str = ""
     # Circuit-breaker-ul: fara niciun token in atatea secunde, Ollama intra in pauza si
     # raspunde template-ul. Cat timp tokenii curg, generarea nu mai are termen de raspuns.
-    ollama_first_token_timeout: float = Field(default=10.0, gt=0)
+    # 180 s: pe CPU, sinteza consiliului (~5000 de tokeni de prompt) porneste in 1-2 minute.
+    ollama_first_token_timeout: float = Field(default=180.0, gt=0)
     # Cate generari deodata pe serverul Ollama. 1 pe CPU (le-ar lua oricum pe rand);
     # cu GPU, cat OLLAMA_NUM_PARALLEL-ul serverului.
     ollama_max_parallel: int = Field(default=1, ge=1)

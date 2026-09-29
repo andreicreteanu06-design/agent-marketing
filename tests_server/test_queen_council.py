@@ -1,10 +1,11 @@
-"""Consiliul Reginei: decizia e determinista, LLM-urile doar o argumenteaza.
+"""Consiliul Reginei: decizia e determinista, LLM-ul doar o formuleaza.
 
-Un LLM fals (``_CouncilVoice``) joaca toate rolurile (strategul, CFO-ul, CPO-ul,
-Tehnicianul, Researcher-ul, Regina ca presedinte) si raspunde dupa promptul de
-sistem primit. Se verifica:
-verdictul financiar din cifre, ce taie CFO-ul, ce primeste fiecare membru si ca
-orice text care iese din date duce la varianta determinista, nu la o eroare.
+Membrii (strategul, CFO-ul, CPO-ul, Tehnicianul, Researcher-ul) nu scriu cu un model:
+pozitiile lor sunt calculate din date. Un LLM fals (``_CouncilVoice``) joaca doar
+sinteza Reginei - orice alt prompt de sistem ar pica testul. Se verifica: verdictul
+financiar din cifre, ce taie CFO-ul, ca modelul e chemat o singura data, dupa ce au
+vorbit toti membrii, si ca orice text care iese din date duce la varianta
+determinista, nu la o eroare.
 """
 
 from __future__ import annotations
@@ -16,11 +17,9 @@ from decimal import Decimal
 import pytest
 
 from ppc_agent_server.services.council import (
-    CFO_SYSTEM_PROMPT,
     CHAIR_SYSTEM_PROMPT,
-    REBUTTAL_SYSTEM_PROMPT,
-    STRATEGIST_SYSTEM_PROMPT,
     AdSpend,
+    CouncilEvent,
     FinancialSignals,
     QueenCouncil,
     QuestionTopic,
@@ -30,19 +29,16 @@ from ppc_agent_server.services.council import (
     classify_question,
     rule_on_question,
 )
-from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT
 from ppc_agent_server.services.queen_agent import (
     BrandStrategyDirective,
     SearchSignal,
     build_directive,
 )
 from ppc_agent_server.services.researcher import (
-    RESEARCHER_SYSTEM_PROMPT,
     MarketIntelligenceSource,
     MarketSignals,
 )
 from ppc_agent_server.services.technician import (
-    TECHNICIAN_SYSTEM_PROMPT,
     TechnicalSignals,
     TechnicalSignalsSource,
 )
@@ -117,33 +113,8 @@ class _Static:
         return self._signals
 
 
-_ROLE_BY_PROMPT = {
-    STRATEGIST_SYSTEM_PROMPT: "strategist",
-    CFO_SYSTEM_PROMPT: "cfo",
-    CHAIR_SYSTEM_PROMPT: "chair",
-    TECHNICIAN_SYSTEM_PROMPT: "technician",
-    RESEARCHER_SYSTEM_PROMPT: "researcher",
-    CPO_SYSTEM_PROMPT: "cpo",
-    REBUTTAL_SYSTEM_PROMPT: "rebuttal",
-}
-STRATEGIST_SAYS = (
-    "Clientul tău ideal e «Ocupatul pragmatic»: vrea să rezolve totul din telefon. Reclama "
-    "«Schimb ulei ATF cutie automata» îi vorbește tehnic, pe limba altui public."
-)
-CFO_SAYS = (
-    "Contul e rentabil: CPA-ul e 39,23 RON, sub ținta de 80 RON. Merită crescut doar ce aduce "
-    "deja clienți, în plafonul de 50 RON pe zi."
-)
-TECHNICIAN_SAYS = "Tracking: roșu. Conversiile Google Ads tac. Nu e marketing, e tag-ul."
-RESEARCHER_SAYS = "Concurența urcă prețul. CPC-ul pieței: +26% în 28 de zile. Fereastra e acum."
-REBUTTAL_SAYS = (
-    "Accept regula: pe un cont pe pierdere nu cerem bani în plus. Clientul ideal rămâne același, "
-    "iar ideea revine când CPA-ul contului coboară sub ținta de 80 RON."
-)
-CPO_SAYS = (
-    "Oferta se potrivește cu piața: «Ocupatul pragmatic» e și cel care cumpără. Nu schimbăm "
-    "oferta, doar mesajul reclamei tehnice."
-)
+#: Singurul prompt pe care il primeste modelul: sinteza. Membrii nu-l cheama deloc.
+_ROLE_BY_PROMPT = {CHAIR_SYSTEM_PROMPT: "chair"}
 CHAIR_SAYS = (
     "Da, dar controlat. Contul e rentabil - CPA 39,23 RON, sub ținta de 80 RON - deci "
     "cheltuiala poate crește treptat, doar pe ce aduce deja clienți, în plafonul de 50 RON pe zi. "
@@ -153,7 +124,7 @@ CHAIR_SAYS = (
 
 
 class _CouncilVoice:
-    """LLM-ul fals al consiliului: raspunde dupa rol si tine minte ce a primit."""
+    """LLM-ul fals al consiliului: scrie sinteza si tine minte ce a primit."""
 
     model = "fake/council"
 
@@ -163,15 +134,7 @@ class _CouncilVoice:
         *,
         errors: dict[str, Exception] | None = None,
     ) -> None:
-        self.answers = {
-            "strategist": STRATEGIST_SAYS,
-            "cfo": CFO_SAYS,
-            "technician": TECHNICIAN_SAYS,
-            "researcher": RESEARCHER_SAYS,
-            "cpo": CPO_SAYS,
-            "rebuttal": REBUTTAL_SAYS,
-            "chair": CHAIR_SAYS,
-        }
+        self.answers = {"chair": CHAIR_SAYS}
         self.answers.update(answers or {})
         self.errors = errors or {}
         self.calls: list[tuple[str, str]] = []
@@ -447,32 +410,51 @@ def test_council_deliberates_then_the_queen_answers() -> None:
     assert reply.fallback_reason is None
     assert reply.topic == "budget"
     assert reply.financial_status == "profitable"
-    assert [(o.member, o.source, o.opinion) for o in reply.opinions] == [
-        ("strategist", "llm", STRATEGIST_SAYS),
-        ("cfo", "llm", CFO_SAYS),
-        ("cpo", "llm", CPO_SAYS),
+    # Membrii nu scriu cu LLM-ul: pozitiile lor vin din date. Singurul apel e sinteza.
+    assert [(o.member, o.source, o.model, o.fallback_reason) for o in reply.opinions] == [
+        ("strategist", "template", None, None),
+        ("cfo", "template", None, None),
+        ("cpo", "template", None, None),
     ]
-    assert voice.roles == ["cfo", "chair", "cpo", "strategist"]
-    assert voice.calls[-1][0] == "chair"  # sinteza vine dupa toate parerile
+    assert voice.roles == ["chair"]
 
 
-def test_each_member_sees_only_its_own_facts_and_the_chair_sees_everything() -> None:
+def test_the_model_is_called_once_after_every_member_has_spoken() -> None:
+    events: list[CouncilEvent] = []
+
+    class _Watching(_CouncilVoice):
+        seen: list[str]
+
+        def complete(self, *, system: str, user: str) -> str:
+            self.seen = [event.stage or event.kind for event in events]
+            return super().complete(system=system, user=user)
+
+    voice = _Watching()
+    _council(voice=voice).evaluate_client_query(
+        "Merită să cresc bugetul?", _directive(), on_event=events.append
+    )
+
+    assert voice.seen == ["deliberation", "opinion", "opinion", "opinion", "synthesis"]
+    assert len(voice.calls) == 1
+
+
+def test_the_chair_sees_every_position_and_all_the_facts() -> None:
     voice = _CouncilVoice()
-    _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
+    reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
 
-    strategist, cfo, chair = voice.prompt("strategist"), voice.prompt("cfo"), voice.prompt("chair")
-    cpo = voice.prompt("cpo")
-    question = "«Merită să cresc bugetul?»"
-    assert question in strategist and question in cfo and question in chair and question in cpo
-    assert "Unghiul de copy propus" in strategist
-    assert "Verdict financiar" not in strategist and "Plafonul zilnic" not in strategist
-    assert "Verdict financiar (calculat determinist, obligatoriu): Contul e rentabil" in cfo
-    assert "Unghiul de copy propus" not in cfo
-    # CPO-ul primeste concluziile celorlalti (verdictul pe oferta), nu cifrele lor brute.
-    assert "FAPTE DE PRODUS:\n- Verdictul pe ofertă (calculat determinist" in cpo
-    assert "Plafonul zilnic" not in cpo and "Unghiul de copy propus" not in cpo
+    strategist, cfo, cpo = (opinion.opinion for opinion in reply.opinions)
+    assert strategist.startswith("Clientul ideal e «Ocupatul pragmatic»")
+    assert cfo.startswith("Contul e rentabil: CPA-ul e 39,23 RON")
+    chair = voice.prompt("chair")
     for part in (
-        STRATEGIST_SAYS, CFO_SAYS, CPO_SAYS, "FAPTE DE PRODUS", "DECIZIA CONSILIULUI",
+        "«Merită să cresc bugetul?»",
+        f"PĂREREA TA DE BRAND:\n{strategist}",
+        f"PĂREREA CFO-ULUI:\n{cfo}",
+        f"PĂREREA CPO-ULUI:\n{cpo}",
+        "Unghiul de copy propus",
+        "Verdict financiar (calculat determinist, obligatoriu): Contul e rentabil",
+        "FAPTE DE PRODUS:\n- Verdictul pe ofertă (calculat determinist",
+        "DECIZIA CONSILIULUI",
         "Decizia (obligatorie): Da",
     ):
         assert part in chair
@@ -490,24 +472,24 @@ def test_an_inventive_queen_falls_back_to_the_deterministic_ruling() -> None:
     assert "40%" not in reply.reply
 
 
-def test_a_failing_member_is_replaced_by_its_deterministic_position() -> None:
-    voice = _CouncilVoice(
-        {"strategist": "Am schimbat deja textele reclamei."},
-        errors={"cfo": RuntimeError("Ollama a răspuns 500")},
-    )
+def test_a_failing_synthesis_falls_back_and_the_members_still_speak() -> None:
+    voice = _CouncilVoice(errors={"chair": RuntimeError("Ollama a răspuns 500")})
     reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
 
-    strategist, cfo, _ = reply.opinions
-    assert strategist.source == "template"
-    assert strategist.fallback_reason is not None
-    assert "pretindea o acțiune făcută" in strategist.fallback_reason
-    assert strategist.opinion.startswith("Clientul ideal e «Ocupatul pragmatic»")
-    assert cfo.source == "template"
-    assert cfo.fallback_reason == "Modelul nu a răspuns (RuntimeError) - poziția deterministă."
-    assert cfo.opinion.startswith("Contul e rentabil: CPA-ul e 39,23 RON")
-    # Presedintele tot delibereaza - pe pozitiile deterministe.
-    assert reply.source == "llm"
-    assert "Am schimbat deja" not in voice.prompt("chair")
+    assert reply.source == "template"
+    assert reply.fallback_reason == (
+        "Modelul nu a răspuns (RuntimeError) - răspunsul determinist al consiliului."
+    )
+    assert [opinion.member for opinion in reply.opinions] == ["strategist", "cfo", "cpo"]
+
+
+def test_member_positions_do_not_depend_on_the_voice() -> None:
+    question = "Merită să cresc bugetul?"
+    spoken = _council(voice=_CouncilVoice()).evaluate_client_query(question, _directive())
+    silent = _council().evaluate_client_query(question, _directive())
+
+    assert spoken.opinions == silent.opinions
+    assert spoken.rebuttals == silent.rebuttals
 
 
 def test_without_a_voice_the_council_answers_deterministically() -> None:
@@ -534,15 +516,17 @@ def test_without_any_data_no_llm_gives_generic_advice() -> None:
     assert "conectează Search Console" in reply.reply
 
 
-def test_a_member_without_data_is_not_asked() -> None:
+def test_a_member_without_data_gives_the_standard_position() -> None:
     voice = _CouncilVoice()
     reply = _council(NO_MONEY, voice).evaluate_client_query("Cine e publicul meu?", _directive())
 
-    # CFO-ul n-are date, dar taie testul de interese: Regina ii raspunde in runda de replici.
-    assert voice.roles == ["chair", "cpo", "rebuttal", "strategist"]
+    assert voice.roles == ["chair"]
     cfo = reply.opinions[1]
     assert cfo.source == "template"
+    assert cfo.fallback_reason == "Fără date pentru acest rol - poziția standard."
     assert cfo.opinion.startswith("Nu există încă nicio cheltuială înregistrată")
+    # CFO-ul n-are date, dar taie testul de interese: Regina ii raspunde in runda de replici.
+    assert [(r.member, r.source) for r in reply.rebuttals] == [("strategist", "template")]
 
 
 def test_the_llm_never_changes_the_directive() -> None:

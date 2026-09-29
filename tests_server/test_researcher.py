@@ -9,7 +9,6 @@ iar Researcher-ul spune ce lipseste, fara LLM. Google Trends are testele lui in
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
@@ -23,12 +22,11 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from ppc_agent_server.services.council import QuestionTopic, classify_question
-from ppc_agent_server.services.humanizer import ANALYST_VOICE, ai_tells
+from ppc_agent_server.services.humanizer import ai_tells
 from ppc_agent_server.services.market_trends import TrendPoint, TrendsUnavailableError
 from ppc_agent_server.services.queen_signals import ClientMarketSignals
 from ppc_agent_server.services.researcher import (
     RELEVANCE_QUESTION,
-    RESEARCHER_SYSTEM_PROMPT,
     AuctionSnapshot,
     CompetitorMove,
     DemandSeries,
@@ -50,7 +48,7 @@ from ppc_agent_server.skills import BaseAgentSkill, SkillRegistry, web_search
 from tests_server.llm_fakes import FakeJev
 from tests_server.test_jobs_tasks import _client_account
 from tests_server.test_queen_agent import NOW
-from tests_server.test_queen_council import RESEARCHER_SAYS, _council, _CouncilVoice, _directive
+from tests_server.test_queen_council import _council, _CouncilVoice, _directive
 from tests_server.test_queen_router import signed_in  # noqa: F401 - fixture
 
 TODAY = NOW.date()  # 25 septembrie: octombrie e varf de sezon in indicele de mai jos
@@ -275,30 +273,6 @@ def test_no_researcher_text_sounds_generated() -> None:
     assert [(text[:60], ai_tells(text)) for text in texts if ai_tells(text)] == []
 
 
-# --- vocea ----------------------------------------------------------------------------------
-
-
-def test_the_researcher_prompt_speaks_like_a_market_analyst_after_the_factual_rules() -> None:
-    assert RESEARCHER_SYSTEM_PROMPT.endswith(ANALYST_VOICE)
-    assert RESEARCHER_SYSTEM_PROMPT.index("Nicio cifră care nu apare în ele") < (
-        RESEARCHER_SYSTEM_PROMPT.index("VOCEA (regulile de mai sus au prioritate")
-    )
-    for asked in (
-        "analist senior de intelligence comercial",
-        "asertiv, scurt, sprijinit pe cifre",
-        "cota de piață",
-        "mișcările competitorilor",
-        "ferestrele de oportunitate",
-        "Fără speculații despre intențiile concurenților",
-        "Diateza activă",
-        "dinamic",
-        "crucial",
-        "«Să analizăm»",
-    ):
-        assert asked in ANALYST_VOICE
-    assert re.search(r"\d", ANALYST_VOICE) is None
-
-
 # --- in consiliu ----------------------------------------------------------------------------
 
 
@@ -324,7 +298,7 @@ def test_without_market_data_the_researcher_says_so_without_an_llm() -> None:
     assert reply.market is not None and opinion.opinion == reply.market.summary
     assert reply.ruling.market_context is None
     assert reply.ruling == without.ruling
-    assert "researcher" not in voice.roles
+    assert voice.roles == ["chair"]
     assert "FAPTE DE PIAȚĂ" not in voice.prompt("chair")
 
 
@@ -389,29 +363,19 @@ def test_without_real_auction_data_the_council_says_what_is_missing() -> None:
     assert "Concurentul" not in reply.reply
 
 
-def test_a_live_researcher_speaks_with_market_facts_only() -> None:
+def test_a_live_researcher_gives_its_position_and_the_chair_the_market_facts() -> None:
     voice = _CouncilVoice()
     reply = _council(voice=voice, market=LIVE).evaluate_client_query(QUESTION, _directive())
 
-    assert voice.roles == ["cfo", "chair", "cpo", "researcher", "strategist"]
-    researcher = voice.prompt("researcher")
-    assert "FAPTE DE PIAȚĂ" in researcher and "Au intrat 2 concurenți noi" in researcher
-    assert "Verdict financiar" not in researcher
-    chair = voice.prompt("chair")
-    assert "PĂREREA RESEARCHER-ULUI" in chair and RESEARCHER_SAYS in chair
-    assert "Contextul pieței (Researcher): CPC-ul urcă" in chair
-    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert (opinion.source, opinion.opinion) == ("llm", RESEARCHER_SAYS)
-
-
-def test_a_researcher_that_invents_a_market_number_falls_back() -> None:
-    voice = _CouncilVoice({"researcher": "Concurentul B a pus 40% din buget pe cuvintele tale."})
-    reply = _council(voice=voice, market=LIVE).evaluate_client_query(QUESTION, _directive())
-
+    assert voice.roles == ["chair"]
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
     assert reply.market is not None
     assert (opinion.source, opinion.opinion) == ("template", reply.market.summary)
-    assert opinion.fallback_reason is not None and "(40)" in opinion.fallback_reason
+    assert opinion.fallback_reason is None
+    chair = voice.prompt("chair")
+    assert f"PĂREREA RESEARCHER-ULUI:\n{opinion.opinion}" in chair
+    assert "FAPTE DE PIAȚĂ" in chair and "Au intrat 2 concurenți noi" in chair
+    assert "Contextul pieței (Researcher): CPC-ul urcă" in chair
 
 
 # --- sursa si ruta ----------------------------------------------------------------------------
@@ -805,17 +769,15 @@ WEB = replace(
 )
 
 
-def test_real_web_findings_reach_the_researcher_llm_without_invented_numbers() -> None:
-    voice = _CouncilVoice({"researcher": "Piața din București e plină: yably.ro listează top."})
+def test_real_web_findings_reach_the_synthesis_without_invented_numbers() -> None:
+    voice = _CouncilVoice()
     reply = _council(voice=voice, market=WEB).evaluate_client_query(QUESTION, _directive())
 
-    researcher_prompt = voice.prompt("researcher")
-    assert "Rezultatul 1 (yably.ro): «Titlu yably.ro»" in researcher_prompt
-    assert "Concurentul" not in researcher_prompt and "CPC-ul mediu" not in researcher_prompt
     chair = voice.prompt("chair")
-    assert "FAPTE DE PIAȚĂ" in chair and "yably.ro" in chair and "Concurentul" not in chair
+    assert "FAPTE DE PIAȚĂ" in chair and "Rezultatul 1 (yably.ro): «Titlu yably.ro»" in chair
+    assert "Concurentul" not in chair
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert opinion.source == "llm"
+    assert opinion.source == "template" and "yably.ro" in opinion.opinion
     # Fragmentele nu muta decizia.
     assert reply.ruling.market_context is None
 
@@ -837,12 +799,11 @@ def test_without_a_voice_the_researcher_cites_the_web_sources() -> None:
     ],
 )
 def test_generic_business_advice_is_rejected(generic: str) -> None:
-    voice = _CouncilVoice({"researcher": generic})
+    voice = _CouncilVoice({"chair": generic})
     reply = _council(voice=voice, market=WEB).evaluate_client_query(QUESTION, _directive())
 
-    [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
-    assert opinion.source == "template"
-    assert opinion.fallback_reason is not None and "sfaturi generice" in opinion.fallback_reason
+    assert reply.source == "template"
+    assert reply.fallback_reason is not None and "sfaturi generice" in reply.fallback_reason
 
 
 Signed = tuple[TestClient, FastAPI, dict[str, str], int]

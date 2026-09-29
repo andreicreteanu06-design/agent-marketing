@@ -17,7 +17,6 @@ from tests_server.test_cpo import ALIGNED_FINANCES, _aligned
 from tests_server.test_queen_agent import NOW
 from tests_server.test_queen_council import (
     LOSING,
-    REBUTTAL_SAYS,
     _council,
     _CouncilVoice,
     _directive,
@@ -116,50 +115,23 @@ def test_each_member_answers_once_on_its_most_important_dispute() -> None:
     )
 
 
-# --- runda a doua, cu LLM ------------------------------------------------------------------
+# --- runda a doua, in sinteza ----------------------------------------------------------------
 
 
-def test_the_loser_answers_the_winner_with_its_own_facts() -> None:
+def test_the_loser_answers_the_winner_and_the_chair_hears_it() -> None:
     voice = _CouncilVoice()
 
     reply = _council(LOSING, voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
 
     [rebuttal] = reply.rebuttals
     assert (rebuttal.member, rebuttal.replying_to) == ("strategist", "cfo")
-    assert (rebuttal.source, rebuttal.rebuttal, rebuttal.model) == (
-        "llm", REBUTTAL_SAYS, "fake/council"
-    )
-    prompt = voice.prompt("rebuttal")
-    # Pozitia CFO-ului din prima runda, asa cum a ramas: pe un cont pe pierdere, garda a
-    # respins textul fals al CFO-ului (cifre de cont rentabil), deci e cea determinista.
-    [cfo] = [opinion for opinion in reply.opinions if opinion.member == "cfo"]
-    assert cfo.source == "template"
-    for part in (
-        "ROLUL TĂU: Regina · strategia de brand",
-        "FAPTE DE BRAND:",
-        f"POZIȚIA COLEGULUI (CFO · rentabilitate):\n{cfo.opinion}",
-        "DISPUTA: un test de interese apropiate de",
-        "REGULA CONSILIULUI: Când brandul și banii nu se împacă, câștigă CFO-ul",
-        f"SE REDISCUTĂ CÂND: {TARGET_REACHED}",
-    ):
-        assert part in prompt
-    assert "FAPTE FINANCIARE" not in prompt  # Regina raspunde cu faptele ei, nu ale CFO-ului
+    # Replica vine din regula care a transat disputa, fara LLM: modelul scrie doar sinteza.
+    assert (rebuttal.source, rebuttal.model) == ("template", None)
+    assert rebuttal.rebuttal == reply.ruling.conflicts[0].rebuttal
+    assert voice.roles == ["chair"]
     chair = voice.prompt("chair")
     assert (
         "RUNDA DE REPLICI:\n- Regina · strategia de brand, către CFO · rentabilitate: "
-        f"{REBUTTAL_SAYS}"
+        f"{rebuttal.rebuttal}"
     ) in chair
     assert f"Se rediscută când {TARGET_REACHED}." in chair
-
-
-def test_an_inventive_rebuttal_falls_back_to_the_deterministic_one() -> None:
-    voice = _CouncilVoice({"rebuttal": "Dublăm bugetul: vei avea 40% mai mulți clienți."})
-
-    reply = _council(LOSING, voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
-
-    [rebuttal] = reply.rebuttals
-    assert rebuttal.source == "template"
-    assert rebuttal.fallback_reason is not None
-    assert rebuttal.fallback_reason.endswith("- replica deterministă.")
-    assert rebuttal.rebuttal == reply.ruling.conflicts[0].rebuttal
-    assert "40%" not in voice.prompt("chair")

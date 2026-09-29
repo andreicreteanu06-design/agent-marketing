@@ -36,7 +36,11 @@ from ppc_agent_server.models import (
     SiteAuditSnapshot,
     SiteSpeedSample,
 )
-from ppc_agent_server.services.council import CouncilEvent
+from ppc_agent_server.services.council import (
+    CHAIR_SYSTEM_PROMPT,
+    CouncilEvent,
+    strategist_position,
+)
 from ppc_agent_server.services.organic_context import (
     ChannelSessions,
     KeywordRank,
@@ -164,6 +168,24 @@ def test_the_organic_context_reaches_the_cmo_facts() -> None:
     assert "Meta față de organic (obligatoriu): Meta aduce mai puțin trafic" in facts
     # Fara trafic citit, faptele raman cele de dinainte.
     assert build_directive(42, _signals(), generated_at=NOW).organic_context is None
+
+
+def test_the_brand_position_carries_the_meta_organic_correlation() -> None:
+    organic = OrganicSignals(28, channels=_channels((600, 800), (1300, 1100)))
+    directive = build_directive(42, _signals(organic=organic), generated_at=NOW)
+    voice = _CouncilVoice()
+
+    reply = _council(voice=voice).evaluate_client_query("De ce scade traficul din Meta?", directive)
+
+    # Strategul nu mai scrie cu LLM-ul: corelarea intra direct in pozitia lui, din date.
+    assert directive.organic_context is not None
+    implication = directive.organic_context.implication
+    assert implication in strategist_position(directive)
+    assert implication in reply.opinions[0].opinion
+    chair = voice.prompt("chair")
+    assert "Paid Social (Meta) 600 de sesiuni (-25%)" in chair
+    assert "ca o corelare, nu ca o cauză" in CHAIR_SYSTEM_PROMPT
+    assert implication not in strategist_position(build_directive(42, _signals(), generated_at=NOW))
 
 
 class _FakeGa4Client:

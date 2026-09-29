@@ -18,12 +18,14 @@ si CPO-ul, vezi ``services/council.py``), iar decizia - ce trece, ce se taie, ce
 opreste veto-ul Tehnicianului - e determinista. Jev noteaza mutarile CPO-ului (RICE)
 si filtreaza fragmentele web ale Researcher-ului. Tot doar citeste. Cu
 ``Accept: text/event-stream`` raspunsul vine in flux (Server-Sent Events): etapele,
-fiecare parere cand e gata, sinteza Reginei token cu token (``token`` - o ciorna) si,
+fiecare parere (calculata din date, instant), sinteza Reginei token cu token
+(``token`` - o ciorna, singurul pas cu LLM) si,
 la final, ``reply`` - raspunsul valabil, acelasi ``CouncilReply`` ca varianta JSON,
 care inlocuieste ciorna (poate fi cel determinist, daca modelul pica sau scrie ceva
 ce nu e in date). Pe CPU, modelul local poate scrie minute intregi: cat timp curg
-tokeni, clientul ii vede; circuit-breaker-ul sare doar fara niciun token in primele
-secunde (``OLLAMA_FIRST_TOKEN_TIMEOUT``).
+tokeni, clientul ii vede; circuit-breaker-ul sare doar fara niciun token in
+``OLLAMA_FIRST_TOKEN_TIMEOUT`` secunde (180 implicit: atat ii ia unui model mic, pe
+CPU, sa citeasca promptul sintezei).
 
 ``GET /api/v1/queen/technician`` - raportul Tehnicianului (``services/technician.py``):
 tracking-ul conversiilor, viteza pe mobil (cu datele CrUX) si ultimul audit tehnic

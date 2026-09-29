@@ -18,26 +18,33 @@ llm-council-skill                        Aici
 aceeasi intrebare, modele diferite       aceeasi intrebare, ROLURI diferite, cu
                                          fapte diferite: Strategul vede doar
                                          brandul, CFO-ul doar banii
-perspective independente, in paralel     cele doua pareri se cer in paralel;
-                                         niciunul nu o vede pe a celuilalt
-un model pica -> se continua cu restul   un membru pica (sau scrie ceva ce nu e
-                                         in date) -> pozitia lui determinista
+perspective independente, in paralel     pozitii independente, calculate din
+                                         datele fiecarui rol (fara LLM)
+un model pica -> se continua cu restul   nu pica nimic: pozitiile sunt cod
 presedintele sintetizeaza cu atributie   Regina sintetizeaza; la conflict
                                          castiga CFO-ul
 ======================================  ========================================
 
 Abaterea deliberata: **decizia nu o ia niciun LLM**. :func:`rule_on_question`
-o calculeaza determinist (ce trece, ce se taie si de ce) inainte de orice apel;
-LLM-urile doar o argumenteaza si o formuleaza, iar fiecare text al lor trece prin
-:func:`check_council_text` (nicio cifra in afara datelor, niciun link, nicio
-actiune pretinsa, nicio cheltuiala promisa). Textul il scrie un model local
-(Ollama, Sistemul 2 din ``llm_client.py``); fara el - sau cand pica - raspunde
-consiliul determinist, din aceleasi fapte. Fara date, nu raspunde nimeni "din
-burta": spune ce lipseste.
+o calculeaza determinist (ce trece, ce se taie si de ce) inainte de orice apel.
+
+Data-to-Text: membrii (Strategul, CFO-ul, Tehnicianul, Researcher-ul, CPO-ul) nu
+scriu cu un model - pozitiile si replicile lor sunt texte scurte calculate din
+datele rolului (garzile Python, Jev pentru CPO si pentru fragmentele de pe web),
+gata in cateva milisecunde. **Singurul apel LLM e sinteza Reginei**, la final:
+ia pozitiile, replicile, faptele si decizia si le transforma in mesajul pentru
+client. Pe CPU, un model local citeste promptul sintezei (~5000 de tokeni) in
+1-2 minute; cinci pareri LLM in plus ar fi adaugat minute intregi fara nicio
+informatie noua - pozitiile deterministe spun acelasi lucru, fara risc de
+halucinatie. Sinteza trece prin :func:`check_council_text` (nicio cifra in afara
+datelor, niciun link, nicio actiune pretinsa, nicio cheltuiala promisa). Textul
+il scrie un model local (Ollama, Sistemul 2 din ``llm_client.py``); fara el - sau
+cand pica - raspunde consiliul determinist, din aceleasi fapte. Fara date, nu
+raspunde nimeni "din burta": spune ce lipseste.
 
 Argumentul de brand poarta si psihologia cumparatorului (``cognitive.py``): cum
 decide publicul (Sistemul 1/2), ce il opreste si ce parghie propunem - tot fapte
-calculate, pe care LLM-urile le explica, nu le inventeaza.
+calculate, pe care sinteza le explica, nu le inventeaza.
 
 Al treilea scaun e Tehnicianul (``technician.py``): tracking-ul conversiilor si
 viteza site-ului pe mobil. Are drept de veto peste ceilalti doi: cu tracking-ul
@@ -47,7 +54,7 @@ determinist - calculat inainte de orice LLM, ca restul deciziei.
 
 Consiliul tine minte (``memory.py``, dupa claude-mem): deciziile majore se scriu
 dupa fiecare raspuns, iar ultimele 5 - plus propunerile respinse sau esuate -
-intra ca "Context Istoric" in faptele fiecarui membru si ale sintezei.
+intra ca "Context Istoric" in promptul sintezei.
 
 Al patrulea e Researcher-ul (``researcher.py``): piata din jurul clientului -
 concurenta din licitatie, trendul cererii, durerile noi. Nu schimba ce trece si
@@ -71,7 +78,6 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -82,7 +88,6 @@ from pydantic import BaseModel, Field
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.cognitive import CognitiveProfile
 from ppc_agent_server.services.cpo import (
-    CPO_SYSTEM_PROMPT,
     OfferStatus,
     ProductDirective,
     RiceScorer,
@@ -115,7 +120,6 @@ from ppc_agent_server.services.queen_agent import (
     cmo_facts,
 )
 from ppc_agent_server.services.researcher import (
-    RESEARCHER_SYSTEM_PROMPT,
     MarketDirective,
     MarketIntelligenceSource,
     build_market_directive,
@@ -127,7 +131,6 @@ from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
 from ppc_agent_server.services.technician import (
-    TECHNICIAN_SYSTEM_PROMPT,
     TechnicalSignalsSource,
     TechnicianDirective,
     VetoScope,
@@ -149,7 +152,6 @@ MIN_CONVERSIONS_FOR_VERDICT = MIN_CONVERSIONS
 #: Marja clientului nu o stim, deci nu pretindem mai mult de atat.
 BREAK_EVEN_ROAS = Decimal("1")
 MAX_QUESTION_CHARS = 1000
-MAX_OPINION_CHARS = 900
 MAX_REPLY_CHARS = MAX_MESSAGE_CHARS
 #: Cate reclame cu bani ajung in faptele CFO-ului - cele mai scumpe primele.
 MAX_ADS_IN_FACTS = 4
@@ -1102,11 +1104,13 @@ _NAMED_BARRIERS = {
 
 
 def strategist_position(directive: BrandStrategyDirective) -> str:
-    """Ce spune Regina-strateg fara LLM: clientul ideal si ce nu ii vorbeste."""
+    """Pozitia Reginei-strateg, din date: clientul ideal, ce nu ii vorbeste, Meta vs organic."""
     avatar = directive.avatar
     angle = directive.copywriting_angle
+    organic = directive.organic_context
+    shift = organic.implication if organic is not None else ""
     if directive.status != "ok" or avatar is None or angle is None:
-        return directive.ideal_avatar_profile
+        return f"{directive.ideal_avatar_profile} {shift}".strip()
     text = (
         f"Clientul ideal e {_avatar_line(directive)}: vrea {_BY_KEY[avatar.key].desires[0]}. "
         f"{angle.summary}"
@@ -1116,6 +1120,8 @@ def strategist_position(directive: BrandStrategyDirective) -> str:
         text += f" Nu îi vorbesc: {_quote([ad.headline for ad in misaligned[:2]])}."
     if directive.cognitive_profile is not None:
         text += f" {directive.cognitive_profile.summary}"
+    if shift:
+        text += f" {shift}"
     return text
 
 
@@ -1326,48 +1332,14 @@ def _tidy(text: str) -> str:
 
 # --- prompturile -------------------------------------------------------------------
 
-STRATEGIST_SYSTEM_PROMPT = (
-    "Ești Regina, strategul de brand al agenției AC Media, în consiliul care pregătește "
-    "răspunsul pentru un client (proprietarul afacerii). Primești întrebarea lui și FAPTELE DE "
-    "BRAND: clientul ideal simulat din căutări, psihologia lui de cumpărare, reclamele care îi "
-    "vorbesc sau nu, unghiul de copy și, când e conectat, traficul din GA4 (Meta față de "
-    "Google organic) și pozițiile organice.\n"
-    "Reguli stricte:\n"
-    "1. Judeci DOAR din perspectiva brandului: ce îl atrage pe clientul ideal și ce îl "
-    "respinge. Banii (bugete, CPA, rentabilitate) sunt treaba CFO-ului: nu îi judeca.\n"
-    "2. Spui și DE CE, cu psihologia din FAPTE: cum decide publicul (Sistemul 1 sau Sistemul "
-    "2), ce îl oprește să cumpere, ce pârghie propunem. Nu adaugi alte concluzii psihologice. "
-    "Dacă traficul din Meta scade, spui ce arată organicul în aceeași perioadă (din FAPTE), "
-    "ca o corelare, nu ca o cauză.\n"
-    "3. Folosești DOAR FAPTELE. Nicio cifră care nu apare în ele.\n"
-    "4. Nu pretinzi că ai făcut ceva și nu promiți nimic: totul sunt propuneri care așteaptă "
-    "aprobarea clientului.\n"
-    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
-    f"6. {HISTORY_RULE}\n\n"
-    f"{CONSULTANT_VOICE}"
-)
-
-CFO_SYSTEM_PROMPT = (
-    "Ești CFO-ul (investitorul) din consiliul agenției AC Media. Primești întrebarea clientului "
-    "(proprietarul afacerii) și FAPTELE FINANCIARE: cheltuieli, conversii, CPA, ținte și "
-    "verdictul financiar calculat determinist.\n"
-    "Reguli stricte:\n"
-    "1. Judeci DOAR rentabilitatea: are sens financiar ce întreabă clientul, pe datele lui?\n"
-    "2. Verdictul financiar din FAPTE e obligatoriu: nu îl contrazici și nu îl îndulcești.\n"
-    "3. Nu calculezi cifre noi, nu estimezi, nu extrapolezi: orice cifră din răspuns trebuie "
-    "să apară în FAPTE. Dacă datele nu ajung, spui exact ce lipsește.\n"
-    "4. Nu promiți rezultate și nu pretinzi că ai modificat ceva.\n"
-    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
-    f"6. {HISTORY_RULE}\n\n"
-    f"{CONSULTANT_VOICE}"
-)
-
 CHAIR_SYSTEM_PROMPT = (
     "Ești Regina, Senior AI Chief Marketing Officer al agenției AC Media. Clientul "
     "(proprietarul afacerii) ți-a pus o întrebare; înainte să răspunzi ți-ai consultat "
     "consiliul: propria analiză de brand, CFO-ul, CPO-ul (oferta și poziționarea) și, când "
-    "există, Tehnicianul (tracking-ul conversiilor și viteza site-ului pe mobil) și "
-    "Researcher-ul (piața și concurența). Acum scrii răspunsul final, în română.\n"
+    "există, Tehnicianul (tracking-ul conversiilor, viteza site-ului pe mobil și auditul "
+    "tehnic) și Researcher-ul (piața și concurența). Părerile lor sunt calculate din date, "
+    "nu scrise de un model: concluzii scurte, pe care tu le legi într-un singur răspuns. "
+    "Acum scrii răspunsul final, în română.\n"
     "Reguli stricte:\n"
     "1. DECIZIA CONSILIULUI e obligatorie: o comunici și o argumentezi, nu o schimbi.\n"
     "2. Când brandul și CFO-ul nu sunt de acord, câștigă CFO-ul: o idee creativă care nu se "
@@ -1382,7 +1354,8 @@ CHAIR_SYSTEM_PROMPT = (
     "4. Prima frază răspunde direct la întrebare. Apoi argumentul de brand, cu motivația "
     "psihologică din fapte (cum decide publicul, Sistemul 1 sau Sistemul 2; ce îl oprește să "
     "cumpere; ce pârghie propunem), și argumentul financiar. Folosești doar concluziile "
-    "psihologice din fapte, cu etichetele lor.\n"
+    "psihologice din fapte, cu etichetele lor. Dacă traficul din Meta scade, spui ce arată "
+    "organicul în aceeași perioadă (din fapte), ca o corelare, nu ca o cauză.\n"
     "5. Nimic nu se aplică fără aprobarea clientului: nu pretinde că ai făcut ceva și nu "
     "promite bani în plus.\n"
     "6. Dacă întrebarea nu ține de marketingul sau campaniile clientului, spui politicos că "
@@ -1396,22 +1369,6 @@ CHAIR_SYSTEM_PROMPT = (
     f"{CONSULTANT_VOICE}"
 )
 
-REBUTTAL_SYSTEM_PROMPT = (
-    "Ești un membru al consiliului agenției AC Media, în RUNDA DE REPLICI: ți-ai spus deja "
-    "părerea, iar regula consiliului a tranșat o dispută împotriva ta. Acum îi răspunzi "
-    "colegului care a câștigat-o, o singură dată. Primești rolul tău, faptele tale, poziția "
-    "colegului, disputa, regula care a tranșat-o și condiția în care se rediscută.\n"
-    "Reguli stricte:\n"
-    "1. Decizia NU se schimbă. Nu o contești ca rezultat: spui ce rămâne valabil din "
-    "perspectiva ta și de ce, apoi condiția în care se rediscută, exact cum e dată.\n"
-    "2. Un singur argument, din faptele tale. Folosești DOAR faptele primite: nicio cifră care "
-    "nu apare în ele.\n"
-    "3. Nu pretinzi că ai făcut ceva și nu promiți nimic: totul sunt propuneri care așteaptă "
-    "aprobarea clientului.\n"
-    "4. Maximum 60 de cuvinte, la persoana I, text simplu, fără markdown, liste sau linkuri.\n\n"
-    f"{CONSULTANT_VOICE}"
-)
-
 
 def _question_block(question: str) -> str:
     return (
@@ -1420,45 +1377,8 @@ def _question_block(question: str) -> str:
     )
 
 
-_MEMBER_PROMPTS: dict[CouncilMember, tuple[str, str]] = {
-    "strategist": (STRATEGIST_SYSTEM_PROMPT, "FAPTE DE BRAND"),
-    "cfo": (CFO_SYSTEM_PROMPT, "FAPTE FINANCIARE"),
-    "technician": (TECHNICIAN_SYSTEM_PROMPT, "FAPTE TEHNICE"),
-    "researcher": (RESEARCHER_SYSTEM_PROMPT, "FAPTE DE PIAȚĂ"),
-    "cpo": (CPO_SYSTEM_PROMPT, "FAPTE DE PRODUS"),
-}
-
-
 def _history_block(history_text: str) -> str:
     return f"CONTEXT ISTORIC (memoria consiliului):\n{history_text}\n\n" if history_text else ""
-
-
-def build_member_prompt(member: CouncilMember, question: str, facts: str) -> tuple[str, str]:
-    """Promptul unui membru: aceeasi intrebare, doar faptele rolului lui."""
-    system, heading = _MEMBER_PROMPTS[member]
-    user = (
-        f"{_question_block(question)}\n\n{heading}:\n{facts}\n\n"
-        "Spune-ți părerea pentru consiliu."
-    )
-    return system, user
-
-
-def build_rebuttal_prompt(
-    conflict: CouncilConflict, question: str, facts: str, colleague: str
-) -> tuple[str, str]:
-    """Promptul replicii: cel care a pierdut disputa, cu faptele lui si pozitia colegului."""
-    heading = _MEMBER_PROMPTS[conflict.challenger][1]
-    user = (
-        f"{_question_block(question)}\n\n"
-        f"ROLUL TĂU: {MEMBER_TITLES[conflict.challenger]}\n\n"
-        f"{heading}:\n{facts}\n\n"
-        f"POZIȚIA COLEGULUI ({MEMBER_TITLES[conflict.respondent]}):\n{colleague}\n\n"
-        f"DISPUTA: {conflict.issue}\n"
-        f"REGULA CONSILIULUI: {conflict.rule}\n"
-        f"SE REDISCUTĂ CÂND: {conflict.reopen_when}\n\n"
-        "Replica ta către coleg:"
-    )
-    return REBUTTAL_SYSTEM_PROMPT, user
 
 
 def build_chair_prompt(
@@ -1536,8 +1456,10 @@ class CouncilOpinion(BaseModel):
     member: CouncilMember
     title: str
     opinion: str
+    #: Mereu ``template``: membrii nu scriu cu LLM-ul (vezi docstring-ul modulului).
     source: MessageSource
     model: str | None
+    #: Doar cand rolul n-are date si spune pozitia standard.
     fallback_reason: str | None
 
 
@@ -1551,6 +1473,7 @@ class CouncilRebuttal(BaseModel):
     conflict: ConflictKind
     rebuttal: str
     reopen_when: str
+    #: Mereu ``template``: replica vine din regula care a transat disputa.
     source: MessageSource
     model: str | None
     fallback_reason: str | None
@@ -1720,15 +1643,66 @@ def _safe_listener(listener: CouncilListener | None) -> CouncilListener:
     return emit
 
 
+def member_opinion(member: CouncilMember, position: str, *, has_data: bool) -> CouncilOpinion:
+    """Parerea unui membru: pozitia lui calculata din date, fara LLM - instant."""
+    return CouncilOpinion(
+        member=member,
+        title=MEMBER_TITLES[member],
+        opinion=position,
+        source="template",
+        model=None,
+        fallback_reason=None if has_data else "Fără date pentru acest rol - poziția standard.",
+    )
+
+
+def member_rebuttal(conflict: CouncilConflict) -> CouncilRebuttal:
+    """Replica celui care a pierdut disputa: ce ramane valabil si cand se rediscuta."""
+    return CouncilRebuttal(
+        member=conflict.challenger,
+        title=MEMBER_TITLES[conflict.challenger],
+        replying_to=conflict.respondent,
+        replying_to_title=MEMBER_TITLES[conflict.respondent],
+        conflict=conflict.kind,
+        rebuttal=conflict.rebuttal,
+        reopen_when=conflict.reopen_when,
+        source="template",
+        model=None,
+        fallback_reason=None,
+    )
+
+
+def rebuttal_round(
+    conflicts: Sequence[CouncilConflict], *, emit: CouncilListener | None = None
+) -> list[CouncilRebuttal]:
+    """A doua runda: fiecare membru care a pierdut o disputa raspunde o data.
+
+    Un membru cu mai multe dispute o ia pe cea mai importanta (ordinea din ``conflicts``).
+    Decizia nu se schimba: replica spune ce ramane valabil si cand se rediscuta.
+    """
+    firsts: dict[CouncilMember, CouncilConflict] = {}
+    for conflict in conflicts:
+        firsts.setdefault(conflict.challenger, conflict)
+    if not firsts:
+        return []
+    if emit is not None:
+        emit(CouncilEvent("stage", stage="rebuttals"))
+    rebuttals = [member_rebuttal(conflict) for conflict in firsts.values()]
+    if emit is not None:
+        for rebuttal in rebuttals:
+            emit(CouncilEvent("rebuttal", rebuttal=rebuttal))
+    return rebuttals
+
+
 class QueenCouncil:
     """Consiliul Reginei: Strategul, CFO-ul, Tehnicianul, Researcher-ul si CPO-ul delibereaza.
 
-    ``voice`` e LLM-ul local (Ollama, prin ``LLMRouter.generate_text_local``) care
-    da glas membrilor; fara el, sau cand pica, raspunde consiliul determinist.
-    Nimic din ce scrie un LLM nu se citeste inapoi intr-o decizie. ``scorer`` (Jev,
-    Sistemul 1) noteaza impactul si efortul mutarilor CPO-ului; fara el, raman
-    estimarile fixe. Fara ``technical`` nu exista veto; fara ``market``, nici
-    contextul pietei.
+    Membrii nu folosesc LLM-ul: pozitiile si replicile lor sunt calculate din date,
+    instant. ``voice`` e LLM-ul local (Ollama, prin ``LLMRouter.generate_text_local``)
+    si e chemat o singura data, pentru sinteza Reginei; fara el, sau cand pica,
+    raspunde consiliul determinist. Nimic din ce scrie un LLM nu se citeste inapoi
+    intr-o decizie. ``scorer`` (Jev, Sistemul 1) noteaza impactul si efortul
+    mutarilor CPO-ului; fara el, raman estimarile fixe. Fara ``technical`` nu exista
+    veto; fara ``market``, nici contextul pietei.
     """
 
     def __init__(
@@ -1761,13 +1735,14 @@ class QueenCouncil:
 
         Pasi: faptele (brand + bani + tehnic + piata) -> verdictul CPO-ului pe oferta
         (din concluziile celorlalti) -> decizia determinista, cu veto-ul Tehnicianului ->
-        parerile celor cinci membri, in paralel -> sinteza Reginei. Orice
-        pas LLM care pica sau scrie ceva ce nu e in date e inlocuit cu varianta
-        determinista, deci metoda nu pica din cauza modelului.
+        pozitiile celor cinci membri si replicile, calculate din date (fara LLM, in
+        cateva milisecunde) -> sinteza Reginei, singurul apel LLM. Daca sinteza pica
+        sau scrie ceva ce nu e in date, raspunde consiliul determinist, deci metoda nu
+        pica din cauza modelului.
 
         ``on_event`` primeste deliberarea pe masura ce se intampla (``CouncilEvent``):
-        etapele, fiecare parere cand e gata si sinteza token cu token, cand vocea stie
-        sa scrie in flux. Raspunsul valabil ramane cel intors.
+        etapele, fiecare parere si sinteza token cu token, cand vocea stie sa scrie
+        in flux. Raspunsul valabil ramane cel intors.
 
         Raises:
             ValueError: intrebarea e goala sau prea lunga.
@@ -1794,9 +1769,6 @@ class QueenCouncil:
         history_text = history_context(history, now)
         recalled = recall_for(history, topic.topic, now)
 
-        def _with_history(facts: str) -> str:
-            return f"{facts}\n\n{_history_block(history_text)}".rstrip() if history_text else facts
-
         brand_facts = cmo_facts(context)
         money_facts = cfo_facts(finances)
         tech_facts = technician_facts(technical) if technical is not None else None
@@ -1815,75 +1787,26 @@ class QueenCouncil:
             or technical.site_audit is not None
         )
 
-        def _spoke(future: Future[CouncilOpinion]) -> None:
-            if not future.cancelled() and future.exception() is None:
-                emit(CouncilEvent("opinion", opinion=future.result()))
-
+        # Data-to-Text: membrii nu scriu cu LLM-ul. Pozitiile lor sunt calculate din
+        # datele fiecarui rol, instant; singurul apel catre model e sinteza, mai jos.
         emit(CouncilEvent("stage", stage="deliberation"))
-        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="consiliu") as pool:
-            strategist = pool.submit(
-                self._opinion,
-                "strategist",
-                question,
-                facts=_with_history(brand_facts),
-                has_data=has_brand,
-                fallback=strategist_position(context),
-            )
-            cfo = pool.submit(
-                self._opinion,
-                "cfo",
-                question,
-                facts=_with_history(money_facts),
-                has_data=has_money,
-                fallback=cfo_position(finances),
-            )
-            members = [strategist, cfo]
-            if technical is not None:
-                members.append(
-                    pool.submit(
-                        self._opinion,
-                        "technician",
-                        question,
-                        facts=_with_history(tech_facts or ""),
-                        has_data=has_tech,
-                        fallback=technician_position(technical),
-                    )
-                )
-            if market is not None:
-                members.append(
-                    pool.submit(
-                        self._opinion,
-                        "researcher",
-                        question,
-                        facts=_with_history(market_text or ""),
-                        has_data=market_text is not None,
-                        fallback=researcher_position(market),
-                    )
-                )
-            cpo = pool.submit(
-                self._opinion,
-                "cpo",
-                question,
-                facts=_with_history(product_facts),
-                has_data=product.status != "unknown",
-                fallback=product.summary,
-            )
-            for future in (*members, cpo):
-                future.add_done_callback(_spoke)
-            opinions = [member.result() for member in members]
+        seats: list[tuple[CouncilMember, str, bool]] = [
+            ("strategist", strategist_position(context), has_brand),
+            ("cfo", cfo_position(finances), has_money),
+        ]
+        if technical is not None:
+            seats.append(("technician", technician_position(technical), has_tech))
+        if market is not None:
+            seats.append(("researcher", researcher_position(market), market_text is not None))
         # CPO-ul vorbeste ultimul: judeca oferta pe concluziile celorlalti.
-        opinions.append(cpo.result())
+        seats.append(("cpo", product.summary, product.status != "unknown"))
+        opinions: list[CouncilOpinion] = []
+        for member, position, has_data in seats:
+            opinion = member_opinion(member, position, has_data=has_data)
+            opinions.append(opinion)
+            emit(CouncilEvent("opinion", opinion=opinion))
         # Runda de replici: cine a pierdut o disputa ii raspunde celui care a castigat-o.
-        member_facts: dict[CouncilMember, str | None] = {
-            "strategist": brand_facts,
-            "cfo": money_facts,
-            "technician": tech_facts,
-            "researcher": market_text,
-            "cpo": product_facts,
-        }
-        rebuttals = self._rebuttal_round(
-            question, ruling.conflicts, opinions, member_facts, emit=emit
-        )
+        rebuttals = rebuttal_round(ruling.conflicts, emit=emit)
 
         def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilReply:
             return CouncilReply(
@@ -1990,107 +1913,6 @@ class QueenCouncil:
         signals = self._technical.load(client_account_id)
         return evaluate_technical_health(client_account_id, signals, generated_at=self._clock())
 
-    def _opinion(
-        self, member: CouncilMember, question: str, *, facts: str, has_data: bool, fallback: str
-    ) -> CouncilOpinion:
-        def _position(reason: str) -> CouncilOpinion:
-            return CouncilOpinion(
-                member=member,
-                title=MEMBER_TITLES[member],
-                opinion=fallback,
-                source="template",
-                model=None,
-                fallback_reason=reason,
-            )
-
-        if not has_data:
-            return _position("Fără date pentru acest rol - poziția standard.")
-        if self._voice is None:
-            return _position("Vocea LLM nu e configurată - poziția deterministă.")
-        system, user = build_member_prompt(member, question, facts)
-        text, problem = self._ask(system=system, user=user, max_chars=MAX_OPINION_CHARS)
-        if text is None:
-            logger.warning("[Consiliu] parerea %s respinsa: %s", member, problem)
-            return _position(f"{problem} - poziția deterministă.")
-        return CouncilOpinion(
-            member=member,
-            title=MEMBER_TITLES[member],
-            opinion=text,
-            source="llm",
-            model=self._voice.model,
-            fallback_reason=None,
-        )
-
-    def _rebuttal_round(
-        self,
-        question: str,
-        conflicts: Sequence[CouncilConflict],
-        opinions: Sequence[CouncilOpinion],
-        facts: dict[CouncilMember, str | None],
-        *,
-        emit: CouncilListener | None = None,
-    ) -> list[CouncilRebuttal]:
-        """A doua runda: fiecare membru care a pierdut o disputa raspunde o data, in paralel.
-
-        Un membru cu mai multe dispute o ia pe cea mai importanta (ordinea din ``conflicts``).
-        Decizia nu se schimba: replica spune ce ramane valabil si cand se rediscuta.
-        """
-        firsts: dict[CouncilMember, CouncilConflict] = {}
-        for conflict in conflicts:
-            firsts.setdefault(conflict.challenger, conflict)
-        if not firsts:
-            return []
-        said = {opinion.member: opinion.opinion for opinion in opinions}
-
-        def _replied(future: Future[CouncilRebuttal]) -> None:
-            if emit is not None and not future.cancelled() and future.exception() is None:
-                emit(CouncilEvent("rebuttal", rebuttal=future.result()))
-
-        if emit is not None:
-            emit(CouncilEvent("stage", stage="rebuttals"))
-        with ThreadPoolExecutor(max_workers=len(firsts), thread_name_prefix="replici") as pool:
-            futures = [
-                pool.submit(
-                    self._rebuttal,
-                    conflict,
-                    question,
-                    facts.get(conflict.challenger) or "",
-                    said.get(conflict.respondent, ""),
-                )
-                for conflict in firsts.values()
-            ]
-            for future in futures:
-                future.add_done_callback(_replied)
-            return [future.result() for future in futures]
-
-    def _rebuttal(
-        self, conflict: CouncilConflict, question: str, facts: str, colleague: str
-    ) -> CouncilRebuttal:
-        def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilRebuttal:
-            return CouncilRebuttal(
-                member=conflict.challenger,
-                title=MEMBER_TITLES[conflict.challenger],
-                replying_to=conflict.respondent,
-                replying_to_title=MEMBER_TITLES[conflict.respondent],
-                conflict=conflict.kind,
-                rebuttal=text,
-                reopen_when=conflict.reopen_when,
-                source=source,
-                model=self._voice.model if source == "llm" and self._voice else None,
-                fallback_reason=reason,
-            )
-
-        if self._voice is None:
-            return _reply(
-                conflict.rebuttal, "template", "Vocea LLM nu e configurată - replica deterministă."
-            )
-        system, user = build_rebuttal_prompt(conflict, question, facts, colleague)
-        text, problem = self._ask(system=system, user=user, max_chars=MAX_OPINION_CHARS)
-        if text is None:
-            logger.warning("[Consiliu] replica %s respinsa: %s", conflict.challenger, problem)
-            return _reply(conflict.rebuttal, "template", f"{problem} - replica deterministă.")
-        return _reply(text, "llm", None)
-
     def _ask(
         self,
         *,
@@ -2099,10 +1921,11 @@ class QueenCouncil:
         max_chars: int,
         on_token: Callable[[str], None] | None = None,
     ) -> tuple[str | None, str | None]:
-        """``(text, None)`` sau ``(None, motivul)`` - vocea e optionala, nimic nu arunca.
+        """Sinteza Reginei: ``(text, None)`` sau ``(None, motivul)`` - nimic nu arunca.
 
-        Cu ``on_token`` si o voce care scrie in flux, fiecare fragment pleaca imediat;
-        verificarea de mai jos se face tot pe textul intreg.
+        Singurul apel LLM al consiliului. Cu ``on_token`` si o voce care scrie in flux,
+        fiecare fragment pleaca imediat; verificarea de mai jos se face tot pe textul
+        intreg.
         """
         assert self._voice is not None
         try:

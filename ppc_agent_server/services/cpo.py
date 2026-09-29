@@ -31,7 +31,8 @@ intr-o singura cerere: alege un NIVEL pe fiecare scara, iar valoarea nivelului s
 formula RICE raman in cod. Fara Jev, cand pica sau cand nu e sigur (``confidence``
 sub prag), raman estimarile fixe pe tip de mutare. Reach-ul si Confidence-ul vin
 mereu din date. In rest, modul e pur si determinist: fara DB, fara LLM generativ;
-vocea (``council.py``) doar formuleaza.
+pozitia CPO-ului e ``ProductDirective.summary``, iar sinteza Reginei (``council.py``)
+doar o formuleaza.
 """
 
 from __future__ import annotations
@@ -43,9 +44,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-from ppc_agent_server.services.humanizer import CONSULTANT_VOICE
 from ppc_agent_server.services.llm_client import MIN_CONFIDENCE, JsonValue, Score, ScoreAnswer
-from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.queen_agent import (
     _BY_KEY,
     AdAlignment,
@@ -476,21 +475,3 @@ def cpo_facts(product: ProductDirective) -> str:
         for index, move in enumerate(product.moves, start=1)
     )
     return "\n".join(f"- {line}" for line in lines)
-
-
-CPO_SYSTEM_PROMPT = (
-    "Ești CPO-ul (Chief Product Officer) din consiliul agenției AC Media: aperi OFERTA clientului "
-    "și potrivirea ei cu piața. Primești întrebarea clientului (proprietarul afacerii) și FAPTELE "
-    "DE PRODUS: verdictul pe ofertă, poziționarea (clientul care cumpără cel mai ușor), povestea "
-    "ofertei și mutările ordonate după RICE.\n"
-    "Reguli stricte:\n"
-    "1. Judeci DOAR oferta: ce vinde clientul și cui. Mesajul reclamelor e al Reginei, banii ai "
-    "CFO-ului, piața a Researcher-ului: le folosești concluziile, nu le refaci.\n"
-    "2. Verdictul pe ofertă din FAPTE e obligatoriu. Când CPA-ul e mare, spui clar dacă vina e a "
-    "mesajului sau a ofertei; o pivotare e o propunere, nu o decizie luată.\n"
-    "3. Folosești DOAR FAPTELE. Nicio cifră care nu apare în ele.\n"
-    "4. Nu pretinzi că ai făcut ceva și nu promiți rezultate.\n"
-    "5. Maximum 80 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
-    f"6. {HISTORY_RULE}\n\n"
-    f"{CONSULTANT_VOICE}"
-)

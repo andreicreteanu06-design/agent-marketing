@@ -22,7 +22,6 @@ from ppc_agent_server.services.cognitive import (
 )
 from ppc_agent_server.services.council import (
     CHAIR_SYSTEM_PROMPT,
-    STRATEGIST_SYSTEM_PROMPT,
     CouncilOpinion,
     build_chair_prompt,
     build_financial_snapshot,
@@ -279,15 +278,19 @@ def test_the_council_reply_explains_the_psychology_like_a_consultant() -> None:
     assert reply.reply.endswith("Nimic nu se aplică fără aprobarea ta.")
 
 
-def test_the_strategist_and_the_queen_are_asked_for_the_psychology() -> None:
-    assert "Spui și DE CE, cu psihologia din FAPTE" in STRATEGIST_SYSTEM_PROMPT
+def test_the_brand_position_and_the_queen_carry_the_psychology() -> None:
     assert "motivația psihologică din fapte" in CHAIR_SYSTEM_PROMPT
 
     voice = _CouncilVoice()
     directive = build_directive(42, _signals(), generated_at=NOW)
-    _council(voice=voice).evaluate_client_query("Ce facem cu reclama de pe Meta?", directive)
-    assert "Psihologia cumpărătorului" in voice.prompt("strategist")
-    assert "Psihologia cumpărătorului" not in voice.prompt("cfo")
+    reply = _council(voice=voice).evaluate_client_query(
+        "Ce facem cu reclama de pe Meta?", directive
+    )
+    assert directive.cognitive_profile is not None
+    summary = directive.cognitive_profile.summary
+    strategist, cfo = reply.opinions[0], reply.opinions[1]
+    assert summary in strategist.opinion
+    assert summary not in cfo.opinion
     assert "Psihologia cumpărătorului" in voice.prompt("chair")
 
 

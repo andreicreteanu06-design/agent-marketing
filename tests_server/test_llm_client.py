@@ -17,6 +17,7 @@ from ppc_agent_server.services.llm_client import (
     DEFAULT_JEV_MODEL,
     DEFAULT_OLLAMA_MODEL,
     JEV_URL,
+    OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS,
     ROUTES,
     Choice,
     ChoiceAnswer,
@@ -366,9 +367,9 @@ def test_no_first_token_in_time_trips_the_circuit_breaker(fake_ollama: FakeOllam
     fake_ollama.silent = True
     client = fake_ollama.client()
 
-    with pytest.raises(OllamaError, match="n-a trimis niciun token în 10 s"):
+    with pytest.raises(OllamaError, match="n-a trimis niciun token în 180 s"):
         client.complete(system="s", user="u")
-    # Sinteza consiliului, dupa membrii care au asteptat deja: direct pe template.
+    # Urmatoarea conversatie, in pauza serverului: direct pe template.
     with pytest.raises(LLMUnavailableError, match="de curând"):
         client.complete(system="s", user="u")
     assert fake_ollama.connections == 1
@@ -386,6 +387,7 @@ def test_bytes_without_a_single_token_still_count_as_no_first_token() -> None:
         host=OLLAMA_TEST_HOST,
         transport=httpx.MockTransport(lambda request: _ndjson(*[empty] * 5)),
         clock=clock,
+        first_token_timeout=10.0,
     )
 
     with pytest.raises(OllamaError, match="niciun token în 10 s"):
@@ -550,6 +552,8 @@ def test_settings_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = ServerSettings(_env_file=None)
 
     assert (settings.jev_api_key, settings.ollama_host) == ("", DEFAULT_OLLAMA_HOST)
+    # Sinteza consiliului porneste pe CPU in 1-2 minute: termenul o lasa sa ajunga.
+    assert settings.ollama_first_token_timeout == OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS == 180.0
     assert DEFAULT_OLLAMA_HOST == "http://localhost:11434"
 
 

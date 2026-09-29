@@ -56,8 +56,6 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-from ppc_agent_server.services.humanizer import ENGINEER_VOICE
-from ppc_agent_server.services.memory import HISTORY_RULE
 from ppc_agent_server.services.ro_format import count as _count
 
 HealthStatus = Literal["green", "amber", "red", "unknown"]
@@ -897,7 +895,7 @@ def evaluate_technical_health(
     return directive
 
 
-# --- vocea (pozitia determinista, faptele, promptul) ----------------------------------
+# --- vocea (pozitia determinista si faptele pentru sinteza) --------------------------
 
 _VETO_LINES: dict[VetoCode, str] = {
     "SITE_UNAVAILABLE": "Veto: site-ul nu răspunde. Nicio decizie pe bani până revine.",
@@ -976,25 +974,3 @@ def technician_facts(directive: TechnicianDirective) -> str:
     lines.extend(f"Reparație: {fix}" for fix in directive.recommendations)
     lines.extend(directive.notes)
     return "\n".join(f"- {line}" for line in lines)
-
-
-TECHNICIAN_SYSTEM_PROMPT = (
-    "Ești Tehnicianul (CTO-ul) din consiliul agenției AC Media: răspunzi de infrastructura de "
-    "conversie a clientului, adică tracking-ul conversiilor, viteza site-ului pe mobil și "
-    "sănătatea lui tehnică (auditul SEO/GEO). "
-    "Primești întrebarea clientului (proprietarul afacerii) și FAPTELE TEHNICE, calculate "
-    "determinist.\n"
-    "Reguli stricte:\n"
-    "1. Judeci DOAR partea tehnică: ajung conversiile în platformă, se încarcă site-ul repede "
-    "pe mobil, ce probleme tehnice a găsit auditul? Brandul și rentabilitatea sunt treaba "
-    "celorlalți membri.\n"
-    "2. Stările din FAPTE (verde, galben, roșu, necunoscut) și veto-ul sunt obligatorii: nu le "
-    "contrazici și nu le îndulcești. Dacă există veto, spui pe ce și de ce.\n"
-    "3. Folosești DOAR FAPTELE. Nicio cifră, metrică sau prag care nu apare în ele. Dacă datele "
-    "lipsesc, spui exact ce lipsește.\n"
-    "4. Recomanzi reparația din FAPTE, cu componenta exactă. Nu pretinzi că ai reparat, "
-    "instalat sau configurat ceva și nu promiți rezultate.\n"
-    "5. Maximum 60 de cuvinte, text simplu, fără markdown, liste sau linkuri.\n"
-    f"6. {HISTORY_RULE}\n\n"
-    f"{ENGINEER_VOICE}"
-)

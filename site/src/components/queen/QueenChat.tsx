@@ -197,11 +197,27 @@ function deliberationSteps(live: LiveDeliberation): { label: string; state: Step
   return steps;
 }
 
+/** Secundele de cand a devenit `active` true; 0 cat e false. */
+function useElapsedSeconds(active: boolean): number {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return active ? seconds : 0;
+}
+
 /**
  * Starea "consiliul delibereaza": pasii bifati pe masura ce vin evenimentele reale,
  * apoi sinteza Reginei scrisa in timp real (o ciorna, pana vine raspunsul final).
+ * Membrii vorbesc din date, instant; singura asteptare e sinteza, pe modelul local -
+ * pe procesor, primul cuvant poate veni abia dupa un minut sau doua, deci aratam cat
+ * a trecut.
  */
 function Deliberation({ live }: { live: LiveDeliberation }) {
+  const waited = useElapsedSeconds(live.stage === "synthesis" && !live.draft);
   if (live.draft) {
     return (
       <div className="flex gap-3" role="status" aria-live="polite" aria-busy="true">
@@ -250,6 +266,13 @@ function Deliberation({ live }: { live: LiveDeliberation }) {
             </li>
           ))}
         </ul>
+        {live.stage === "synthesis" && (
+          <p className="mt-3 text-[11px] text-foreground-muted">
+            Membrii au vorbit. Regina scrie pe modelul local; pe procesor, primul cuvânt poate
+            întârzia un minut sau două.
+            {waited > 0 && <span className="tabular-nums"> · {waited} s</span>}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -478,14 +501,16 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
                 {reply.market.web_findings.map((finding) => finding.source).join(" · ")}
               </p>
             )}
-            {opinion.source === "template" && (
-              <p className="mt-2 text-[11px] text-foreground-muted" title={opinion.fallback_reason ?? undefined}>
-                Poziție deterministă, din datele contului
-              </p>
+            {opinion.fallback_reason && (
+              <p className="mt-2 text-[11px] text-foreground-muted">{opinion.fallback_reason}</p>
             )}
           </div>
         ))}
       </div>
+      <p className="text-[11px] text-foreground-muted">
+        Pozițiile și replicile membrilor sunt calculate din datele contului; modelul scrie doar
+        răspunsul Reginei.
+      </p>
 
       {reply.rebuttals && reply.rebuttals.length > 0 && (
         <div>
@@ -501,12 +526,8 @@ function CouncilDetails({ reply, id }: { reply: QueenChatReply; id: string }) {
                     {rebuttal.title} → {rebuttal.replying_to_title}
                   </p>
                   <p className="mt-0.5 text-[13px] leading-relaxed text-foreground/90">{rebuttal.rebuttal}</p>
-                  <p
-                    className="mt-1 text-[11px] text-foreground-muted"
-                    title={rebuttal.fallback_reason ?? undefined}
-                  >
+                  <p className="mt-1 text-[11px] text-foreground-muted">
                     Se rediscută când {rebuttal.reopen_when}
-                    {rebuttal.source === "template" && " · replică deterministă, din datele contului"}
                   </p>
                 </div>
               </li>

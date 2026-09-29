@@ -30,18 +30,15 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.routers import queen
 from ppc_agent_server.services.council import (
-    CFO_SYSTEM_PROMPT,
     CHAIR_SYSTEM_PROMPT,
-    STRATEGIST_SYSTEM_PROMPT,
     CouncilEvent,
     CouncilListener,
     CouncilReply,
 )
-from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT, EFFORT_LEVELS, IMPACT_LEVELS
+from ppc_agent_server.services.cpo import EFFORT_LEVELS, IMPACT_LEVELS
 from ppc_agent_server.services.llm_client import LLMRouter
 from ppc_agent_server.services.queen_agent import SearchSignal
 from ppc_agent_server.services.queen_signals import DbFinancialSignals
-from ppc_agent_server.services.technician import TECHNICIAN_SYSTEM_PROMPT
 from tests_server.llm_fakes import FakeJev, FakeOllama
 from tests_server.test_brand_alignment import (
     TECHNICAL_HEADLINE,
@@ -188,13 +185,8 @@ def test_route_requires_a_signed_in_client(
 # --- POST /api/v1/queen/chat - consiliul ------------------------------------------
 
 _CHAT_URL = "/api/v1/queen/chat"
+#: Singurul prompt care ajunge la Ollama: sinteza. Membrii vorbesc din date, fara model.
 _COUNCIL_ANSWERS = {
-    STRATEGIST_SYSTEM_PROMPT: (
-        "Clientul tău ideal e «Ocupatul pragmatic»: vrea să rezolve totul din telefon."
-    ),
-    CFO_SYSTEM_PROMPT: "Contul e rentabil: CPA-ul e 39,23 RON, sub ținta de 80 RON.",
-    TECHNICIAN_SYSTEM_PROMPT: "Tracking: verde. Conversiile Google Ads ajung.",
-    CPO_SYSTEM_PROMPT: "Oferta se potrivește cu piața: «Ocupatul pragmatic» e și cel care cumpără.",
     CHAIR_SYSTEM_PROMPT: (
         "Da, dar controlat: contul e rentabil - CPA 39,23 RON, sub ținta de 80 RON - deci "
         "cheltuiala poate crește treptat, doar pe ce aduce deja clienți, pentru "
@@ -204,7 +196,7 @@ _COUNCIL_ANSWERS = {
 
 
 def _council_ollama(fake: FakeOllama, chair: str | None = None) -> FakeOllama:
-    """Ollama pentru consiliu: raspunde dupa promptul de sistem primit."""
+    """Ollama pentru consiliu: scrie sinteza Reginei, singurul apel al consiliului."""
     fake.replies = dict(_COUNCIL_ANSWERS)
     if chair is not None:
         fake.replies[CHAIR_SYSTEM_PROMPT] = chair
@@ -231,23 +223,25 @@ def test_chat_reply_is_deliberated_by_the_council_through_the_local_model(
     assert body["financial_status"] == "profitable"
     assert body["directive_status"] == "ok"
     assert body["ruling"]["decision"].startswith("Da, dar controlat")
-    assert [(opinion["member"], opinion["source"]) for opinion in body["opinions"]] == [
-        ("strategist", "llm"),
-        ("cfo", "llm"),
-        ("technician", "llm"),
-        ("researcher", "template"),
-        ("cpo", "llm"),
+    assert [opinion["member"] for opinion in body["opinions"]] == [
+        "strategist",
+        "cfo",
+        "technician",
+        "researcher",
+        "cpo",
     ]
+    # Membrii vorbesc din date, fara model: pozitiile lor sunt gata inainte de sinteza.
+    assert all(opinion["source"] == "template" for opinion in body["opinions"])
     # Researcher-ul n-are date masurate (in teste, webul si Google Trends "pica"): spune
-    # ce lipseste, din template, fara LLM - si nu inventeaza nimic.
+    # ce lipseste - si nu inventeaza nimic.
     assert body["opinions"][3]["fallback_reason"].startswith("Fără date")
     assert body["market"]["market_trend"]["direction"] == "unknown"
     assert not {"source", "is_demo"} & set(body["market"])
     assert body["ruling"]["market_context"] is None
     assert body["product"]["status"] == "fit"
-    # Cinci generari locale: cei patru membri cu date reale, apoi sinteza. Fara Jev,
-    # mutarile CPO-ului pastreaza estimarile fixe.
-    assert len(fake_ollama.requests) == 5
+    # O singura generare locala: sinteza. Fara Jev, mutarile CPO-ului pastreaza
+    # estimarile fixe.
+    assert len(fake_ollama.requests) == 1
     assert all(move["estimated_by"] == "fixed" for move in body["product"]["moves"])
     chair = fake_ollama.requests[-1]["messages"]
     assert chair[0]["content"] == CHAIR_SYSTEM_PROMPT
@@ -301,7 +295,7 @@ def test_chat_streams_the_deliberation_token_by_token(
         "synthesis",
     ]
     assert names[-2:] == ["reply", "done"]
-    # Fiecare parere pleaca in clipa in care e gata, inainte de sinteza.
+    # Pozitiile membrilor pleaca imediat (sunt calculate din date), inainte de sinteza.
     opinions = [data["member"] for name, data in events if name == "opinion"]
     assert sorted(opinions) == ["cfo", "cpo", "researcher", "strategist", "technician"]
     assert names.index("token") > max(i for i, name in enumerate(names) if name == "opinion")
@@ -351,8 +345,7 @@ def test_without_a_first_token_the_circuit_breaker_sends_the_deterministic_reply
     reply = next(data for name, data in events if name == "reply")
     assert reply["source"] == "template"
     assert reply["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
-    # Primul membru care n-a primit niciun token a pus serverul in pauza: restul
-    # (si sinteza) n-au mai asteptat.
+    # Singurul apel e sinteza: fara niciun token, pleaca raspunsul determinist.
     assert fake_ollama.connections == 1
     assert all(
         data["source"] == "template" for name, data in events if name == "opinion"
@@ -433,7 +426,7 @@ def test_an_inventive_council_never_reaches_the_client(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(fake_ollama.requests) == 5
+    assert len(fake_ollama.requests) == 1
     assert body["source"] == "template"
     assert "40%" not in body["reply"]
     assert body["reply"].startswith("Da, dar controlat")
@@ -453,7 +446,7 @@ def test_a_failing_local_model_still_gets_an_answer(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(fake_ollama.requests) == 5
+    assert len(fake_ollama.requests) == 1
     assert body["source"] == "template"
     assert body["topic"] == "channel"
     assert body["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
@@ -478,8 +471,8 @@ def test_ollama_not_running_falls_back_without_waiting_on_every_call(
     assert "LLMUnavailableError" in body["fallback_reason"]
     assert body["reply"].startswith("Se poate testa TikTok, dar ca experiment mic")
     assert all(opinion["source"] == "template" for opinion in body["opinions"])
-    # Membrii au incercat in paralel; sinteza, dupa ei, nu mai asteapta nicio conexiune.
-    assert 1 <= fake_ollama.connections <= 4
+    # Doar sinteza a incercat: o singura conexiune refuzata.
+    assert fake_ollama.connections == 1
 
 
 def test_jev_scores_the_cpo_moves_and_ollama_writes_the_answer(
@@ -507,7 +500,7 @@ def test_jev_scores_the_cpo_moves_and_ollama_writes_the_answer(
     [scored] = fake_jev.requests
     assert set(scored["questions"]) == {"impact_0", "effort_0"}
     assert scored["state"]["moves"][0]["description"].startswith("rescrierea mesajului")
-    assert len(fake_ollama.requests) == 5
+    assert len(fake_ollama.requests) == 1
 
 
 def test_new_client_gets_no_generic_llm_advice(

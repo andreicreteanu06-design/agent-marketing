@@ -580,7 +580,7 @@ EXPLICA clientului:
 
 | Sarcina | Sistem | Unde se foloseste |
 |---------|--------|-------------------|
-| `generate` -> `generate_text_local()` / `stream_text_local()` | Ollama, local | Mesajul CMO, parerile consiliului, sinteza Reginei (in flux, in chat) |
+| `generate` -> `generate_text_local()` / `stream_text_local()` | Ollama, local | Mesajul CMO si sinteza Reginei (in flux, in chat) - singurul text al consiliului scris de model |
 | `score` -> `jev_score()` | Jev | CPO-ul: impactul si efortul fiecarei mutari RICE (o cerere pentru toate) |
 | `verify` -> `jev_verify()` | Jev | Researcher-ul: "e fragmentul web despre nisa clientului?" (o cerere pe fragment, in paralel) |
 | `classify` -> `jev_classify()` | Jev | Disponibil (Choice); rutarea intrebarilor ramane deocamdata pe reguli |
@@ -600,12 +600,13 @@ In Docker, doar containerul `api` ajunge la Ollama de pe host
 `"stream": true`: cat timp vin tokeni, generarea nu mai are termen de raspuns (pe CPU,
 450 de tokeni pot dura minute; plasa e de 300 s). Circuit-breaker-ul sare doar cand
 Ollama nu accepta conexiunea sau nu trimite niciun token in
-`OLLAMA_FIRST_TOKEN_TIMEOUT` secunde (10) - atunci serverul intra 30 s in pauza si
-raspunde varianta determinista. Generarile catre acelasi server trec pe rand
-(`OLLAMA_MAX_PARALLEL`, 1 pe CPU): cele cinci pareri ale consiliului nu mai stau
-simultan in coada lui Ollama, deci termenul primului token masoara modelul, nu coada.
-`OLLAMA_KEEP_ALIVE` (30m) tine modelul incarcat intre conversatii: reincarcarea lui
-pe CPU depaseste singura cele 10 s.
+`OLLAMA_FIRST_TOKEN_TIMEOUT` secunde (180) - atunci serverul intra 30 s in pauza si
+raspunde varianta determinista. 180 s pentru ca pe CPU sinteza consiliului (~5000 de
+tokeni de prompt) porneste abia dupa ce modelul citeste tot promptul: ~100 s cu
+Qwen2.5-1.5B pe 8 nuclee; in chat, fluxul SSE arata intre timp etapele si secundele
+scurse. Generarile catre acelasi server trec pe rand (`OLLAMA_MAX_PARALLEL`, 1 pe CPU),
+deci termenul primului token masoara modelul, nu coada. `OLLAMA_KEEP_ALIVE` (30m) tine
+modelul incarcat intre conversatii: reincarcarea lui pe CPU mai adauga ~10 s.
 
 **Modele mici pentru CPU** (`python -m ppc_agent_server.hf_manager`): aduce de pe
 Hugging Face un GGUF cuantizat Q4_K_M (`huggingface_hub`, din cache intai - a doua
@@ -623,8 +624,10 @@ python -m ppc_agent_server.hf_manager cache       # ce e in cache-ul Hugging Fac
 ```
 
 Apoi `OLLAMA_MODEL=qwen2.5-1.5b-q4km` in `.env`. Pe CPU, primul token depinde mai
-ales de lungimea promptului (faptele consiliului, 1-2k tokeni), nu de raspuns: de
-aceea `benchmark` masoara, nu promite. Qwen2.5-3B are licenta de cercetare (fara uz
+ales de lungimea promptului (sinteza consiliului, ~5000 de tokeni), nu de raspuns: de
+aceea `benchmark` masoara, nu promite - implicit pe un prompt de marimea sintezei
+(12 500 de caractere), cu termenul circuit-breaker-ului (180 s). Masurat pe masina de
+dezvoltare (8 nuclee, doar CPU): primul token in ~100 s, raspunsul intreg in ~140 s. Qwen2.5-3B are licenta de cercetare (fara uz
 comercial) si se instaleaza doar cu `--allow-noncommercial`; Gemma 3 4B scrie cea
 mai buna romana dintre cele mici, dar e de ~2,5 ori mai lent decat 1.5B.
 TimesFM (prognoza din CLI) se incarca acum din cache fara nicio cerere in retea,
@@ -643,16 +646,22 @@ Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliu
    CFO-ul, cu motivul. O idee de brand care costa bani (interese noi, lookalike,
    un canal nou, buget in plus) trece doar pe un cont rentabil; o reclama rentabila
    pe care Regina vrea s-o rescrie devine test A/B, nu se inlocuieste.
-3. **Parerile** - strategia de brand si CFO-ul, cerute in paralel, fiecare doar cu
-   faptele rolului sau.
+3. **Pozitiile membrilor** (Data-to-Text) - Strategul, CFO-ul, Tehnicianul,
+   Researcher-ul si CPO-ul NU scriu cu un model: fiecare pozitie e un text scurt calculat
+   din datele rolului (garzile Python; Jev pentru mutarile CPO-ului si fragmentele web),
+   gata in cateva milisecunde. Pe CPU, cinci pareri LLM ar fi adaugat minute de asteptare
+   fara nicio informatie in plus fata de date.
 4. **Runda de replici** - disputele pe care decizia le-a transat (`CouncilRuling.conflicts`):
    CFO-ul taie o idee de brand care cere bani, veto-ul Tehnicianului opreste ce ar fi
    trecut, Researcher-ul vede o fereastra in piata cand CFO-ul taie bugetul, CPO-ul da
    vina pe oferta, nu pe mesaj. Cine a pierdut ii raspunde o data celui care a castigat,
-   cu faptele lui: ce ramane valabil si **cand se rediscuta** - o conditie masurabila
+   tot din date (replica vine din regula care a transat disputa): ce ramane valabil si
+   **cand se rediscuta** - o conditie masurabila
    ("CPA-ul contului coboara sub tinta de 80 RON", "testul E2E confirma tracking-ul"),
    care ajunge si in raspunsul catre client. Decizia nu se negociaza: o dau regulile.
-5. **Sinteza Reginei**, care comunica decizia, cine a cedat in fata cui si cand se rediscuta.
+5. **Sinteza Reginei** - **singurul apel LLM** al consiliului: ia pozitiile, replicile,
+   faptele si decizia si le transforma in mesajul pentru client - decizia, cine a cedat
+   in fata cui si cand se rediscuta.
 
 **In flux (Server-Sent Events).** Cu `Accept: text/event-stream`, aceeasi deliberare
 vine pe masura ce se intampla - pagina `/cont/regina` o foloseste:
@@ -667,16 +676,17 @@ vine pe masura ce se intampla - pagina `/cont/regina` o foloseste:
 
 Tokenii sunt ciorna: garda (`check_council_text`) se aplica pe textul intreg, iar
 `reply` il inlocuieste - cu varianta determinista, daca sinteza a picat sau a adus
-cifre care nu sunt in date. Fara niciun token in primele 10 s, circuit-breaker-ul
-trimite direct raspunsul determinist. Cat delibereaza consiliul, un comentariu SSE la
+cifre care nu sunt in date. Pozitiile membrilor sosesc imediat; singura asteptare e
+sinteza. Fara niciun token in `OLLAMA_FIRST_TOKEN_TIMEOUT` secunde (180),
+circuit-breaker-ul trimite direct raspunsul determinist. Cat delibereaza consiliul, un comentariu SSE la
 15 s tine conexiunea deschisa prin proxy-uri; limitarea (429) se verifica inainte sa
 inceapa fluxul. Fara antetul `Accept`, ruta raspunde JSON, ca inainte.
 
-Fiecare text LLM trece prin `check_council_text`: nicio cifra in afara datelor (ale
-clientului pot fi repetate, nu "calculate mai departe"), niciun link, nicio actiune
-pretinsa ("am marit bugetul"), nicio cheltuiala promisa, nicio garantie. Un membru
-respins sau picat e inlocuit cu pozitia lui determinista; fara Ollama raspunde
-consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
+Sinteza trece prin `check_council_text`: nicio cifra in afara datelor (ale clientului
+pot fi repetate, nu "calculate mai departe"), niciun link, nicio actiune pretinsa ("am
+marit bugetul"), nicio cheltuiala promisa, nicio garantie, niciun sfat generic
+("Silicon Valley", "growth hacking"). O sinteza respinsa sau picata e inlocuita cu
+raspunsul determinist; fara Ollama raspunde consiliul determinist. Fara date (niciun client ideal si sub 5 conversii),
 niciun LLM nu e apelat - raspunsul spune ce lipseste, nu da sfaturi generice.
 
 **Consiliul in tura de noapte** (`services/council_guard.py`): deciziile din chat se
@@ -755,9 +765,9 @@ sau consimtamantul care a blocat testul raman **avertismente** (`warnings`): se 
 nu opresc nimic. Un test E2E mai vechi de 3 zile nu mai sprijina niciun veto.
 Raspunsul Reginei spune veto-ul si prima reparatie, oricare ar fi fost intrebarea.
 
-Vocea lui (`ENGINEER_VOICE` din `humanizer.py`): inginer senior, extrem de scurt -
-diagnosticul, cauza, reparatia - cu aceleasi interdictii anti-AI ca a consultantului.
-Garda consiliului respinge si reparatiile pretinse ("am reparat tag-ul").
+In consiliu, pozitia lui e calculata din raport (`technician_position`): diagnosticul,
+veto-ul, prima reparatie - fara LLM. Garda sintezei respinge si reparatiile pretinse
+("am reparat tag-ul").
 
 Masuratoarea de viteza si testul E2E sunt pasi ai mentenantei de noapte
 (`speed_check` si `tracking_contract` in `run_client_maintenance_job`, jobul ARQ per
@@ -843,24 +853,23 @@ necunoscute si se spune asta. Cand exista trendul, aceleasi reguli dau
 `CouncilRuling.market_context` - contextul pietei pentru intrebare, care explica decizia
 fara s-o schimbe. O intrebare despre pretul click-ului ("de ce a crescut CPC-ul?")
 primeste raspunsul din licitatie; fara date de licitatie, consiliul spune ca le lipsesc,
-nu ghiceste. Fara nimic masurat, Researcher-ul vorbeste din template, fara LLM.
+nu ghiceste. Fara nimic masurat, Researcher-ul spune ce lipseste.
 
 **Cautarea pe web (ca Perplexity), reala:** nisa si orasul se scot din cautarile
 clientului (`market_focus`: cel mai lung grup de cuvinte repetat in cautari, fara
 "pret"/"program"/brand; orasul recunoscut, altfel Romania), apoi doua interogari
 DuckDuckGo (`ddgs`, fara cheie): "competitori <nisa> <oras>" si "trenduri <nisa>
 Romania <an>". Researcher-ul nu stie cum se cauta: cere abilitatea `web_search` din
-registrul de abilitati (vezi mai jos). Primele 5 surse distincte (titlu, fragment, site) ajung la LLM-ul
-Researcher-ului, care are voie sa formuleze EXCLUSIV din ele: garda respinge orice
-cifra din afara lor, linkurile si sfaturile generice ("Silicon Valley", "growth
-hacking", "startup"). Cautarile ruleaza in paralel (fire separate), cu timeout de
+registrul de abilitati (vezi mai jos). Primele 5 surse distincte (titlu, fragment,
+site) intra, citate, in pozitia Researcher-ului si in faptele sintezei Reginei, care
+are voie sa formuleze EXCLUSIV din ele: garda respinge orice cifra din afara lor,
+linkurile si sfaturile generice ("Silicon Valley", "growth hacking", "startup"). Cautarile ruleaza in paralel (fire separate), cu timeout de
 8 s; un timeout sau o limita DuckDuckGo nu opreste chatul - Researcher-ul spune ca n-a
 mers. Rezultatele se tin minte o zi, in proces. Cautarea pe web si Google Trends
 ruleaza in paralel.
 
-Vocea lui (`ANALYST_VOICE` din `humanizer.py`): analist de intelligence comercial -
-cota de piata, miscarile competitorilor, ferestrele de oportunitate - asertiv, scurt,
-fiecare afirmatie cu cifra ei din fapte, fara speculatii despre intentiile concurentilor.
+In consiliu, pozitia lui e calculata (`researcher_position`): concurenta, cererea,
+fereastra si sursele de pe web, citate - fara LLM.
 
 #### CPO-ul (Chief Product Officer): oferta si pozitionarea
 

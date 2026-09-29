@@ -15,7 +15,6 @@ import pytest
 
 from ppc_agent_server.services.council import QueenCouncil
 from ppc_agent_server.services.cpo import (
-    CPO_SYSTEM_PROMPT,
     EFFORT_LEVELS,
     IMPACT_LEVELS,
     evaluate_offer,
@@ -257,13 +256,15 @@ def test_the_cpo_reads_the_researcher_signal_and_the_chair_hears_the_pivot() -> 
     ).evaluate_client_query("De ce nu vând reclamele?", _aligned())
 
     assert reply.ruling.offer == PIVOT
-    cpo = voice.prompt("cpo")
-    assert "FAPTE DE PRODUS" in cpo and "Mutarea 1 după RICE: pivotarea unghiului" in cpo
-    assert "Verdict financiar" not in cpo
+    # Pozitia CPO-ului e verdictul lui, calculat; modelul scrie doar sinteza.
+    cpo = reply.opinions[-1]
+    assert reply.product is not None
+    assert (cpo.member, cpo.source, cpo.opinion) == ("cpo", "template", reply.product.summary)
+    assert voice.roles == ["chair"]
     chair = voice.prompt("chair")
-    assert "PĂREREA CPO-ULUI" in chair
+    assert f"PĂREREA CPO-ULUI:\n{cpo.opinion}" in chair
+    assert "FAPTE DE PRODUS" in chair and "Mutarea 1 după RICE: pivotarea unghiului" in chair
     assert f"Verdictul CPO-ului pe ofertă: {PIVOT}" in chair
-    assert CPO_SYSTEM_PROMPT.index("6. Verifică CONTEXTUL ISTORIC") > 0
 
 
 def test_a_positioning_gap_is_said_on_audience_questions_not_on_budget() -> None:

@@ -23,13 +23,10 @@ from ppc_agent_server.models import (
     ProposedChange,
 )
 from ppc_agent_server.services.council import (
-    CFO_SYSTEM_PROMPT,
     CHAIR_SYSTEM_PROMPT,
-    STRATEGIST_SYSTEM_PROMPT,
     QueenCouncil,
     memories_from_reply,
 )
-from ppc_agent_server.services.cpo import CPO_SYSTEM_PROMPT
 from ppc_agent_server.services.memory import (
     HISTORY_RULE,
     MemoryEntry,
@@ -39,8 +36,6 @@ from ppc_agent_server.services.memory import (
     relative_when,
 )
 from ppc_agent_server.services.queen_signals import DbMemory
-from ppc_agent_server.services.researcher import RESEARCHER_SYSTEM_PROMPT
-from ppc_agent_server.services.technician import TECHNICIAN_SYSTEM_PROMPT
 from tests_server.test_jobs_tasks import _client_account
 from tests_server.test_queen_agent import NOW
 from tests_server.test_queen_council import (
@@ -186,29 +181,23 @@ def _snapshot(signals: object) -> object:
 # --- memoria in consiliu --------------------------------------------------------------------------
 
 
-def test_every_agent_prompt_asks_to_check_the_history() -> None:
-    for prompt in (
-        STRATEGIST_SYSTEM_PROMPT,
-        CFO_SYSTEM_PROMPT,
-        CHAIR_SYSTEM_PROMPT,
-        TECHNICIAN_SYSTEM_PROMPT,
-        RESEARCHER_SYSTEM_PROMPT,
-        CPO_SYSTEM_PROMPT,
-    ):
-        assert HISTORY_RULE in prompt
-        # Regula e printre reguli, inaintea vocii.
-        assert prompt.index(HISTORY_RULE) < prompt.index("VOCEA (regulile de mai sus")
+def test_the_synthesis_prompt_asks_to_check_the_history() -> None:
+    assert HISTORY_RULE in CHAIR_SYSTEM_PROMPT
+    # Regula e printre reguli, inaintea vocii.
+    assert CHAIR_SYSTEM_PROMPT.index(HISTORY_RULE) < CHAIR_SYSTEM_PROMPT.index(
+        "VOCEA (regulile de mai sus"
+    )
 
 
-def test_the_history_reaches_every_member_and_the_synthesis() -> None:
+def test_the_history_reaches_the_synthesis() -> None:
     voice = _CouncilVoice()
     _council(_Memory([CFO_CUT]), voice=voice).evaluate_client_query(BUDGET, _directive())
 
-    line = "Acum 2 săptămâni, CFO-ul a tăiat creșterea bugetului"
-    for role in ("strategist", "cfo", "cpo", "chair"):
-        prompt = voice.prompt(role)
-        assert "CONTEXT ISTORIC (memoria consiliului):" in prompt
-        assert line in prompt
+    # Membrii nu primesc prompturi (pozitiile lor sunt din date): memoria o citeste sinteza.
+    assert voice.roles == ["chair"]
+    prompt = voice.prompt("chair")
+    assert "CONTEXT ISTORIC (memoria consiliului):" in prompt
+    assert "Acum 2 săptămâni, CFO-ul a tăiat creșterea bugetului" in prompt
 
 
 def test_two_sessions_two_weeks_apart_the_queen_remembers() -> None:
