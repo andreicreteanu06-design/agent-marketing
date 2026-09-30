@@ -513,15 +513,21 @@ def test_the_router_is_the_voice_and_writes_only_through_ollama(
 
 
 def test_router_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    nothing = llm_router_from_settings(ServerSettings(jev_api_key="", ollama_host=""))
+    # ``_env_file=None``: testul nu citeste .env-ul masinii (altfel OLLAMA_MODEL de acolo
+    # ar schimba modelul implicit asteptat mai jos).
+    nothing = llm_router_from_settings(
+        ServerSettings(_env_file=None, jev_api_key="", ollama_host="")
+    )
     assert not any(nothing.ready(task) for task in ROUTES)
 
-    both = llm_router_from_settings(ServerSettings(jev_api_key="jev_x", ollama_host="localhost"))
+    both = llm_router_from_settings(
+        ServerSettings(_env_file=None, jev_api_key="jev_x", ollama_host="localhost")
+    )
     assert both.ready("score") and both.ready("generate")
     assert both.model == DEFAULT_OLLAMA_MODEL
 
     custom = llm_router_from_settings(
-        ServerSettings(ollama_host="localhost", ollama_model="ollama/qwen2.5:7b")
+        ServerSettings(_env_file=None, ollama_host="localhost", ollama_model="ollama/qwen2.5:7b")
     )
     assert custom.model == "qwen2.5:7b"
 
