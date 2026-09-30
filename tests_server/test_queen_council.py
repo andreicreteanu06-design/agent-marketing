@@ -541,7 +541,8 @@ def test_without_a_voice_the_council_answers_deterministically() -> None:
 
     assert reply.source == "template"
     assert reply.fallback_reason == (
-        "Vocea LLM nu e configurată - răspunsul determinist al consiliului."
+        "Sinteza LLM e oprită (USE_LLM_SYNTHESIS) sau vocea nu e configurată - "
+        "răspunsul determinist al consiliului."
     )
     assert reply.reply.startswith("Contul e rentabil: CPA-ul e 39,23 RON")
     assert all(opinion.source == "template" for opinion in reply.opinions)

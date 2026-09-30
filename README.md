@@ -661,7 +661,9 @@ Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliu
    **cand se rediscuta** - o conditie masurabila
    ("CPA-ul contului coboara sub tinta de 80 RON", "testul E2E confirma tracking-ul"),
    care ajunge si in raspunsul catre client. Decizia nu se negociaza: o dau regulile.
-5. **Sinteza Reginei** - **singurul apel LLM** al consiliului. Primeste DOAR pozitiile
+5. **Sinteza Reginei** - **singurul apel LLM** al consiliului, doar cu
+   `USE_LLM_SYNTHESIS=true` (implicit `false`: pe CPU, raspunsul determinist pleaca in
+   milisecunde, fara niciun apel la Ollama; pornit, cu un model mare pe GPU). Primeste DOAR pozitiile
    membrilor, replicile si decizia (plus amintirea despre acelasi subiect) - nu si
    faptele brute, pe care membrii le-au judecat deja - si le leaga in mesajul pentru
    client. Promptul a scazut de la ~15k la ~6-8k caractere, iar primul token pe CPU de

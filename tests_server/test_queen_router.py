@@ -39,6 +39,7 @@ from ppc_agent_server.services.cpo import EFFORT_LEVELS, IMPACT_LEVELS
 from ppc_agent_server.services.llm_client import LLMRouter
 from ppc_agent_server.services.queen_agent import SearchSignal
 from ppc_agent_server.services.queen_signals import DbFinancialSignals
+from ppc_agent_server.settings import get_server_settings
 from tests_server.llm_fakes import FakeJev, FakeOllama
 from tests_server.test_brand_alignment import (
     TECHNICAL_HEADLINE,
@@ -111,6 +112,25 @@ def test_message_comes_from_the_local_model_when_ollama_is_configured(
     assert "Senior AI Chief Marketing Officer" in system
     assert "«Ocupatul pragmatic»" in user
     assert "«Schimb ulei ATF cutie automata»" in user
+
+
+def test_with_the_synthesis_off_the_cmo_message_skips_ollama(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    monkeypatch.setenv("USE_LLM_SYNTHESIS", "false")
+    get_server_settings.cache_clear()
+    app.dependency_overrides[queen.get_llm_router] = fake_ollama.router
+
+    body = client.get(_URL, headers=headers).json()
+
+    assert fake_ollama.requests == []
+    assert body["source"] == "template" and "USE_LLM_SYNTHESIS" in body["fallback_reason"]
+    assert "«Ocupatul pragmatic»" in body["message"]
 
 
 def test_without_a_key_the_route_answers_from_the_template(
@@ -247,6 +267,27 @@ def test_chat_reply_is_deliberated_by_the_council_through_the_local_model(
     assert chair[0]["content"] == CHAIR_SYSTEM_PROMPT
     assert "«Merită să cresc bugetul?»" in chair[1]["content"]
     assert "DECIZIA CONSILIULUI" in chair[1]["content"]
+
+
+def test_with_the_synthesis_off_ollama_is_never_called(
+    signed_in: tuple[TestClient, FastAPI, dict[str, str], int],
+    session: Session,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, app, headers, account_id = signed_in
+    _seed(session, account_id)
+    monkeypatch.setenv("USE_LLM_SYNTHESIS", "false")
+    get_server_settings.cache_clear()
+    app.dependency_overrides[queen.get_llm_router] = _council_ollama(fake_ollama).router
+
+    response = client.post(_CHAT_URL, headers=headers, json={"message": "Merită să cresc bugetul?"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert fake_ollama.requests == []
+    assert body["source"] == "template" and "USE_LLM_SYNTHESIS" in body["fallback_reason"]
+    assert body["reply"].startswith("Da, dar controlat")
 
 
 # --- chatul in flux (Server-Sent Events) ---------------------------------------------------

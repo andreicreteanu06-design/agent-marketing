@@ -554,6 +554,10 @@ def test_settings_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (settings.jev_api_key, settings.ollama_host) == ("", DEFAULT_OLLAMA_HOST)
     # Sinteza consiliului porneste pe CPU in ~45 s: termenul ii lasa loc larg.
     assert settings.ollama_first_token_timeout == OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS == 180.0
+    # Sinteza LLM a consiliului e oprita implicit (CPU): raspunsul determinist, instant.
+    assert settings.use_llm_synthesis is False
+    monkeypatch.setenv("USE_LLM_SYNTHESIS", "true")
+    assert ServerSettings(_env_file=None).use_llm_synthesis is True
     assert DEFAULT_OLLAMA_HOST == "http://localhost:11434"
 
 

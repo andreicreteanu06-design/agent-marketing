@@ -132,6 +132,11 @@ class ServerSettings(BaseSettings):
     # Cat tine Ollama modelul incarcat intre cereri (ex. "30m", "2h", "-1" = mereu).
     # Necompletat => implicitul serverului (5 min), dupa care prima cerere il reincarca.
     ollama_keep_alive: str = "30m"
+    # Textele Reginei scrise de Ollama: sinteza consiliului si mesajul CMO. Oprite
+    # implicit: pe CPU, un model mic scrie
+    # zeci de secunde un text pe care garzile il resping des; raspunsul determinist
+    # pleaca instant. Porneste-o cu un model mare pe GPU.
+    use_llm_synthesis: bool = False
 
     @field_validator("jev_api_key", "ollama_model", "ollama_keep_alive")
     @classmethod

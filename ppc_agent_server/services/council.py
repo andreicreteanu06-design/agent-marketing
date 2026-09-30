@@ -1986,7 +1986,8 @@ class QueenCouncil:
 
         if self._voice is None:
             reply = _deterministic(
-                "Vocea LLM nu e configurată - răspunsul determinist al consiliului."
+                "Sinteza LLM e oprită (USE_LLM_SYNTHESIS) sau vocea nu e configurată - "
+                "răspunsul determinist al consiliului."
             )
         elif not (has_brand or has_money or has_tech or has_market):
             reply = _deterministic(

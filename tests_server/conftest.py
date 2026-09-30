@@ -155,8 +155,13 @@ def fake_jev() -> Iterator[FakeJev]:
 
 
 @pytest.fixture
-def fake_ollama() -> Iterator[FakeOllama]:
-    """Ollama simulat, raspuns instant; testul pica daca o cerere n-are forma documentata."""
+def fake_ollama(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeOllama]:
+    """Ollama simulat, raspuns instant; testul pica daca o cerere n-are forma documentata.
+
+    Cu el, sinteza consiliului e pornita (``USE_LLM_SYNTHESIS``): testul vrea drumul LLM.
+    """
+    monkeypatch.setenv("USE_LLM_SYNTHESIS", "true")
+    get_server_settings.cache_clear()
     fake = FakeOllama()
     yield fake
     assert fake.problems == [], fake.problems

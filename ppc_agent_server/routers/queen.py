@@ -108,8 +108,13 @@ def get_llm_router() -> LLMRouter:
 
 
 def get_cmo_voice(router: Annotated[LLMRouter, Depends(get_llm_router)]) -> TextGenerator | None:
-    """Dependinta: vocea - Ollama, prin ``generate_text_local`` - sau ``None`` (-> template)."""
-    return router.voice
+    """Dependinta: vocea Reginei (mesajul CMO, sinteza consiliului) - sau ``None`` (-> template).
+
+    Doar cu ``USE_LLM_SYNTHESIS=true``: oprita, nimic din Regina nu cheama Ollama, iar
+    textul determinist pleaca in milisecunde, in loc sa astepte pe CPU un fallback
+    aproape sigur.
+    """
+    return router.voice if get_server_settings().use_llm_synthesis else None
 
 
 def get_system_one(router: Annotated[LLMRouter, Depends(get_llm_router)]) -> LLMRouter | None:

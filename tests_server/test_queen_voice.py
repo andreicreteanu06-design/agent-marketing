@@ -139,7 +139,10 @@ def test_without_a_voice_the_template_speaks() -> None:
     message = _queen(None).generate_cmo_message(42, _directive())
 
     assert message.source == "template"
-    assert message.fallback_reason == "Vocea LLM nu e configurată - mesaj din template."
+    assert message.fallback_reason == (
+        "Sinteza LLM e oprită (USE_LLM_SYNTHESIS) sau vocea nu e configurată - "
+        "mesaj din template."
+    )
 
 
 def test_insufficient_data_never_reaches_the_llm() -> None:

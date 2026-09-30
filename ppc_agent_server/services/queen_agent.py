@@ -1424,7 +1424,10 @@ class BrandStrategist:
         if directive.status != "ok":
             return _template("Nu există încă un client ideal de explicat - mesajul standard.")
         if self._voice is None:
-            return _template("Vocea LLM nu e configurată - mesaj din template.")
+            return _template(
+                "Sinteza LLM e oprită (USE_LLM_SYNTHESIS) sau vocea nu e configurată - "
+                "mesaj din template."
+            )
 
         system, user = build_cmo_prompt(directive)
         try:
