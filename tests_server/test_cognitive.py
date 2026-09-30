@@ -22,13 +22,14 @@ from ppc_agent_server.services.cognitive import (
 )
 from ppc_agent_server.services.council import (
     CHAIR_SYSTEM_PROMPT,
-    CouncilOpinion,
     build_chair_prompt,
     build_financial_snapshot,
-    cfo_facts,
+    cfo_position,
     check_council_text,
     classify_question,
+    member_opinion,
     rule_on_question,
+    strategist_position,
 )
 from ppc_agent_server.services.queen_agent import build_directive, cmo_facts
 from tests_server.test_queen_agent import NOW, _signals
@@ -279,7 +280,7 @@ def test_the_council_reply_explains_the_psychology_like_a_consultant() -> None:
 
 
 def test_the_brand_position_and_the_queen_carry_the_psychology() -> None:
-    assert "motivația psihologică din fapte" in CHAIR_SYSTEM_PROMPT
+    assert "motivația psihologică din poziția ta de brand" in CHAIR_SYSTEM_PROMPT
 
     voice = _CouncilVoice()
     directive = build_directive(42, _signals(), generated_at=NOW)
@@ -291,7 +292,7 @@ def test_the_brand_position_and_the_queen_carry_the_psychology() -> None:
     strategist, cfo = reply.opinions[0], reply.opinions[1]
     assert summary in strategist.opinion
     assert summary not in cfo.opinion
-    assert "Psihologia cumpărătorului" in voice.prompt("chair")
+    assert summary in voice.prompt("chair")
 
 
 def _chair_facts(question: str) -> str:
@@ -301,15 +302,10 @@ def _chair_facts(question: str) -> str:
         classify_question(question, active_platforms={"meta", "google"}), directive, finances
     )
     opinions = [
-        CouncilOpinion(
-            member="strategist", title="", opinion="", source="template", model=None,
-            fallback_reason=None,
-        ),
+        member_opinion("strategist", strategist_position(directive), has_data=True),
+        member_opinion("cfo", cfo_position(finances), has_data=True),
     ]
-    _, user = build_chair_prompt(
-        question, opinions, brand_facts=cmo_facts(directive), money_facts=cfo_facts(finances),
-        ruling=ruling,
-    )
+    _, user = build_chair_prompt(question, opinions, ruling=ruling)
     return user
 
 

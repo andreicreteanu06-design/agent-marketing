@@ -601,9 +601,10 @@ In Docker, doar containerul `api` ajunge la Ollama de pe host
 450 de tokeni pot dura minute; plasa e de 300 s). Circuit-breaker-ul sare doar cand
 Ollama nu accepta conexiunea sau nu trimite niciun token in
 `OLLAMA_FIRST_TOKEN_TIMEOUT` secunde (180) - atunci serverul intra 30 s in pauza si
-raspunde varianta determinista. 180 s pentru ca pe CPU sinteza consiliului (~5000 de
-tokeni de prompt) porneste abia dupa ce modelul citeste tot promptul: ~100 s cu
-Qwen2.5-1.5B pe 8 nuclee; in chat, fluxul SSE arata intre timp etapele si secundele
+raspunde varianta determinista. Pe CPU, sinteza consiliului (~2-3k tokeni de prompt)
+porneste abia dupa ce modelul citeste tot promptul: ~45 s cu
+Qwen2.5-1.5B pe 8 nuclee (180 s lasa loc pentru un CPU ocupat si prompturi mai lungi);
+in chat, fluxul SSE arata intre timp etapele si secundele
 scurse. Generarile catre acelasi server trec pe rand (`OLLAMA_MAX_PARALLEL`, 1 pe CPU),
 deci termenul primului token masoara modelul, nu coada. `OLLAMA_KEEP_ALIVE` (30m) tine
 modelul incarcat intre conversatii: reincarcarea lui pe CPU mai adauga ~10 s.
@@ -613,7 +614,7 @@ Hugging Face un GGUF cuantizat Q4_K_M (`huggingface_hub`, din cache intai - a do
 rulare nu descarca nimic), il urca in Ollama ca blob si creeaza modelul
 (`/api/create`) doar pe CPU (`num_gpu 0` - pe un GPU integrat, backend-ul GPU al
 Ollama a scos text fara sens cu Qwen2.5; `--allow-gpu` il lasa sa decida) si cu
-context de 8192 de tokeni (sinteza consiliului are ~5000), apoi il masoara pe un
+context de 8192 de tokeni (loc larg pentru sinteza consiliului), apoi il masoara pe un
 prompt de marimea celor din consiliu:
 
 ```
@@ -624,10 +625,11 @@ python -m ppc_agent_server.hf_manager cache       # ce e in cache-ul Hugging Fac
 ```
 
 Apoi `OLLAMA_MODEL=qwen2.5-1.5b-q4km` in `.env`. Pe CPU, primul token depinde mai
-ales de lungimea promptului (sinteza consiliului, ~5000 de tokeni), nu de raspuns: de
+ales de lungimea promptului (sinteza consiliului, ~2-3k tokeni), nu de raspuns: de
 aceea `benchmark` masoara, nu promite - implicit pe un prompt de marimea sintezei
-(12 500 de caractere), cu termenul circuit-breaker-ului (180 s). Masurat pe masina de
-dezvoltare (8 nuclee, doar CPU): primul token in ~100 s, raspunsul intreg in ~140 s. Qwen2.5-3B are licenta de cercetare (fara uz
+(7000 de caractere), cu termenul circuit-breaker-ului (180 s). Masurat pe masina de
+dezvoltare (8 nuclee, doar CPU): primul token in ~42-47 s, raspunsul intreg in ~70-90 s.
+Qwen2.5-3B are licenta de cercetare (fara uz
 comercial) si se instaleaza doar cu `--allow-noncommercial`; Gemma 3 4B scrie cea
 mai buna romana dintre cele mici, dar e de ~2,5 ori mai lent decat 1.5B.
 TimesFM (prognoza din CLI) se incarca acum din cache fara nicio cerere in retea,
@@ -659,9 +661,13 @@ Pagina `/cont/regina` din site. Regina nu raspunde direct: isi consulta consiliu
    **cand se rediscuta** - o conditie masurabila
    ("CPA-ul contului coboara sub tinta de 80 RON", "testul E2E confirma tracking-ul"),
    care ajunge si in raspunsul catre client. Decizia nu se negociaza: o dau regulile.
-5. **Sinteza Reginei** - **singurul apel LLM** al consiliului: ia pozitiile, replicile,
-   faptele si decizia si le transforma in mesajul pentru client - decizia, cine a cedat
-   in fata cui si cand se rediscuta.
+5. **Sinteza Reginei** - **singurul apel LLM** al consiliului. Primeste DOAR pozitiile
+   membrilor, replicile si decizia (plus amintirea despre acelasi subiect) - nu si
+   faptele brute, pe care membrii le-au judecat deja - si le leaga in mesajul pentru
+   client. Promptul a scazut de la ~15k la ~6-8k caractere, iar primul token pe CPU de
+   la 144 s la ~45 s. O garda de limbaj scurta (`LANGUAGE_GUARD`) ii cere modelului
+   mic doar cuvintele si cifrele primite, fara poveste, fara salut, fara sa i se
+   adreseze Reginei; `_tidy` taie oricum un "Regina," de la inceput si o semnatura.
 
 **In flux (Server-Sent Events).** Cu `Accept: text/event-stream`, aceeasi deliberare
 vine pe masura ce se intampla - pagina `/cont/regina` o foloseste:

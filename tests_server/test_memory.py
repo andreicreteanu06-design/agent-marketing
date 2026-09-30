@@ -28,7 +28,6 @@ from ppc_agent_server.services.council import (
     memories_from_reply,
 )
 from ppc_agent_server.services.memory import (
-    HISTORY_RULE,
     MemoryEntry,
     compress,
     memory_line,
@@ -181,23 +180,17 @@ def _snapshot(signals: object) -> object:
 # --- memoria in consiliu --------------------------------------------------------------------------
 
 
-def test_the_synthesis_prompt_asks_to_check_the_history() -> None:
-    assert HISTORY_RULE in CHAIR_SYSTEM_PROMPT
-    # Regula e printre reguli, inaintea vocii.
-    assert CHAIR_SYSTEM_PROMPT.index(HISTORY_RULE) < CHAIR_SYSTEM_PROMPT.index(
-        "VOCEA (regulile de mai sus"
-    )
-
-
-def test_the_history_reaches_the_synthesis() -> None:
+def test_the_synthesis_hears_the_memory_on_the_same_subject() -> None:
     voice = _CouncilVoice()
     _council(_Memory([CFO_CUT]), voice=voice).evaluate_client_query(BUDGET, _directive())
 
-    # Membrii nu primesc prompturi (pozitiile lor sunt din date): memoria o citeste sinteza.
+    # Membrii nu primesc prompturi (pozitiile lor sunt din date); sinteza primeste in
+    # decizie doar amintirea despre acelasi subiect, ca raspunsul determinist.
     assert voice.roles == ["chair"]
     prompt = voice.prompt("chair")
-    assert "CONTEXT ISTORIC (memoria consiliului):" in prompt
-    assert "Acum 2 săptămâni, CFO-ul a tăiat creșterea bugetului" in prompt
+    assert "- Țin minte: acum 2 săptămâni, CFO-ul a tăiat creșterea bugetului" in prompt
+    assert prompt.index("DECIZIA CONSILIULUI") < prompt.index("Țin minte")
+    assert "«Țin minte»" in CHAIR_SYSTEM_PROMPT
 
 
 def test_two_sessions_two_weeks_apart_the_queen_remembers() -> None:

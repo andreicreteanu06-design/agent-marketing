@@ -143,7 +143,7 @@ def test_install_downloads_uploads_and_creates_the_model(
     created = store.models[PRESET.ollama_name]
     digest = file_digest(tmp_path / PRESET.filename)
     assert created["files"] == {PRESET.filename: digest}
-    # Doar pe CPU, cu loc pentru sinteza consiliului (~5000 de tokeni).
+    # Doar pe CPU, cu loc larg pentru sinteza consiliului (~2-3k tokeni) si raspuns.
     assert created["parameters"] == {"num_ctx": 8192, "num_gpu": 0}
     assert list(store.blobs) == [digest]
 

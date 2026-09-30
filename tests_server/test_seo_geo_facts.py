@@ -183,7 +183,8 @@ def test_the_brand_position_carries_the_meta_organic_correlation() -> None:
     assert implication in strategist_position(directive)
     assert implication in reply.opinions[0].opinion
     chair = voice.prompt("chair")
-    assert "Paid Social (Meta) 600 de sesiuni (-25%)" in chair
+    assert implication in chair  # din pozitia Strategului, nu din cifrele GA4 brute
+    assert "Paid Social (Meta) 600 de sesiuni" not in chair
     assert "ca o corelare, nu ca o cauză" in CHAIR_SYSTEM_PROMPT
     assert implication not in strategist_position(build_directive(42, _signals(), generated_at=NOW))
 

@@ -14,6 +14,7 @@ import pytest
 
 from ppc_agent_server.services.council import (
     CHAIR_SYSTEM_PROMPT,
+    LANGUAGE_GUARD,
     check_council_text,
 )
 from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
@@ -36,7 +37,6 @@ from tests_server.test_queen_council import (
 
 CLIENT_FACING_PROMPTS = {
     "cmo": (CMO_SYSTEM_PROMPT, "Nu inventa cifre"),
-    "chair": (CHAIR_SYSTEM_PROMPT, "nu inventa cifre"),
 }
 
 
@@ -47,6 +47,22 @@ def test_every_client_facing_prompt_speaks_like_a_senior_consultant(role: str) -
     assert prompt.endswith(CONSULTANT_VOICE)
     # Regulile anti-halucinatie raman primele - stilul vine dupa ele si le cedeaza.
     assert prompt.index(factual_rule) < prompt.index("VOCEA (regulile de mai sus au prioritate")
+
+
+def test_the_chair_keeps_a_short_language_guard_instead_of_the_long_voice() -> None:
+    # Pentru un model de 1,5B, stilul lung al consultantului era zgomot: sinteza are
+    # garda ei de limbaj, scurta, dupa reguli.
+    assert CONSULTANT_VOICE not in CHAIR_SYSTEM_PROMPT
+    assert CHAIR_SYSTEM_PROMPT.endswith(LANGUAGE_GUARD)
+    assert len(CHAIR_SYSTEM_PROMPT) < 2000
+    for asked in (
+        "strict cuvintele și cifrele din pozițiile membrilor",
+        "Nu adaugi nicio poveste",
+        "Nu te adresezi ție însăți",
+        "nu scrii «Regina,»",
+        "nu saluți și nu semnezi",
+    ):
+        assert asked in LANGUAGE_GUARD
 
 
 def test_the_voice_asks_for_rhythm_active_voice_and_no_ai_speak() -> None:

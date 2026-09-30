@@ -438,7 +438,7 @@ def test_the_model_is_called_once_after_every_member_has_spoken() -> None:
     assert len(voice.calls) == 1
 
 
-def test_the_chair_sees_every_position_and_all_the_facts() -> None:
+def test_the_chair_gets_the_positions_and_the_decision_not_the_raw_facts() -> None:
     voice = _CouncilVoice()
     reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
 
@@ -448,16 +448,24 @@ def test_the_chair_sees_every_position_and_all_the_facts() -> None:
     chair = voice.prompt("chair")
     for part in (
         "«Merită să cresc bugetul?»",
-        f"PĂREREA TA DE BRAND:\n{strategist}",
-        f"PĂREREA CFO-ULUI:\n{cfo}",
-        f"PĂREREA CPO-ULUI:\n{cpo}",
-        "Unghiul de copy propus",
-        "Verdict financiar (calculat determinist, obligatoriu): Contul e rentabil",
-        "FAPTE DE PRODUS:\n- Verdictul pe ofertă (calculat determinist",
-        "DECIZIA CONSILIULUI",
-        "Decizia (obligatorie): Da",
+        f"POZIȚIILE CONSILIULUI:\n- Tu (strategia de brand): {strategist}\n",
+        f"- CFO-ul (rentabilitate): {cfo}\n",
+        f"- CPO-ul (oferta): {cpo}\n",
+        "DECIZIA CONSILIULUI:\n- Decizia (obligatorie): Da",
     ):
         assert part in chair
+    # Faptele brute raman la membri: le-au judecat deja.
+    for raw in ("FAPTE", "Unghiul de copy propus", "Verdict financiar", "Plafonul zilnic"):
+        assert raw not in chair
+    # Promptul e scurt: pe CPU, primul token vine dupa ce modelul il citeste tot.
+    assert len(CHAIR_SYSTEM_PROMPT) + len(chair) < 5000
+
+
+def test_the_self_address_and_the_signature_are_cut() -> None:
+    voice = _CouncilVoice({"chair": f"Regina,\n{CHAIR_SAYS}\n\n- Regina"})
+    reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
+
+    assert (reply.source, reply.reply) == ("llm", CHAIR_SAYS)
 
 
 def test_an_inventive_queen_falls_back_to_the_deterministic_ruling() -> None:

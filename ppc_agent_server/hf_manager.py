@@ -2,7 +2,7 @@
 
 Vocea consiliului (Sistemul 2, ``services/llm_client.py``) ruleaza pe Ollama, local,
 si scrie un singur text: sinteza Reginei. Pe CPU, un model de 8B (``llama3``,
-implicitul) citeste promptul ei (~5000 de tokeni) prea incet ca primul token sa vina
+implicitul) citeste promptul ei (~2-3k tokeni) prea incet ca primul token sa vina
 in termenul circuit-breaker-ului (``OLLAMA_FIRST_TOKEN_TIMEOUT``, 180 s). Utilitarul
 aduce o varianta cuantizata mica (Q4_K_M) si o incarca direct in Ollama-ul local:
 
@@ -14,7 +14,7 @@ aduce o varianta cuantizata mica (Q4_K_M) si o incarca direct in Ollama-ul local
    din metadatele GGUF. Implicit **doar pe CPU** (``num_gpu 0``): pe placile grafice
    integrate, backend-ul GPU al Ollama a dat text fara sens cu Qwen2.5 (masurat pe
    masina de dezvoltare), iar tinta e oricum CPU-ul. Contextul implicit e 8192 de
-   tokeni: sinteza consiliului are ~5000 si ar fi fost taiata la 4096;
+   tokeni: loc larg pentru promptul sintezei (~2-3k tokeni) si raspunsul ei;
 4. **il masoara** (``benchmark``): timpul pana la primul token si viteza, pe un prompt
    de marimea sintezei consiliului. Pe CPU, primul token depinde mai ales de lungimea
    promptului (citirea lui), nu de lungimea raspunsului - de aceea masuram, nu promitem.
@@ -65,9 +65,10 @@ _CHUNK = 1 << 20
 UPLOAD_TIMEOUT_SECONDS = 600.0
 #: Tinta primului token, aceeasi ca circuit-breaker-ul consiliului.
 FIRST_TOKEN_TARGET_SECONDS = OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS
-#: Promptul sintezei consiliului (singurul apel LLM), masurat: 12-13k caractere.
-SYNTHESIS_PROMPT_CHARS = 12500
-#: Contextul modelului creat: sinteza consiliului are ~5000 de tokeni (fapte + pareri).
+#: Promptul sintezei consiliului (singurul apel LLM: pozitii + replici + decizie),
+#: masurat: 5,7-7,7k caractere cu promptul de sistem.
+SYNTHESIS_PROMPT_CHARS = 7000
+#: Contextul modelului creat: promptul sintezei (~2-3k tokeni), raspunsul si rezerva.
 DEFAULT_NUM_CTX = 8192
 
 
@@ -98,7 +99,7 @@ PRESETS: dict[str, GgufPreset] = {
             1.12,
             "Apache-2.0",
             True,
-            "Cel mai rapid pe CPU: sinteza consiliului porneste in ~100 s pe 8 nuclee.",
+            "Cel mai rapid pe CPU: sinteza consiliului porneste in ~45 s pe 8 nuclee.",
         ),
         GgufPreset(
             "llama3.2-3b",

@@ -346,9 +346,10 @@ OLLAMA_CONNECT_TIMEOUT_SECONDS = 2.0
 #: Circuit-breaker-ul: fara niciun token in atat (modelul se incarca, citeste promptul
 #: sau e prea mare pentru masina), Ollama intra in pauza si raspunde template-ul. Tot
 #: atat poate tacea si in mijlocul raspunsului inainte sa-l socotim blocat. Generos:
-#: singurul apel al consiliului e sinteza Reginei, al carei prompt (~5000 de tokeni)
-#: un model mic il citeste pe CPU in 1-2 minute; chatul vine in flux (SSE), deci
-#: asteptarea se vede, nu arata ca o pagina blocata.
+#: singurul apel al consiliului e sinteza Reginei, al carei prompt (~2-3k tokeni) un
+#: model mic il citeste pe CPU in ~45 s - de patru ori mai putin decat termenul, ca un
+#: CPU ocupat sau un cont cu mai multe date sa nu-l depaseasca. Chatul vine in flux
+#: (SSE), deci asteptarea se vede, nu arata ca o pagina blocata.
 OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS = 180.0
 #: Plafonul unei generari intregi, cat timp tokenii curg: pe CPU, 450 de tokeni pot
 #: dura minute. Nu e un termen de raspuns, ci o plasa pentru un flux care nu se mai

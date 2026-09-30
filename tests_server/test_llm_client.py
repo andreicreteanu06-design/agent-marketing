@@ -552,7 +552,7 @@ def test_settings_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = ServerSettings(_env_file=None)
 
     assert (settings.jev_api_key, settings.ollama_host) == ("", DEFAULT_OLLAMA_HOST)
-    # Sinteza consiliului porneste pe CPU in 1-2 minute: termenul o lasa sa ajunga.
+    # Sinteza consiliului porneste pe CPU in ~45 s: termenul ii lasa loc larg.
     assert settings.ollama_first_token_timeout == OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS == 180.0
     assert DEFAULT_OLLAMA_HOST == "http://localhost:11434"
 

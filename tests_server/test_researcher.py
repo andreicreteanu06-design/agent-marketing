@@ -373,9 +373,9 @@ def test_a_live_researcher_gives_its_position_and_the_chair_the_market_facts() -
     assert (opinion.source, opinion.opinion) == ("template", reply.market.summary)
     assert opinion.fallback_reason is None
     chair = voice.prompt("chair")
-    assert f"PĂREREA RESEARCHER-ULUI:\n{opinion.opinion}" in chair
-    assert "FAPTE DE PIAȚĂ" in chair and "Au intrat 2 concurenți noi" in chair
+    assert f"- Researcher-ul (piața): {opinion.opinion}" in chair
     assert "Contextul pieței (Researcher): CPC-ul urcă" in chair
+    assert "FAPTE DE PIAȚĂ" not in chair  # faptele brute raman la Researcher
 
 
 # --- sursa si ruta ----------------------------------------------------------------------------
@@ -773,11 +773,12 @@ def test_real_web_findings_reach_the_synthesis_without_invented_numbers() -> Non
     voice = _CouncilVoice()
     reply = _council(voice=voice, market=WEB).evaluate_client_query(QUESTION, _directive())
 
-    chair = voice.prompt("chair")
-    assert "FAPTE DE PIAȚĂ" in chair and "Rezultatul 1 (yably.ro): «Titlu yably.ro»" in chair
-    assert "Concurentul" not in chair
     [opinion] = [opinion for opinion in reply.opinions if opinion.member == "researcher"]
     assert opinion.source == "template" and "yably.ro" in opinion.opinion
+    # Sursele ajung la sinteza citate in pozitia Researcher-ului, nu ca fragmente brute.
+    chair = voice.prompt("chair")
+    assert f"- Researcher-ul (piața): {opinion.opinion}" in chair
+    assert "Rezultatul 1 (yably.ro)" not in chair and "Concurentul" not in chair
     # Fragmentele nu muta decizia.
     assert reply.ruling.market_context is None
 

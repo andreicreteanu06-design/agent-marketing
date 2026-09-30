@@ -131,7 +131,7 @@ def test_the_loser_answers_the_winner_and_the_chair_hears_it() -> None:
     assert voice.roles == ["chair"]
     chair = voice.prompt("chair")
     assert (
-        "RUNDA DE REPLICI:\n- Regina · strategia de brand, către CFO · rentabilitate: "
+        "RUNDA DE REPLICI:\n- Tu (strategia de brand), către CFO-ul (rentabilitate): "
         f"{rebuttal.rebuttal}"
     ) in chair
     assert f"Se rediscută când {TARGET_REACHED}." in chair

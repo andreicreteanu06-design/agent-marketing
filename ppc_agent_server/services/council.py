@@ -32,12 +32,12 @@ Data-to-Text: membrii (Strategul, CFO-ul, Tehnicianul, Researcher-ul, CPO-ul) nu
 scriu cu un model - pozitiile si replicile lor sunt texte scurte calculate din
 datele rolului (garzile Python, Jev pentru CPO si pentru fragmentele de pe web),
 gata in cateva milisecunde. **Singurul apel LLM e sinteza Reginei**, la final:
-ia pozitiile, replicile, faptele si decizia si le transforma in mesajul pentru
-client. Pe CPU, un model local citeste promptul sintezei (~5000 de tokeni) in
-1-2 minute; cinci pareri LLM in plus ar fi adaugat minute intregi fara nicio
-informatie noua - pozitiile deterministe spun acelasi lucru, fara risc de
-halucinatie. Sinteza trece prin :func:`check_council_text` (nicio cifra in afara
-datelor, niciun link, nicio actiune pretinsa, nicio cheltuiala promisa). Textul
+ia DOAR pozitiile, replicile si decizia - nu si faptele brute, pe care membrii le-au
+judecat deja - si le leaga in mesajul pentru client. Un prompt scurt inseamna primul
+token mai repede pe CPU (modelul citeste tot promptul inainte sa scrie) si mai putin
+"zgomot" pentru un model mic, care altfel amesteca cifrele si strica limba. Sinteza
+trece prin :func:`check_council_text` (nicio cifra in afara pozitiilor si a deciziei,
+niciun link, nicio actiune pretinsa, nicio cheltuiala promisa). Textul
 il scrie un model local (Ollama, Sistemul 2 din ``llm_client.py``); fara el - sau
 cand pica - raspunde consiliul determinist, din aceleasi fapte. Fara date, nu
 raspunde nimeni "din burta": spune ce lipseste.
@@ -53,8 +53,9 @@ false), cu site-ul lent pe mobil nu trece nicio cheltuiala in plus. Veto-ul e to
 determinist - calculat inainte de orice LLM, ca restul deciziei.
 
 Consiliul tine minte (``memory.py``, dupa claude-mem): deciziile majore se scriu
-dupa fiecare raspuns, iar ultimele 5 - plus propunerile respinse sau esuate -
-intra ca "Context Istoric" in promptul sintezei.
+dupa fiecare raspuns. Raspunsul arata ultimele 5 (plus propunerile respinse sau
+esuate); in decizia trimisa sintezei intra doar amintirea despre acelasi subiect
+("Tin minte: ...").
 
 Al patrulea e Researcher-ul (``researcher.py``): piata din jurul clientului -
 concurenta din licitatie, trendul cererii, durerile noi. Nu schimba ce trece si
@@ -91,16 +92,13 @@ from ppc_agent_server.services.cpo import (
     OfferStatus,
     ProductDirective,
     RiceScorer,
-    cpo_facts,
     evaluate_offer,
 )
-from ppc_agent_server.services.humanizer import CONSULTANT_VOICE, ai_tells
+from ppc_agent_server.services.humanizer import ai_tells
 from ppc_agent_server.services.memory import (
-    HISTORY_RULE,
     MemoryEntry,
     MemorySource,
     compress,
-    history_context,
     memory_line,
     recall_for,
 )
@@ -117,14 +115,12 @@ from ppc_agent_server.services.queen_agent import (
     _numbers,
     _quote,
     _utc_now,
-    cmo_facts,
 )
 from ppc_agent_server.services.researcher import (
     MarketDirective,
     MarketIntelligenceSource,
     build_market_directive,
     has_market_data,
-    market_facts,
     researcher_position,
 )
 from ppc_agent_server.services.ro_format import count as _count
@@ -135,7 +131,6 @@ from ppc_agent_server.services.technician import (
     TechnicianDirective,
     VetoScope,
     evaluate_technical_health,
-    technician_facts,
     technician_position,
 )
 
@@ -1120,6 +1115,10 @@ def strategist_position(directive: BrandStrategyDirective) -> str:
         text += f" Nu îi vorbesc: {_quote([ad.headline for ad in misaligned[:2]])}."
     if directive.cognitive_profile is not None:
         text += f" {directive.cognitive_profile.summary}"
+        ads = [*misaligned, *directive.ad_alignment]
+        note = next((ad.cognitive_note for ad in ads if ad.cognitive_note), None)
+        if note:
+            text += f" {note}"
     if shift:
         text += f" {shift}"
     return text
@@ -1325,48 +1324,61 @@ def check_council_text(text: str, *, facts: str, max_chars: int = MAX_REPLY_CHAR
     return None
 
 
+#: "Regina," / "Dragă Regina," la inceput: modelul mic i se adreseaza Reginei - adica siesi.
+_SELF_ADDRESS = re.compile(
+    r"^(?:(?:dragă|draga|bună|buna|salut|stimată|stimata)\s+)?regina\s*[,:!.]\s*",
+    re.IGNORECASE,
+)
+#: "Regina" / "- Regina" pe ultimul rand: o semnatura.
+_SIGNATURE = re.compile(r"\n\s*[-\u2013\u2014]?\s*regina\s*\.?\s*$", re.IGNORECASE)
+
+
 def _tidy(text: str) -> str:
-    # Modelele mici pun des bold markdown chiar cand li se cere text simplu.
-    return text.replace("**", "").strip()
+    """Textul sintezei, curatat determinist de ticurile unui model mic.
+
+    Bold-ul markdown, adresarea catre sine ("Regina, ...") si semnatura: promptul le
+    interzice (garda de limbaj), dar un model de 1,5B tot le scrie uneori.
+    """
+    tidy = text.replace("**", "").strip()
+    tidy = _SELF_ADDRESS.sub("", tidy, count=1)
+    tidy = _SIGNATURE.sub("", tidy).strip()
+    return tidy[:1].upper() + tidy[1:]
 
 
 # --- prompturile -------------------------------------------------------------------
 
+#: Garda de limbaj (Neuromarketing Guard): scurta si concreta, pentru un model de 1,5B.
+#: Stilul lung al consultantului (``CONSULTANT_VOICE``) era "zgomot" pentru el: il
+#: pastreaza doar mesajul CMO.
+LANGUAGE_GUARD = (
+    "LIMBA:\n"
+    "- Folosești strict cuvintele și cifrele din pozițiile membrilor, din replici și din "
+    "decizie. Nu adaugi nicio poveste, niciun exemplu, nicio cifră și niciun sfat în plus: "
+    "doar legi propozițiile.\n"
+    "- Ton profesionist și clar: fraze scurte, cu subiect și predicat, fără repetiții.\n"
+    "- Îi vorbești clientului cu «tu» și vorbești la persoana I. Nu te adresezi ție însăți: "
+    "nu scrii «Regina,» sau «Dragă Regina», nu saluți și nu semnezi.\n"
+    "- Text simplu: fără markdown, liste, titluri sau linkuri."
+)
+
 CHAIR_SYSTEM_PROMPT = (
-    "Ești Regina, Senior AI Chief Marketing Officer al agenției AC Media. Clientul "
-    "(proprietarul afacerii) ți-a pus o întrebare; înainte să răspunzi ți-ai consultat "
-    "consiliul: propria analiză de brand, CFO-ul, CPO-ul (oferta și poziționarea) și, când "
-    "există, Tehnicianul (tracking-ul conversiilor, viteza site-ului pe mobil și auditul "
-    "tehnic) și Researcher-ul (piața și concurența). Părerile lor sunt calculate din date, "
-    "nu scrise de un model: concluzii scurte, pe care tu le legi într-un singur răspuns. "
-    "Acum scrii răspunsul final, în română.\n"
-    "Reguli stricte:\n"
-    "1. DECIZIA CONSILIULUI e obligatorie: o comunici și o argumentezi, nu o schimbi.\n"
-    "2. Când brandul și CFO-ul nu sunt de acord, câștigă CFO-ul: o idee creativă care nu se "
-    "susține financiar se taie, iar clientul află de ce. Peste amândoi, Tehnicianul are drept "
-    "de veto: dacă a pus veto, îl spui în primele două fraze, cu reparația din fapte, și nu "
-    "recomanzi nimic din ce a oprit. Spui pe scurt ce s-a tăiat și de cine (de exemplu "
-    "textele noi ale Reginei, oprite de Tehnician). Contextul pieței (Researcher-ul) explică "
-    "decizia, nu o schimbă. Când CPO-ul a dat un verdict pe ofertă (dacă un CPA mare vine din "
-    "mesaj sau din ofertă), îl spui; o pivotare a ofertei rămâne o propunere.\n"
-    "3. Folosești DOAR faptele și părerile primite. Orice cifră din răspuns trebuie să apară "
-    "în ele; nu inventa cifre, procente, prețuri sau rezultate. Dacă datele lipsesc, spui asta.\n"
-    "4. Prima frază răspunde direct la întrebare. Apoi argumentul de brand, cu motivația "
-    "psihologică din fapte (cum decide publicul, Sistemul 1 sau Sistemul 2; ce îl oprește să "
-    "cumpere; ce pârghie propunem), și argumentul financiar. Folosești doar concluziile "
-    "psihologice din fapte, cu etichetele lor. Dacă traficul din Meta scade, spui ce arată "
-    "organicul în aceeași perioadă (din fapte), ca o corelare, nu ca o cauză.\n"
-    "5. Nimic nu se aplică fără aprobarea clientului: nu pretinde că ai făcut ceva și nu "
-    "promite bani în plus.\n"
-    "6. Dacă întrebarea nu ține de marketingul sau campaniile clientului, spui politicos că "
-    "răspunzi doar la întrebări despre campaniile lui.\n"
-    "7. Maximum 170 de cuvinte, la persoana I, adresându-te cu «tu». Fără markdown, fără "
-    "liste, fără linkuri.\n"
-    f"8. {HISTORY_RULE} Când o decizie de acum leagă de una din istoric, o spui pe scurt "
-    "(«acum două săptămâni, CFO-ul a tăiat...»).\n"
-    "9. Când consiliul s-a contrazis (RUNDA DE REPLICI), spui într-o frază cine a cedat în fața "
-    "cui și de ce, și când se rediscută - condiția din decizie, exact cum e dată.\n\n"
-    f"{CONSULTANT_VOICE}"
+    "Ești Regina, directorul de marketing al agenției AC Media. Clientul (proprietarul "
+    "afacerii) ți-a pus o întrebare. Consiliul a judecat-o deja din datele contului: "
+    "primești pozițiile membrilor, replicile și DECIZIA CONSILIULUI. Scrii răspunsul "
+    "pentru client, în română, în cel mult 120 de cuvinte.\n"
+    "REGULI:\n"
+    "1. Prima frază spune decizia. DECIZIA CONSILIULUI e obligatorie: nu o schimbi și nu "
+    "o îndulcești. Dacă Tehnicianul a pus veto, îl spui în primele două fraze, cu reparația.\n"
+    "2. Apoi de ce: argumentul de brand, cu motivația psihologică din poziția ta de brand "
+    "(Sistemul 1 sau 2, pârghia), și argumentul CFO-ului. Dacă traficul din Meta scade, "
+    "spui ce arată organicul, ca o corelare, nu ca o cauză.\n"
+    "3. Dacă cineva a cedat în RUNDA DE REPLICI, spui într-o frază cine și când se "
+    "rediscută, exact cum scrie în decizie. Dacă decizia are «Țin minte», o spui pe scurt.\n"
+    "4. Nimic nu se aplică fără aprobarea clientului: nu pretinzi că ai făcut ceva și nu "
+    "promiți bani sau rezultate.\n"
+    "5. Dacă întrebarea nu ține de campaniile clientului, spui politicos că răspunzi doar la "
+    "întrebări despre campaniile lui.\n\n"
+    f"{LANGUAGE_GUARD}"
 )
 
 
@@ -1377,63 +1389,51 @@ def _question_block(question: str) -> str:
     )
 
 
-def _history_block(history_text: str) -> str:
-    return f"CONTEXT ISTORIC (memoria consiliului):\n{history_text}\n\n" if history_text else ""
+#: Cum apare fiecare membru in promptul sintezei. Strategul e chiar Regina ("tu"): cu
+#: titlul lui ("Regina · ..."), modelul mic incepea raspunsul cu "Regina,".
+_SPEAKERS: dict[CouncilMember, tuple[str, str]] = {
+    "strategist": ("Tu (strategia de brand)", "tine (strategia de brand)"),
+    "cfo": ("CFO-ul (rentabilitate)", "CFO-ul (rentabilitate)"),
+    "technician": ("Tehnicianul (tracking și viteză)", "Tehnicianul (tracking și viteză)"),
+    "researcher": ("Researcher-ul (piața)", "Researcher-ul (piața)"),
+    "cpo": ("CPO-ul (oferta)", "CPO-ul (oferta)"),
+}
 
 
 def build_chair_prompt(
     question: str,
     opinions: Sequence[CouncilOpinion],
     *,
-    brand_facts: str,
-    money_facts: str,
     ruling: CouncilRuling,
-    tech_facts: str | None = None,
-    market_text: str | None = None,
-    history_text: str = "",
-    product_facts: str | None = None,
     rebuttals: Sequence[CouncilRebuttal] = (),
+    memory: str | None = None,
 ) -> tuple[str, str]:
-    """Promptul Reginei ca presedinte: parerile, replicile, toate faptele si decizia.
+    """Promptul sintezei (Data-to-Text): pozitiile membrilor, replicile si decizia.
 
-    ``market_text`` doar cand Researcher-ul are date reale (trend, web, licitatie).
+    Faptele brute (cheltuieli, cautari, trafic, fragmente web) nu mai intra: le-au
+    judecat membrii, iar pozitiile lor poarta concluziile si cifrele care conteaza.
+    Pozitiile fara date (cu ``fallback_reason``) nu intra - decizia spune deja ce
+    lipseste. ``memory``: amintirea despre acelasi subiect, ca in raspunsul determinist.
     """
-    by_member = {opinion.member: opinion.opinion for opinion in opinions}
-    technician = (
-        f"PĂREREA TEHNICIANULUI:\n{by_member.get('technician', '')}\n\n"
-        f"FAPTE TEHNICE:\n{tech_facts}\n\n"
-        if tech_facts is not None
-        else ""
-    )
-    researcher = (
-        f"PĂREREA RESEARCHER-ULUI:\n{by_member.get('researcher', '')}\n\n"
-        f"FAPTE DE PIAȚĂ:\n{market_text}\n\n"
-        if market_text is not None
-        else ""
-    )
-    cpo = (
-        f"PĂREREA CPO-ULUI:\n{by_member.get('cpo', '')}\n\n"
-        f"FAPTE DE PRODUS:\n{product_facts}\n\n"
-        if product_facts is not None
-        else ""
-    )
+    positions = "".join(
+        f"- {_SPEAKERS[opinion.member][0]}: {opinion.opinion}\n"
+        for opinion in opinions
+        if opinion.fallback_reason is None
+    ) or "- Niciun membru nu are încă date.\n"
     replies = "".join(
-        f"- {rebuttal.title}, către {rebuttal.replying_to_title}: {rebuttal.rebuttal}\n"
+        f"- {_SPEAKERS[rebuttal.member][0]}, către {_SPEAKERS[rebuttal.replying_to][1]}: "
+        f"{rebuttal.rebuttal}\n"
         for rebuttal in rebuttals
     )
     rebuttal_block = f"RUNDA DE REPLICI:\n{replies}\n" if replies else ""
+    decision = ruling_facts(ruling)
+    if memory:
+        decision += f"\n- Țin minte: {_lower_first(memory)}"
     user = (
         f"{_question_block(question)}\n\n"
-        f"PĂREREA TA DE BRAND:\n{by_member.get('strategist', '')}\n\n"
-        f"PĂREREA CFO-ULUI:\n{by_member.get('cfo', '')}\n\n"
-        f"FAPTE DE BRAND:\n{brand_facts}\n\n"
-        f"FAPTE FINANCIARE:\n{money_facts}\n\n"
-        f"{technician}"
-        f"{researcher}"
-        f"{cpo}"
+        f"POZIȚIILE CONSILIULUI:\n{positions}\n"
         f"{rebuttal_block}"
-        f"{_history_block(history_text)}"
-        f"DECIZIA CONSILIULUI:\n{ruling_facts(ruling)}\n\n"
+        f"DECIZIA CONSILIULUI:\n{decision}\n\n"
         "Scrie răspunsul tău final către client."
     )
     return CHAIR_SYSTEM_PROMPT, user
@@ -1766,19 +1766,13 @@ class QueenCouncil:
         ruling = rule_on_question(topic, context, finances, technical, market, product)
         now = self._clock()
         history = self._recall(client_account_id)
-        history_text = history_context(history, now)
         recalled = recall_for(history, topic.topic, now)
+        memory = memory_line(recalled, now) if recalled is not None else None
 
-        brand_facts = cmo_facts(context)
-        money_facts = cfo_facts(finances)
-        tech_facts = technician_facts(technical) if technical is not None else None
-        product_facts = cpo_facts(product)
-        # Piata intra doar cu ce s-a gasit real: trendul Google Trends, fragmentele de pe
+        # Piata conteaza doar cu ce s-a gasit real: trendul Google Trends, fragmentele de pe
         # web (verificate de Jev), licitatia cand exista. Fara nimic, Researcher-ul spune
-        # ce lipseste, fara LLM.
-        market_text = (
-            market_facts(market) if market is not None and has_market_data(market) else None
-        )
+        # ce lipseste.
+        has_market = market is not None and has_market_data(market)
         has_brand = context.status == "ok"
         has_money = finances.status != "insufficient_data"
         has_tech = technical is not None and (
@@ -1797,7 +1791,7 @@ class QueenCouncil:
         if technical is not None:
             seats.append(("technician", technician_position(technical), has_tech))
         if market is not None:
-            seats.append(("researcher", researcher_position(market), market_text is not None))
+            seats.append(("researcher", researcher_position(market), has_market))
         # CPO-ul vorbeste ultimul: judeca oferta pe concluziile celorlalti.
         seats.append(("cpo", product.summary, product.status != "unknown"))
         opinions: list[CouncilOpinion] = []
@@ -1830,31 +1824,21 @@ class QueenCouncil:
             )
 
         def _deterministic(reason: str) -> CouncilReply:
-            line = memory_line(recalled, now) if recalled is not None else None
-            text = template_council_reply(ruling, context, finances, technical, line)
+            text = template_council_reply(ruling, context, finances, technical, memory)
             return _reply(text, "template", reason)
 
         if self._voice is None:
             reply = _deterministic(
                 "Vocea LLM nu e configurată - răspunsul determinist al consiliului."
             )
-        elif not (has_brand or has_money or has_tech or market_text):
+        elif not (has_brand or has_money or has_tech or has_market):
             reply = _deterministic(
                 "Consiliul nu are încă date pe care să delibereze - răspunsul standard, fără "
                 "sfaturi generice."
             )
         else:
             system, user = build_chair_prompt(
-                question,
-                opinions,
-                brand_facts=brand_facts,
-                money_facts=money_facts,
-                ruling=ruling,
-                tech_facts=tech_facts,
-                market_text=market_text,
-                history_text=history_text,
-                product_facts=product_facts,
-                rebuttals=rebuttals,
+                question, opinions, ruling=ruling, rebuttals=rebuttals, memory=memory
             )
             emit(CouncilEvent("stage", stage="synthesis"))
             text, problem = self._ask(
