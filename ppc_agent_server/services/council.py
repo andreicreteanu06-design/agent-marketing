@@ -86,7 +86,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from ppc_agent.texttools import tokenize
+from ppc_agent.texttools import normalize, tokenize
 from ppc_agent_server.services.cognitive import CognitiveProfile
 from ppc_agent_server.services.cpo import (
     OfferStatus,
@@ -148,6 +148,11 @@ MIN_CONVERSIONS_FOR_VERDICT = MIN_CONVERSIONS
 BREAK_EVEN_ROAS = Decimal("1")
 MAX_QUESTION_CHARS = 1000
 MAX_REPLY_CHARS = MAX_MESSAGE_CHARS
+#: Sub atat, o sinteza (dupa taierea la ultima propozitie intreaga) nu e un raspuns: pleaca
+#: cel determinist.
+MIN_SYNTHESIS_CHARS = 80
+#: Cate propozitii din pozitia unui membru ajung la sinteza: verdictul, nu tot raportul.
+CHAIR_BRIEF_SENTENCES = 2
 #: Cate reclame cu bani ajung in faptele CFO-ului - cele mai scumpe primele.
 MAX_ADS_IN_FACTS = 4
 _CENT = Decimal("0.01")
@@ -1117,11 +1122,32 @@ def strategist_position(directive: BrandStrategyDirective) -> str:
         text += f" {directive.cognitive_profile.summary}"
         ads = [*misaligned, *directive.ad_alignment]
         note = next((ad.cognitive_note for ad in ads if ad.cognitive_note), None)
-        if note:
-            text += f" {note}"
+        # Nota incepe cu modul de decizie, deja spus in profil: nu il repetam.
+        fresh = [part for part in _sentences(note or "") if part not in text]
+        if fresh:
+            text += " " + " ".join(fresh)
     if shift:
         text += f" {shift}"
     return text
+
+
+def brand_brief(directive: BrandStrategyDirective, *, rewrite_vetoed: bool = False) -> str:
+    """Esentialul pozitiei de brand, pentru sinteza: clientul ideal, de ce, Meta vs organic.
+
+    Ca raspunsul determinist: psihologia vine din :func:`psychology_insight` (nepotrivirea
+    reclamei, bariera, parghia), dar nu si cand veto-ul pe bani a oprit rescrierea.
+    """
+    avatar = directive.avatar
+    if directive.status != "ok" or avatar is None:
+        return strategist_position(directive)
+    parts = [f"Clientul ideal e {_avatar_line(directive)}: vrea {_BY_KEY[avatar.key].desires[0]}."]
+    insight = None if rewrite_vetoed else psychology_insight(directive)
+    if insight:
+        parts.append(insight)
+    organic = directive.organic_context
+    if organic is not None and organic.implication:
+        parts.append(organic.implication)
+    return " ".join(parts)
 
 
 def psychology_insight(directive: BrandStrategyDirective) -> str | None:
@@ -1208,20 +1234,32 @@ def cfo_facts(finances: FinancialSnapshot) -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
-def ruling_facts(ruling: CouncilRuling) -> str:
+def chair_decision(
+    ruling: CouncilRuling, *, repair: str | None = None, memory: str | None = None
+) -> str:
+    """Esentialul deciziei pentru sinteza - ca raspunsul determinist, nu toata lista.
+
+    Decizia, veto-ul cu prima reparatie, prima idee sustinuta, prima taiata si prima
+    oprita de veto, cand se rediscuta si amintirea despre acelasi subiect. Restul
+    ideilor raman in ``ruling`` (UI-ul le arata): cu toata lista, un model mic o copia
+    rand cu rand in loc sa scrie un raspuns.
+    """
     lines = [f"Decizia (obligatorie): {ruling.decision}"]
     if ruling.veto:
         lines.append(f"Veto-ul Tehnicianului (obligatoriu): {ruling.veto}")
-    lines.extend(f"Susținut: {idea}." for idea in ruling.approved)
-    lines.extend(f"Tăiat de CFO: {idea}." for idea in ruling.cut)
-    lines.extend(f"Oprit de veto-ul Tehnicianului: {idea}." for idea in ruling.vetoed)
-    if ruling.market_context:
-        lines.append(f"Contextul pieței (Researcher): {ruling.market_context}")
-    if ruling.offer:
-        lines.append(f"Verdictul CPO-ului pe ofertă: {ruling.offer}")
+        if repair:
+            lines.append(f"Reparația de făcut întâi: {repair}")
+    if ruling.approved:
+        lines.append(f"Prima idee susținută: {ruling.approved[0]}.")
+    if ruling.cut:
+        lines.append(f"Prima idee tăiată de CFO: {ruling.cut[0]}.")
+    if ruling.vetoed:
+        lines.append(f"Prima idee oprită de veto: {ruling.vetoed[0]}.")
     if ruling.reopen_when:
         lines.append(f"Se rediscută când {ruling.reopen_when}.")
-    lines.append("Nimic nu se aplică fără aprobarea clientului.")
+    if memory:
+        lines.append(f"Țin minte: {_lower_first(memory)}")
+    lines.append("Nimic nu se aplică fără aprobarea ta.")
     return "\n".join(f"- {line}" for line in lines)
 
 
@@ -1333,6 +1371,85 @@ _SELF_ADDRESS = re.compile(
 _SIGNATURE = re.compile(r"\n\s*[-\u2013\u2014]?\s*regina\s*\.?\s*$", re.IGNORECASE)
 
 
+#: Sfarsitul unei propozitii: . ! ? sau puncte de suspensie, eventual urmate de ghilimele
+#: sau paranteze inchise, apoi spatiu sau finalul textului.
+_SENTENCE_END = re.compile(r"[.!?\u2026][\"\u201d\u00bb')\]]*(?=\s|$)")
+
+
+def _sentences(text: str) -> list[str]:
+    """Propozitiile unui text, in ordine (ce ramane dupa ultimul punct e ultima bucata)."""
+    parts: list[str] = []
+    start = 0
+    for end in _SENTENCE_END.finditer(text):
+        part = text[start : end.end()].strip()
+        if part:
+            parts.append(part)
+        start = end.end()
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def whole_sentences(text: str) -> str:
+    """Textul pana la ultima propozitie intreaga; ``""`` cand nu are niciuna.
+
+    Ollama se opreste la ``max_tokens`` in mijlocul frazei ("...si lasa-le lor"): ce
+    urmeaza dupa ultimul punct nu pleaca la client.
+    """
+    ends = [match.end() for match in _SENTENCE_END.finditer(text)]
+    return text[: ends[-1]].rstrip() if ends else ""
+
+
+#: Etichetele din promptul sintezei. La inceput de rand, urmate de ":", inseamna ca
+#: modelul a copiat structura promptului in loc sa scrie un raspuns.
+_PROMPT_LABELS = (
+    "decizia (obligatorie)",
+    "decizia consiliului",
+    "decizia",
+    "pozitiile consiliului",
+    "runda de replici",
+    "veto-ul tehnicianului (obligatoriu)",
+    "prima idee sustinuta",
+    "prima idee taiata de cfo",
+    "prima idee oprita de veto",
+    "sustinut",
+    "taiat de cfo",
+    "oprit de veto-ul tehnicianului",
+    "contextul pietei",
+    "intrebarea clientului",
+)
+_COPIED_LABEL = re.compile(
+    r"(?m)^\s*[-*\u2022]?\s*(" + "|".join(re.escape(label) for label in _PROMPT_LABELS) + r")\s*:"
+)
+#: "clientul" / "clientului" la persoana a III-a - raspunsul i se adreseaza lui, cu "tu".
+#: "Clientul (tau) ideal" e un termen, nu o persoana.
+_THIRD_PERSON = re.compile(r"\bclientul(?:ui)?\b(?!\s+(?:tau\s+)?ideal)")
+
+
+def check_synthesis_shape(text: str, *, question: str) -> str | None:
+    """Ce e ciudat in forma sintezei, sau ``None``: garda de limbaj, determinista.
+
+    Nu cauta halucinatii (asta face :func:`check_council_text`), ci un text care nu e
+    un raspuns: prea scurt, intrebarea repetata, etichetele promptului copiate,
+    clientul pomenit la persoana a III-a.
+    """
+    if len(text) < MIN_SYNTHESIS_CHARS:
+        return "a scris prea puțin pentru un răspuns"
+    plain = normalize(text)
+    if plain.startswith(normalize(question)):
+        return "a repetat întrebarea clientului"
+    # Rand cu rand: ``normalize`` strange si liniile noi, iar eticheta conteaza la inceput de rand.
+    lines = "\n".join(normalize(line) for line in text.splitlines())
+    copied = _COPIED_LABEL.search(lines)
+    if copied is not None:
+        return f"a copiat structura promptului («{copied.group(1)}:»)"
+    third = _THIRD_PERSON.search(plain)
+    if third is not None:
+        return f"a vorbit despre client la persoana a III-a («{third.group(0)}»)"
+    return None
+
+
 def _tidy(text: str) -> str:
     """Textul sintezei, curatat determinist de ticurile unui model mic.
 
@@ -1358,6 +1475,8 @@ LANGUAGE_GUARD = (
     "- Ton profesionist și clar: fraze scurte, cu subiect și predicat, fără repetiții.\n"
     "- Îi vorbești clientului cu «tu» și vorbești la persoana I. Nu te adresezi ție însăți: "
     "nu scrii «Regina,» sau «Dragă Regina», nu saluți și nu semnezi.\n"
+    "- Nu repeți întrebarea și nu copiezi etichetele de mai jos («Decizia:», «Prima idee "
+    "susținută:»): scrii fraze legate.\n"
     "- Text simplu: fără markdown, liste, titluri sau linkuri."
 )
 
@@ -1391,50 +1510,88 @@ def _question_block(question: str) -> str:
 
 #: Cum apare fiecare membru in promptul sintezei. Strategul e chiar Regina ("tu"): cu
 #: titlul lui ("Regina · ..."), modelul mic incepea raspunsul cu "Regina,".
-_SPEAKERS: dict[CouncilMember, tuple[str, str]] = {
-    "strategist": ("Tu (strategia de brand)", "tine (strategia de brand)"),
-    "cfo": ("CFO-ul (rentabilitate)", "CFO-ul (rentabilitate)"),
-    "technician": ("Tehnicianul (tracking și viteză)", "Tehnicianul (tracking și viteză)"),
-    "researcher": ("Researcher-ul (piața)", "Researcher-ul (piața)"),
-    "cpo": ("CPO-ul (oferta)", "CPO-ul (oferta)"),
+_SPEAKERS: dict[CouncilMember, str] = {
+    "strategist": "Tu (strategia de brand)",
+    "cfo": "CFO-ul (rentabilitate)",
+    "technician": "Tehnicianul (tracking și viteză)",
+    "researcher": "Researcher-ul (piața)",
+    "cpo": "CPO-ul (oferta)",
 }
+#: Cine a cedat in runda de replici si in fata cui, in romana corecta.
+_YIELDED: dict[CouncilMember, tuple[str, str]] = {
+    "strategist": ("Ai cedat tu (strategia de brand)", "ta"),
+    "cfo": ("A cedat CFO-ul", "CFO-ului"),
+    "technician": ("A cedat Tehnicianul", "Tehnicianului"),
+    "researcher": ("A cedat Researcher-ul", "Researcher-ului"),
+    "cpo": ("A cedat CPO-ul", "CPO-ului"),
+}
+
+
+def _first_sentences(text: str, count: int) -> str:
+    return " ".join(_sentences(text)[:count])
+
+
+def chair_briefs(
+    opinions: Sequence[CouncilOpinion], ruling: CouncilRuling, *, brand: str | None = None
+) -> list[tuple[CouncilMember, str]]:
+    """Esentialul fiecarei pozitii, pentru sinteza - verdictul, nu tot raportul.
+
+    Strategul: ``brand`` (:func:`brand_brief`); Researcher-ul si CPO-ul: doar ce a intrat
+    in decizie pentru intrebarea asta (contextul pietei, verdictul pe oferta) - altfel
+    tac; restul: primele :data:`CHAIR_BRIEF_SENTENCES` propozitii. Pozitiile fara date
+    (cu ``fallback_reason``) nu intra - decizia spune deja ce lipseste.
+    """
+    in_ruling: dict[CouncilMember, str | None] = {
+        "researcher": ruling.market_context,
+        "cpo": ruling.offer,
+    }
+    briefs: list[tuple[CouncilMember, str]] = []
+    for opinion in opinions:
+        if opinion.fallback_reason is not None:
+            continue
+        if opinion.member in in_ruling:
+            text = in_ruling[opinion.member]
+        elif opinion.member == "strategist" and brand:
+            text = brand
+        else:
+            text = _first_sentences(opinion.opinion, CHAIR_BRIEF_SENTENCES)
+        if text:
+            briefs.append((opinion.member, text))
+    return briefs
 
 
 def build_chair_prompt(
     question: str,
-    opinions: Sequence[CouncilOpinion],
+    briefs: Sequence[tuple[CouncilMember, str]],
     *,
     ruling: CouncilRuling,
     rebuttals: Sequence[CouncilRebuttal] = (),
     memory: str | None = None,
+    repair: str | None = None,
 ) -> tuple[str, str]:
-    """Promptul sintezei (Data-to-Text): pozitiile membrilor, replicile si decizia.
+    """Promptul sintezei (Data-to-Text): esentialul pozitiilor, cine a cedat, decizia.
 
-    Faptele brute (cheltuieli, cautari, trafic, fragmente web) nu mai intra: le-au
-    judecat membrii, iar pozitiile lor poarta concluziile si cifrele care conteaza.
-    Pozitiile fara date (cu ``fallback_reason``) nu intra - decizia spune deja ce
-    lipseste. ``memory``: amintirea despre acelasi subiect, ca in raspunsul determinist.
+    Faptele brute (cheltuieli, cautari, trafic, fragmente web) nu intra: le-au judecat
+    membrii. Din pozitii intra doar verdictul (:func:`chair_briefs`), din replici doar
+    cine a cedat in fata cui, cu prima lui propozitie, din decizie doar esentialul
+    (:func:`chair_decision`). Un prompt scurt e primul token mai repede pe CPU si mai
+    putin de copiat pentru un model mic.
     """
     positions = "".join(
-        f"- {_SPEAKERS[opinion.member][0]}: {opinion.opinion}\n"
-        for opinion in opinions
-        if opinion.fallback_reason is None
+        f"- {_SPEAKERS[member]}: {text}\n" for member, text in briefs
     ) or "- Niciun membru nu are încă date.\n"
-    replies = "".join(
-        f"- {_SPEAKERS[rebuttal.member][0]}, către {_SPEAKERS[rebuttal.replying_to][1]}: "
-        f"{rebuttal.rebuttal}\n"
+    yielded = "".join(
+        f"- {_YIELDED[rebuttal.member][0]} în fața {_YIELDED[rebuttal.replying_to][1]}: "
+        f"{_first_sentences(rebuttal.rebuttal, 1)}\n"
         for rebuttal in rebuttals
     )
-    rebuttal_block = f"RUNDA DE REPLICI:\n{replies}\n" if replies else ""
-    decision = ruling_facts(ruling)
-    if memory:
-        decision += f"\n- Țin minte: {_lower_first(memory)}"
+    rebuttal_block = f"RUNDA DE REPLICI:\n{yielded}\n" if yielded else ""
     user = (
         f"{_question_block(question)}\n\n"
         f"POZIȚIILE CONSILIULUI:\n{positions}\n"
         f"{rebuttal_block}"
-        f"DECIZIA CONSILIULUI:\n{decision}\n\n"
-        "Scrie răspunsul tău final către client."
+        f"DECIZIA CONSILIULUI:\n{chair_decision(ruling, repair=repair, memory=memory)}\n\n"
+        "Scrie răspunsul către client, cu «tu»."
     )
     return CHAIR_SYSTEM_PROMPT, user
 
@@ -1837,13 +1994,26 @@ class QueenCouncil:
                 "sfaturi generice."
             )
         else:
+            repair = (
+                technical.recommendations[0]
+                if ruling.veto and technical is not None and technical.recommendations
+                else None
+            )
             system, user = build_chair_prompt(
-                question, opinions, ruling=ruling, rebuttals=rebuttals, memory=memory
+                question,
+                chair_briefs(
+                    opinions, ruling, brand=brand_brief(context, rewrite_vetoed=money_veto)
+                ),
+                ruling=ruling,
+                rebuttals=rebuttals,
+                memory=memory,
+                repair=repair,
             )
             emit(CouncilEvent("stage", stage="synthesis"))
             text, problem = self._ask(
                 system=system,
                 user=user,
+                question=question,
                 max_chars=MAX_REPLY_CHARS,
                 on_token=(lambda chunk: emit(CouncilEvent("token", text=chunk)))
                 if on_event is not None
@@ -1902,14 +2072,22 @@ class QueenCouncil:
         *,
         system: str,
         user: str,
+        question: str,
         max_chars: int,
         on_token: Callable[[str], None] | None = None,
     ) -> tuple[str | None, str | None]:
         """Sinteza Reginei: ``(text, None)`` sau ``(None, motivul)`` - nimic nu arunca.
 
         Singurul apel LLM al consiliului. Cu ``on_token`` si o voce care scrie in flux,
-        fiecare fragment pleaca imediat; verificarea de mai jos se face tot pe textul
-        intreg.
+        fiecare fragment pleaca imediat (o ciorna); ce pleaca la final trece prin:
+
+        1. :func:`whole_sentences` - un text oprit in mijlocul frazei (limita de tokeni)
+           se taie la ultima propozitie intreaga;
+        2. :func:`check_synthesis_shape` - prea scurt dupa taiere, intrebarea repetata,
+           etichetele promptului copiate, clientul la persoana a III-a;
+        3. :func:`check_council_text` - cifre, linkuri, actiuni pretinse, promisiuni.
+
+        Orice problema -> ``(None, motivul)``, iar apelantul trimite raspunsul determinist.
         """
         assert self._voice is not None
         try:
@@ -1923,8 +2101,19 @@ class QueenCouncil:
                 raw = self._voice.complete(system=system, user=user)
         except Exception as exc:  # vocea e optionala: orice eroare -> varianta determinista
             return None, f"Modelul nu a răspuns ({type(exc).__name__})"
-        text = _tidy(raw)
+        tidy = _tidy(raw)
+        text = whole_sentences(tidy)
+        if text != tidy:
+            logger.info(
+                "[Consiliu] sinteza oprita in mijlocul frazei: raman %d din %d caractere",
+                len(text),
+                len(tidy),
+            )
+            if len(text) < MIN_SYNTHESIS_CHARS:
+                return None, "Modelul s-a oprit în mijlocul frazei, fără un răspuns întreg"
         problem = check_council_text(text, facts=user, max_chars=max_chars)
+        if problem is None and text:
+            problem = check_synthesis_shape(text, question=question)
         if problem is not None:
             return None, f"Modelul {problem}"
         tells = ai_tells(text)

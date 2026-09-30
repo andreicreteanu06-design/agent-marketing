@@ -24,6 +24,7 @@ from ppc_agent_server.services.council import (
     QueenCouncil,
     QuestionTopic,
     TermSpend,
+    brand_brief,
     build_financial_snapshot,
     check_council_text,
     classify_question,
@@ -448,17 +449,22 @@ def test_the_chair_gets_the_positions_and_the_decision_not_the_raw_facts() -> No
     chair = voice.prompt("chair")
     for part in (
         "«Merită să cresc bugetul?»",
-        f"POZIȚIILE CONSILIULUI:\n- Tu (strategia de brand): {strategist}\n",
+        f"POZIȚIILE CONSILIULUI:\n- Tu (strategia de brand): {brand_brief(_directive())}\n",
         f"- CFO-ul (rentabilitate): {cfo}\n",
-        f"- CPO-ul (oferta): {cpo}\n",
         "DECIZIA CONSILIULUI:\n- Decizia (obligatorie): Da",
+        f"- Prima idee susținută: {reply.ruling.approved[0]}.",
+        "- Nimic nu se aplică fără aprobarea ta.",
     ):
         assert part in chair
+    # Din decizie doar esentialul, nu toata lista; CPO-ul tace cand oferta nu e in decizie.
+    assert len(reply.ruling.approved) > 1 and reply.ruling.approved[1] not in chair
+    assert reply.ruling.offer is None and "CPO-ul (oferta)" not in chair
+    assert cpo not in chair
     # Faptele brute raman la membri: le-au judecat deja.
     for raw in ("FAPTE", "Unghiul de copy propus", "Verdict financiar", "Plafonul zilnic"):
         assert raw not in chair
     # Promptul e scurt: pe CPU, primul token vine dupa ce modelul il citeste tot.
-    assert len(CHAIR_SYSTEM_PROMPT) + len(chair) < 5000
+    assert len(CHAIR_SYSTEM_PROMPT) + len(chair) < 4000
 
 
 def test_the_self_address_and_the_signature_are_cut() -> None:
@@ -466,6 +472,36 @@ def test_the_self_address_and_the_signature_are_cut() -> None:
     reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
 
     assert (reply.source, reply.reply) == ("llm", CHAIR_SAYS)
+
+
+def test_a_synthesis_cut_mid_sentence_keeps_its_whole_sentences() -> None:
+    voice = _CouncilVoice({"chair": f"{CHAIR_SAYS} Și, pe lângă asta, mai"})
+    reply = _council(voice=voice).evaluate_client_query("Merită să cresc bugetul?", _directive())
+
+    assert (reply.source, reply.reply) == ("llm", CHAIR_SAYS)
+
+
+@pytest.mark.parametrize(
+    ("chair", "problem"),
+    [
+        ("Da, dar controlat și", "s-a oprit în mijlocul frazei"),
+        ("Da. Contul e rentabil, iar creșterea", "s-a oprit în mijlocul frazei"),
+        ("Da, dar controlat.", "a scris prea puțin"),
+        (f"Merită să cresc bugetul?\n{CHAIR_SAYS}", "a repetat întrebarea"),
+        (f"Decizia: da, dar controlat.\n{CHAIR_SAYS}", "a copiat structura promptului"),
+        (CHAIR_SAYS.replace("o aprobi tu", "o aprobă clientul"), "persoana a III-a"),
+    ],
+)
+def test_a_broken_or_odd_synthesis_falls_back_to_the_deterministic_reply(
+    chair: str, problem: str
+) -> None:
+    reply = _council(voice=_CouncilVoice({"chair": chair})).evaluate_client_query(
+        "Merită să cresc bugetul?", _directive()
+    )
+
+    assert reply.source == "template"
+    assert reply.fallback_reason is not None and problem in reply.fallback_reason
+    assert reply.reply.startswith("Da, dar controlat: contul e rentabil")
 
 
 def test_an_inventive_queen_falls_back_to_the_deterministic_ruling() -> None:

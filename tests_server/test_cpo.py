@@ -262,8 +262,8 @@ def test_the_cpo_reads_the_researcher_signal_and_the_chair_hears_the_pivot() -> 
     assert (cpo.member, cpo.source, cpo.opinion) == ("cpo", "template", reply.product.summary)
     assert voice.roles == ["chair"]
     chair = voice.prompt("chair")
-    assert f"- CPO-ul (oferta): {cpo.opinion}" in chair
-    assert f"Verdictul CPO-ului pe ofertă: {PIVOT}" in chair
+    # Din pozitia CPO-ului ajunge doar verdictul care a intrat in decizie.
+    assert f"- CPO-ul (oferta): {PIVOT}\n" in chair
     # Faptele brute ale CPO-ului (tabelul RICE) nu mai ajung la model: doar concluzia lui.
     assert "FAPTE DE PRODUS" not in chair and "Mutarea 1 după RICE" not in chair
 

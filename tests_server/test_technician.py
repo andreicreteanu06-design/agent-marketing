@@ -492,10 +492,11 @@ def test_the_technician_position_and_the_veto_reach_the_synthesis() -> None:
     )
     chair = voice.prompt("chair")
     for part in (
-        f"- Tehnicianul (tracking și viteză): {opinion.opinion}",
+        "- Tehnicianul (tracking și viteză): Tracking: roșu.",
         "Veto-ul Tehnicianului (obligatoriu): Tracking-ul e picat",
-        "Oprit de veto-ul Tehnicianului: creșterea treptată",
-        "RUNDA DE REPLICI:\n- CFO-ul (rentabilitate), către Tehnicianul (tracking și viteză):",
+        f"Reparația de făcut întâi: {reply.technical.recommendations[0]}",
+        "Prima idee oprită de veto: creșterea treptată",
+        "RUNDA DE REPLICI:\n- A cedat CFO-ul în fața Tehnicianului:",
         "Se rediscută când testul E2E confirmă că tracking-ul trimite din nou conversiile.",
     ):
         assert part in chair

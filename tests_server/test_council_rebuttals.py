@@ -130,8 +130,10 @@ def test_the_loser_answers_the_winner_and_the_chair_hears_it() -> None:
     assert rebuttal.rebuttal == reply.ruling.conflicts[0].rebuttal
     assert voice.roles == ["chair"]
     chair = voice.prompt("chair")
+    # Din replica ajunge cine a cedat in fata cui, cu prima ei propozitie.
     assert (
-        "RUNDA DE REPLICI:\n- Tu (strategia de brand), către CFO-ul (rentabilitate): "
-        f"{rebuttal.rebuttal}"
+        "RUNDA DE REPLICI:\n- Ai cedat tu (strategia de brand) în fața CFO-ului: "
+        "Accept tăierea CFO-ului:"
     ) in chair
+    assert "Revin cu ideea" not in chair
     assert f"Se rediscută când {TARGET_REACHED}." in chair

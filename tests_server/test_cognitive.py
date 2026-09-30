@@ -22,12 +22,15 @@ from ppc_agent_server.services.cognitive import (
 )
 from ppc_agent_server.services.council import (
     CHAIR_SYSTEM_PROMPT,
+    brand_brief,
     build_chair_prompt,
     build_financial_snapshot,
     cfo_position,
+    chair_briefs,
     check_council_text,
     classify_question,
     member_opinion,
+    psychology_insight,
     rule_on_question,
     strategist_position,
 )
@@ -292,7 +295,9 @@ def test_the_brand_position_and_the_queen_carry_the_psychology() -> None:
     strategist, cfo = reply.opinions[0], reply.opinions[1]
     assert summary in strategist.opinion
     assert summary not in cfo.opinion
-    assert summary in voice.prompt("chair")
+    # La sinteza ajunge esentialul: de ce reactioneaza publicul si parghia.
+    insight = psychology_insight(directive)
+    assert insight is not None and insight in voice.prompt("chair")
 
 
 def _chair_facts(question: str) -> str:
@@ -305,7 +310,8 @@ def _chair_facts(question: str) -> str:
         member_opinion("strategist", strategist_position(directive), has_data=True),
         member_opinion("cfo", cfo_position(finances), has_data=True),
     ]
-    _, user = build_chair_prompt(question, opinions, ruling=ruling)
+    briefs = chair_briefs(opinions, ruling, brand=brand_brief(directive))
+    _, user = build_chair_prompt(question, briefs, ruling=ruling)
     return user
 
 
