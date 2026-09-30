@@ -134,19 +134,26 @@ class AnalyticsDataClient:
                 f"{response.text[:200]}"
             )
         try:
-            payload: dict[str, Any] = response.json()
+            payload: object = response.json()
         except ValueError as exc:
             raise ProviderError(f"raspuns GA4 invalid: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ProviderError("raspuns GA4 invalid: nu e un obiect JSON")
 
-        names = [header["name"] for header in payload.get("dimensionHeaders", [])] + [
-            header["name"] for header in payload.get("metricHeaders", [])
+        header_defs = [
+            *_dicts(payload.get("dimensionHeaders")),
+            *_dicts(payload.get("metricHeaders")),
         ]
+        names = [str(h["name"]) for h in header_defs if "name" in h]
         rows: list[dict[str, str]] = []
         for raw in payload.get("rows") or []:
-            values = [cell.get("value", "") for cell in raw.get("dimensionValues", [])] + [
-                cell.get("value", "") for cell in raw.get("metricValues", [])
-            ]
-            if len(values) == len(names):
+            if not isinstance(raw, dict):
+                continue
+            cells = [*_dicts(raw.get("dimensionValues")), *_dicts(raw.get("metricValues"))]
+            values = [str(cell.get("value", "")) for cell in cells]
+            # ``names`` gol => raspuns fara antete (corupt): fara el, un rand gol ar trece
+            # de ``0 == 0`` si consumatorii ar cadea pe ``row["sessions"]`` (KeyError).
+            if names and len(values) == len(names):
                 rows.append(dict(zip(names, values, strict=True)))
         return rows
 
@@ -217,3 +224,10 @@ def _int(value: str) -> int:
         return round(float(value))
     except ValueError:
         return 0
+
+
+def _dicts(value: object) -> list[dict[str, Any]]:
+    """Doar elementele dict dintr-o lista; ``[]`` daca API-ul a intors alta forma."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]

@@ -191,9 +191,11 @@ class SearchConsoleClient:
                 f"Search Console API a raspuns {response.status_code}: {response.text[:200]}"
             )
         try:
-            payload: dict[str, Any] = response.json()
+            payload: object = response.json()
         except ValueError as exc:
             raise ProviderError(f"raspuns Search Console invalid: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ProviderError("raspuns Search Console invalid: nu e un obiect JSON")
         return payload
 
 
@@ -268,6 +270,8 @@ class SearchConsoleClient:
         )
         totals: list[QueryTotals] = []
         for raw in payload.get("rows") or []:
+            if not isinstance(raw, dict):
+                continue
             keys = raw.get("keys") or []
             if len(keys) != 1:
                 continue
@@ -306,6 +310,8 @@ class SearchConsoleClient:
         )
         rows: list[QueryPageTotals] = []
         for raw in payload.get("rows") or []:
+            if not isinstance(raw, dict):
+                continue
             keys = raw.get("keys") or []
             if len(keys) != 2:
                 continue
@@ -332,6 +338,8 @@ def _parse_rows(
     """
     parsed: list[SearchAnalyticsRow] = []
     for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
         keys = raw.get("keys") or []
         if len(keys) != len(dimensions):
             continue

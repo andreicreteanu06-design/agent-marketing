@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ppc_agent.errors import SetupRequiredError
+from ppc_agent.errors import ProviderError, SetupRequiredError
 from ppc_agent.search_data.analytics import AnalyticsDataClient, DailyTotals, LandingPageTotals
 from ppc_agent.search_data.google_oauth import OAUTH_TOKEN_URL
 from ppc_agent.search_data.search_console import QueryPageTotals, SearchConsoleClient
@@ -152,3 +152,33 @@ def test_search_console_da_cuvintele_impreuna_cu_pagina_lor() -> None:
 
     assert rows == [QueryPageTotals("schimb ulei", "https://exemplu.ro/ulei", 12, 900, 4.2)]
     assert bodies[0]["dimensions"] == ["query", "page"]
+
+
+def _ga_body(body: str) -> AnalyticsDataClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == OAUTH_TOKEN_URL:
+            return httpx.Response(200, json={"access_token": "a"})
+        return httpx.Response(200, text=body, headers={"content-type": "application/json"})
+
+    return _client(handler)
+
+
+# Un 200 cu JSON valid dar de alta forma (proxy corupt, schimbare de API) nu trebuie sa
+# scoata AttributeError/KeyError - Regina citeste traficul cu try/except pe PpcAgentError.
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"rows": [1, "x", null]}',  # randuri care nu sunt obiecte
+        '{"rows": "abc"}',  # "rows" nu e lista
+        '{"rows": [{"keys": [1]}]}',  # randuri fara antete => fara coloane
+        '{"rows": [{}]}',
+    ],
+)
+def test_ga4_cu_raspuns_de_alta_forma_da_trafic_gol_nu_crapa(body: str) -> None:
+    assert _ga_body(body).channel_sessions(start_date=_START, end_date=_END) == {}
+
+
+@pytest.mark.parametrize("body", ["[1, 2, 3]", "null", '"doar un string"'])
+def test_ga4_cu_raspuns_care_nu_e_obiect_e_o_eroare_de_furnizor(body: str) -> None:
+    with pytest.raises(ProviderError, match="nu e un obiect JSON"):
+        _ga_body(body).channel_sessions(start_date=_START, end_date=_END)
