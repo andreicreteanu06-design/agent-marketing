@@ -143,6 +143,10 @@ class ServerSettings(BaseSettings):
     # de aici, orice ar permite limita fiecarui client. Moneda contului Meta
     # (PPC_META_CURRENCY) trebuie sa fie RON. Ridic-o deliberat cand pilotul creste.
     max_daily_spend_ron: Decimal = Field(default=Decimal("50"), gt=0)
+    # Codul "Test Events" din Events Manager: cu el, conversiile trimise prin
+    # Conversions API apar doar in tab-ul de test si NU antreneaza optimizarea Meta.
+    # Completat la inceputul pilotului, golit dupa ce evenimentele arata corect.
+    meta_capi_test_event_code: str = ""
 
     @field_validator("jev_api_key", "ollama_model", "ollama_keep_alive")
     @classmethod

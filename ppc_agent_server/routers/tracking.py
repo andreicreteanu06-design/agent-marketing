@@ -23,6 +23,7 @@ from ppc_agent_server.models import Tenant
 from ppc_agent_server.schemas import ConversionOutcome
 from ppc_agent_server.tracking.adapters import get_adapter
 from ppc_agent_server.tracking.errors import TrackingError
+from ppc_agent_server.tracking.meta_capi import forward_conversion
 from ppc_agent_server.tracking.pipeline import record_conversion
 
 router = APIRouter(prefix="/api/v1/tracking", tags=["tracking"])
@@ -40,6 +41,9 @@ def ingest_conversion(
 ) -> ConversionOutcome:
     """Normalizeaza, califica si inregistreaza o conversie de la orice sursa.
 
+    Conversiile calificate pleaca apoi si la Meta Conversions API, daca clientul
+    are pixel (vezi ``tracking/meta_capi.py``) - un esec acolo nu strica ingestia.
+
     Raises:
         HTTPException: 404 daca ``client_id`` nu apartine agentiei
             autentificate; 422 daca ``source_platform`` e necunoscuta sau
@@ -52,4 +56,7 @@ def ingest_conversion(
     except TrackingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return record_conversion(session, account, conversion)
+    outcome = record_conversion(session, account, conversion)
+    # Si dupa o deduplicare: un webhook retrimis reincearca o trimitere esuata.
+    outcome.meta_capi = forward_conversion(session, account, conversion)
+    return outcome

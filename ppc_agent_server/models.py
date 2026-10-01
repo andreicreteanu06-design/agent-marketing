@@ -239,6 +239,9 @@ class ClientAccount(SQLModel, table=True):
     journey_consent_selector: str = ""
     ga4_expected_events: str = ""
     meta_expected_events: str = ""
+    # Pixelul Meta (dataset) in care trimit conversiile prin Conversions API
+    # (tracking/meta_capi.py). Gol = conversiile se inregistreaza doar la noi.
+    meta_pixel_id: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
@@ -378,12 +381,19 @@ class ConversionEvent(SQLModel, table=True):
     Pastrata pentru audit + deduplicare (``event_id`` unic per client) - NU e
     sursa de adevar pentru starea unui anunt (asta e ``AdPerformanceRecord``,
     actualizat doar cand conversia e calificata si are un ``ad_id`` cunoscut).
+
+    Unic per CLIENT, nu global: comanda Gomag #1001 a unui client si comanda
+    #1001 a altuia sunt conversii diferite cu acelasi ``event_id``.
     """
+
+    __table_args__ = (
+        UniqueConstraint("client_account_id", "event_id", name="uq_conversionevent_client_event"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
 
-    event_id: str = Field(unique=True, index=True)
+    event_id: str = Field(index=True)
     event_type: ConversionEventType
     value: Decimal | None = Field(default=None, sa_column=Column(Numeric(10, 2)))
     currency: str = "RON"
@@ -397,6 +407,10 @@ class ConversionEvent(SQLModel, table=True):
     qualified: bool
     disqualification_reason: str | None = None
     created_at: datetime = Field(default_factory=_now)
+    # Meta Conversions API: cand a confirmat Meta primirea (None = netrimisa inca)
+    # si ultimul motiv de esec. Un webhook retrimis reincearca doar ce n-a plecat.
+    meta_capi_sent_at: datetime | None = None
+    meta_capi_error: str | None = None
 
     client_account: ClientAccount = Relationship(back_populates="conversion_events")
 

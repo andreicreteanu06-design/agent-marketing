@@ -111,6 +111,16 @@ def _get_or_create_ad_record(
     return record
 
 
+def find_event(session: Session, client_account_id: int, event_id: str) -> ConversionEvent | None:
+    """Conversia ``event_id`` a ACESTUI client - deduplicarea e per client, nu globala."""
+    return session.exec(
+        select(ConversionEvent).where(
+            ConversionEvent.client_account_id == client_account_id,
+            ConversionEvent.event_id == event_id,
+        )
+    ).first()
+
+
 def record_conversion(
     session: Session, client_account: ClientAccount, conversion: StandardizedConversion
 ) -> ConversionOutcome:
@@ -129,9 +139,7 @@ def record_conversion(
     Returns:
         Rezultatul ingestiei.
     """
-    existing_event = session.exec(
-        select(ConversionEvent).where(ConversionEvent.event_id == conversion.event_id)
-    ).first()
+    existing_event = find_event(session, client_account.id or 0, conversion.event_id)
     if existing_event is not None:
         return ConversionOutcome(
             event_id=conversion.event_id,

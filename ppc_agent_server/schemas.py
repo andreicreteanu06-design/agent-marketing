@@ -26,6 +26,9 @@ JobStatusLabel = Literal["queued", "running", "success", "failed"]
 
 # --- Clienti gestionati ---
 
+#: ID-ul pixelului Meta ajunge in calea URL-ului catre Graph API: doar cifre.
+_PIXEL_ID = r"^\d{0,32}$"
+
 
 class ClientAccountCreate(BaseModel):
     """Corpul cererii ``POST /api/v1/clients``."""
@@ -37,6 +40,7 @@ class ClientAccountCreate(BaseModel):
     google_ads_customer_id: str = ""
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
+    meta_pixel_id: str = Field(default="", pattern=_PIXEL_ID)
     max_daily_spend: Decimal = Decimal("50.00")
     default_lead_value: Decimal = Decimal("300.00")
     objective: CampaignObjective = CampaignObjective.LEAD_GEN
@@ -59,6 +63,7 @@ class ClientAccountUpdate(BaseModel):
     google_ads_customer_id: str | None = None
     meta_ad_account_id: str | None = None
     tiktok_advertiser_id: str | None = None
+    meta_pixel_id: str | None = Field(default=None, pattern=_PIXEL_ID)
     max_daily_spend: Decimal | None = Field(default=None, gt=0)
     default_lead_value: Decimal | None = Field(default=None, gt=0)
     objective: CampaignObjective | None = None
@@ -77,6 +82,7 @@ class ClientAccountRead(BaseModel):
     google_ads_customer_id: str
     meta_ad_account_id: str
     tiktok_advertiser_id: str
+    meta_pixel_id: str
     brand_name: str
     max_daily_spend: Decimal
     default_lead_value: Decimal
@@ -413,6 +419,9 @@ class ConversionOutcome(BaseModel):
     qualified: bool
     reason: str | None = None
     deduplicated: bool = False
+    #: Meta Conversions API: ``sent``/``failed`` cand s-a incercat acum, ``None``
+    #: cand nu era cazul (necalificata, deja trimisa, fara pixel, mod mock).
+    meta_capi: Literal["sent", "failed"] | None = None
 
 
 class McConnectRequest(BaseModel):

@@ -49,6 +49,17 @@ class StandardizedConversion(BaseModel):
     ad_id: str | None = None
     ad_platform: Literal["meta", "tiktok", "google"] | None = None
 
+    # Semnale de browser pentru Meta Conversions API (tracking/meta_capi.py):
+    # cresc potrivirea cu utilizatorul Meta. Trimise DOAR mai departe, in aceeasi
+    # cerere - nu se persista (IP-ul si user-agentul sunt date personale).
+    # ``event_time``: cand a avut loc conversia (Unix, secunde); lipsa = la primire.
+    event_time: int | None = None
+    event_source_url: str | None = None
+    client_user_agent: str | None = None
+    client_ip_address: str | None = None
+    fbp: str | None = None
+    fbc: str | None = None
+
 
 def _normalize_email(email: str) -> str:
     """Normalizare Meta CAPI / Google Enhanced Conversions: lowercase + trim.
@@ -61,8 +72,21 @@ def _normalize_email(email: str) -> str:
 
 
 def _normalize_phone(phone: str) -> str:
-    """Normalizare telefon: doar cifre (E.164 fara '+'), cum cer Meta/Google."""
-    return re.sub(r"\D", "", phone)
+    """Normalizare telefon: E.164 fara '+' (doar cifre, cu prefixul tarii), cum cer Meta/Google.
+
+    Gomag si call tracking-ul dau de obicei numarul national ("0712 345 678"); fara
+    prefixul tarii, hash-ul nu se potriveste niciodata cu al Meta/Google. "0040..."
+    si "+40..." sunt acelasi numar.
+
+    ponytail: presupune Romania pentru numerele nationale (0 + 9 cifre); alte tari
+    au nevoie de ``geo``-ul clientului aici.
+    """
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("00"):
+        return digits[2:]
+    if len(digits) == 10 and digits.startswith("0"):
+        return "40" + digits[1:]
+    return digits
 
 
 def hash_pii(value: str | None, *, is_phone: bool = False) -> str | None:

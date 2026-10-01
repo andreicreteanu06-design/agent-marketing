@@ -29,10 +29,15 @@ def test_hash_pii_email_is_lowercased_and_trimmed_before_hashing() -> None:
     assert hash_pii("test@example.com") == expected
 
 
-def test_hash_pii_phone_keeps_only_digits() -> None:
+def test_hash_pii_phone_is_e164_without_plus() -> None:
+    """Acelasi numar, scris in toate felurile uzuale, da acelasi hash ca la Meta."""
     expected = hashlib.sha256(b"40712345678").hexdigest()
     assert hash_pii("+40 712 345 678", is_phone=True) == expected
-    assert hash_pii("0040712345678", is_phone=True) != expected  # cifre diferite
+    assert hash_pii("0040712345678", is_phone=True) == expected
+    assert hash_pii("0712 345 678", is_phone=True) == expected  # national (Gomag)
+    assert hash_pii("+44 20 7946 0958", is_phone=True) == hashlib.sha256(
+        b"442079460958"
+    ).hexdigest()
 
 
 def test_hash_pii_is_deterministic() -> None:
