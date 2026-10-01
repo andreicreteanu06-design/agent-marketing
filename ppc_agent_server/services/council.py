@@ -69,6 +69,11 @@ propune pivotarea doar spre un semnal real (durerea in crestere adusa de
 Researcher, segmentul care cumpara mai usor). Nu muta nicio idee; verdictul lui
 intra in decizie (``CouncilRuling.offer``) si in memorie.
 
+La o intrebare despre pret, oferta sau lansarea unui produs, CPO-ul si CFO-ul aplica si
+strategia de pret (``pricing.py``): 3 niveluri (Starter, Pro, Business), pret pe valoare -
+niciodata cost-plus - cu un «Value Metric», si pozitia Premium/Parity/Value. Raspunsul se
+incheie cu cele trei sectiuni din framework, lipite determinist si dupa sinteza.
+
 Modulul e pur: fara DB, fara HTTP. Banii vin printr-un :class:`FinancialSignalsSource`,
 datele tehnice printr-un :class:`~ppc_agent_server.services.technician.TechnicalSignalsSource`
 (implementarile din baza de date: ``queen_signals.py``).
@@ -102,6 +107,7 @@ from ppc_agent_server.services.memory import (
     memory_line,
     recall_for,
 )
+from ppc_agent_server.services.pricing import PricingRecommendation, recommend_pricing
 from ppc_agent_server.services.queen_agent import (
     _BY_KEY,
     MAX_MESSAGE_CHARS,
@@ -247,6 +253,9 @@ class FinancialSnapshot(BaseModel):
     daily_spend_cap: Decimal
     pending_proposals: int
     notes: list[str]
+    #: Venitul atribuit (reclame + Google) si obiectivul contului: ancora de valoare a pretului.
+    revenue: Decimal = Decimal("0")
+    objective: str = ""
 
 
 def _ad_economics(ad: AdSpend) -> AdEconomics:
@@ -411,6 +420,8 @@ def build_financial_snapshot(signals: FinancialSignals) -> FinancialSnapshot:
         daily_spend_cap=signals.daily_spend_cap,
         pending_proposals=signals.pending_proposals,
         notes=list(signals.notes),
+        revenue=revenue,
+        objective=signals.objective,
     )
 
 
@@ -475,11 +486,24 @@ class QuestionTopic:
     new_channel: str | None = None
     #: Intreaba de pretul click-ului ("de ce a crescut CPC-ul") - raspunsul e in licitatie.
     about_cpc: bool = False
+    #: Intreaba de pret, pachete, oferta sau lansarea unui produs: raspunsul are si
+    #: strategia de pret (``pricing.py``).
+    about_pricing: bool = False
+
+
+#: Pretul ofertei clientului (nu al click-ului, prins inainte ca CPC).
+_PRICING_MARKERS = (
+    "pret", "tarif", "pachet", "abonam", "ofert", "discount", "reducer", "promot", "scump",
+    "ieftin",
+)
 
 
 def classify_question(question: str, *, active_platforms: set[str]) -> QuestionTopic:
     """Despre ce e intrebarea - determinist, dupa cuvinte, fara LLM."""
     tokens = tokenize(question)
+    pricing = _marked(tokens, _PRICING_MARKERS) or (
+        _marked(tokens, ("lans",)) and _marked(tokens, ("produs", "servici"))
+    )
     new_channel = next(
         (
             platform
@@ -491,13 +515,13 @@ def classify_question(question: str, *, active_platforms: set[str]) -> QuestionT
     if "cpc" in tokens or (_marked(tokens, ("cost", "pret")) and _marked(tokens, ("click",))):
         return QuestionTopic("profitability", about_cpc=True)
     if _marked(tokens, _TOPIC_MARKERS[0][1]):
-        return QuestionTopic("budget", new_channel)
+        return QuestionTopic("budget", new_channel, about_pricing=pricing)
     if new_channel is not None or any(t.startswith(("canal", "platform")) for t in tokens):
-        return QuestionTopic("channel", new_channel)
+        return QuestionTopic("channel", new_channel, about_pricing=pricing)
     for topic, markers in _TOPIC_MARKERS[1:]:
         if _marked(tokens, markers):
-            return QuestionTopic(topic)
-    return QuestionTopic("general")
+            return QuestionTopic(topic, about_pricing=pricing)
+    return QuestionTopic("general", about_pricing=pricing)
 
 
 # --- decizia consiliului (determinista) ----------------------------------------
@@ -555,6 +579,8 @@ class CouncilRuling(BaseModel):
     conflicts: list[CouncilConflict] = Field(default_factory=list)
     #: Cand se rediscuta ce s-a taiat sau oprit; ``None`` = nimic taiat.
     reopen_when: str | None = None
+    #: Strategia de pret (CPO + CFO), doar la intrebarile despre pret, oferta sau lansare.
+    pricing: PricingRecommendation | None = None
 
 
 #: De ce nu se cheltuie bani in plus - cate un motiv pe stare financiara.
@@ -932,6 +958,20 @@ def rule_on_question(
         reopen_when = _VETO_REOPEN[veto_code]
     elif cut:
         reopen_when = _money_reopen(finances)
+    pricing = None
+    # Fara client ideal si fara bani, o strategie de pret ar fi un sfat generic: decizia
+    # spune deja ce lipseste.
+    has_basis = directive.status == "ok" or finances.status != "insufficient_data"
+    if question.about_pricing and has_basis:
+        pricing = recommend_pricing(
+            directive,
+            objective=finances.objective,
+            # Pe cifre false (veto pe bani) nu exista rentabilitate dovedita.
+            profitable=finances.status == "profitable" and scope != "money",
+            revenue=finances.revenue,
+            conversions=finances.conversions,
+            reopen_when=_money_reopen(finances),
+        )
     return CouncilRuling(
         topic=question.topic,
         new_channel=question.new_channel,
@@ -947,6 +987,7 @@ def rule_on_question(
         offer=_offer_context(question, product),
         conflicts=conflicts,
         reopen_when=reopen_when,
+        pricing=pricing,
     )
 
 
@@ -1172,9 +1213,14 @@ def psychology_insight(directive: BrandStrategyDirective) -> str | None:
     return " ".join(parts)
 
 
-def cfo_position(finances: FinancialSnapshot) -> str:
-    """Ce spune CFO-ul fara LLM: verdictul si unde se pierd bani."""
+def cfo_position(
+    finances: FinancialSnapshot, pricing: PricingRecommendation | None = None
+) -> str:
+    """Ce spune CFO-ul fara LLM: verdictul, unde se pierd bani si - la o intrebare de
+    pret - directiva lui: pretul reflecta valoarea, niciodata costul (cost-plus)."""
     parts = [finances.verdict]
+    if pricing is not None:
+        parts.append(pricing.value_rule)
     losers = [ad for ad in finances.ads if ad.verdict == "unprofitable"]
     if losers:
         parts.append(
@@ -1941,16 +1987,20 @@ class QueenCouncil:
         # Data-to-Text: membrii nu scriu cu LLM-ul. Pozitiile lor sunt calculate din
         # datele fiecarui rol, instant; singurul apel catre model e sinteza, mai jos.
         emit(CouncilEvent("stage", stage="deliberation"))
+        pricing = ruling.pricing
         seats: list[tuple[CouncilMember, str, bool]] = [
             ("strategist", strategist_position(context), has_brand),
-            ("cfo", cfo_position(finances), has_money),
+            ("cfo", cfo_position(finances, pricing), has_money),
         ]
         if technical is not None:
             seats.append(("technician", technician_position(technical), has_tech))
         if market is not None:
             seats.append(("researcher", researcher_position(market), has_market))
         # CPO-ul vorbeste ultimul: judeca oferta pe concluziile celorlalti.
-        seats.append(("cpo", product.summary, product.status != "unknown"))
+        cpo_text = product.summary
+        if pricing is not None:
+            cpo_text += f" {pricing.cpo_brief()}"
+        seats.append(("cpo", cpo_text, product.status != "unknown" or pricing is not None))
         opinions: list[CouncilOpinion] = []
         for member, position, has_data in seats:
             opinion = member_opinion(member, position, has_data=has_data)
@@ -1960,6 +2010,10 @@ class QueenCouncil:
         rebuttals = rebuttal_round(ruling.conflicts, emit=emit)
 
         def _reply(text: str, source: MessageSource, reason: str | None) -> CouncilReply:
+            # Sectiunile de pret se lipesc deterministe, si dupa sinteza: un model mic nu
+            # are voie sa copieze etichete, iar ele trebuie sa ramana exact ca in framework.
+            if ruling.pricing is not None:
+                text = f"{text}\n\n{ruling.pricing.sections()}"
             return CouncilReply(
                 client_account_id=client_account_id,
                 reply=text,
