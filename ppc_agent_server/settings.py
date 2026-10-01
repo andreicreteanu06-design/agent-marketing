@@ -7,6 +7,7 @@ variabilele de server pe care nu le recunoaste).
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import urlsplit
 
@@ -137,6 +138,11 @@ class ServerSettings(BaseSettings):
     # zeci de secunde un text pe care garzile il resping des; raspunsul determinist
     # pleaca instant. Porneste-o cu un model mare pe GPU.
     use_llm_synthesis: bool = False
+    # Scutul financiar al pilotului: suma bugetelor zilnice angajate pe TOATA
+    # platforma (toti clientii, toate propunerile executate sau in curs) nu trece
+    # de aici, orice ar permite limita fiecarui client. Moneda contului Meta
+    # (PPC_META_CURRENCY) trebuie sa fie RON. Ridic-o deliberat cand pilotul creste.
+    max_daily_spend_ron: Decimal = Field(default=Decimal("50"), gt=0)
 
     @field_validator("jev_api_key", "ollama_model", "ollama_keep_alive")
     @classmethod

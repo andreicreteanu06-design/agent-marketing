@@ -307,7 +307,12 @@ def test_approved_rewrite_is_never_executed_automatically(
     target = resolve_target(proposal)
     assert (target.platform, target.kind) == ("meta", "ad")
     with pytest.raises(NoExecutorError, match="se aplica manual"):
-        execute_proposal(proposal, object(), current_status="pending")  # type: ignore[arg-type]
+        execute_proposal(
+            proposal,
+            object(),  # type: ignore[arg-type]
+            current_status="pending",
+            max_daily_spend=Decimal("50"),
+        )
 
     queue_rewrite = ProposedChange(
         client_account_id=account.id or 0,

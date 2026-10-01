@@ -17,6 +17,13 @@ are trei reguli pe care nu le incalca:
    invalid in cel mai bun caz si un obiect strain in cel mai rau. Rezolvarea
    marcheaza explicit platforma fiecarei resurse, tocmai ca asta sa nu se poata
    intampla - vezi :func:`resolve_target`.
+4. **Nu cheltuie peste plafon.** Orice schimbare care pune bani (buget nou,
+   lansare) se compara cu ``max_daily_spend`` - parametru OBLIGATORIU, ca niciun
+   apelant sa nu-l poata uita - INAINTE de primul apel catre platforma. E a doua
+   centura: ruta verifica deja angajamentul total in baza de date
+   (``ppc_agent_server/spend_guard.py``); motorul, fara DB, opreste orice schimbare
+   care singura trece de plafon, si o lansare al carei buget din specificatie nu e
+   cel aprobat.
 
 Lansarea unei campanii noi (``CREATE_CAMPAIGN``) bate in contul de reclame,
 fiindca campania nu exista inca. Specificatia vine din ``proposal.after`` si se
@@ -37,7 +44,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
-from ppc_agent.errors import CampaignLaunchError, PpcAgentError
+from ppc_agent.errors import CampaignLaunchError, PpcAgentError, SpendLimitExceeded
 from ppc_agent.providers.meta_campaign import LaunchResult, MetaLaunchSpec
 
 logger = logging.getLogger("ppc_agent.services.execution_engine")
@@ -321,11 +328,56 @@ def _leftovers(exc: Exception) -> dict[str, str]:
     return {}
 
 
+#: Operatiile care pun bani. ``PAUSE`` lipseste deliberat: oprirea nu se blocheaza.
+_SPENDING_OPS = frozenset({"UPDATE", "CREATE", "CREATE_CAMPAIGN"})
+
+
+def _enforce_spend_cap(
+    proposal: ExecutableProposal, target: ResourceTarget, max_daily_spend: Decimal
+) -> None:
+    """Hard-stop inainte de platforma: schimbarea, singura, nu trece de plafon.
+
+    Raises:
+        SpendLimitExceeded: bugetul propus (sau cel din specificatia lansarii)
+            depaseste ``max_daily_spend``, ori specificatia cere mai mult decat
+            s-a aprobat.
+    """
+    if proposal.op not in _SPENDING_OPS:
+        return
+    amount = proposal.projected_daily_spend
+    reason = ""
+    if proposal.op == "CREATE_CAMPAIGN":
+        spec_budget = _launch_spec(proposal).daily_budget
+        if spec_budget > amount:
+            reason = (
+                f"specificatia lansarii cere {spec_budget}/zi, dar s-a aprobat {amount}/zi"
+            )
+        amount = max(amount, spec_budget)
+    if not reason and amount > max_daily_spend:
+        reason = f"bugetul zilnic {amount} depaseste plafonul {max_daily_spend}"
+    if reason:
+        logger.critical(
+            "SPEND GUARD: executie oprita inainte de platforma - %s",
+            reason,
+            extra={
+                "event": "spend_limit_exceeded",
+                "scope": "engine",
+                "resource": proposal.resource,
+                "platform": target.platform,
+                "op": proposal.op,
+                "amount": str(amount),
+                "cap": str(max_daily_spend),
+            },
+        )
+        raise SpendLimitExceeded(reason)
+
+
 def execute_proposal(
     proposal: ExecutableProposal,
     provider: MetaMutationProvider,
     *,
     current_status: str,
+    max_daily_spend: Decimal,
 ) -> ExecutionResult:
     """Aplica ``proposal`` pe platforma reala si spune ce s-a intamplat.
 
@@ -336,6 +388,8 @@ def execute_proposal(
             platforme - motorul nu il poate verifica.
         current_status: starea propunerii inainte de executie. Se primeste
             explicit ca motorul sa nu depinda de enum-ul de persistenta.
+        max_daily_spend: plafonul zilnic peste care nicio schimbare nu pleaca
+            spre platforma (vezi regula 4 din docstring-ul modulului).
 
     Returns:
         :class:`ExecutionResult` - ``executed=False`` cu ``error`` completat
@@ -345,8 +399,9 @@ def execute_proposal(
         ProposalNotExecutableError: propunerea nu e in ``pending``.
         NoExecutorError: resursa nu se poate adresa, perechea (platforma, tip)
             nu are executor, sau specificatia unei lansari nu e valida.
+        SpendLimitExceeded: schimbarea ar trece de ``max_daily_spend``.
 
-    Cele doua exceptii sunt RIDICATE, nu intoarse ca rezultat: amandoua inseamna
+    Cele trei exceptii sunt RIDICATE, nu intoarse ca rezultat: amandoua inseamna
     ca executia nici nu a inceput, deci propunerea trebuie sa ramana neatinsa,
     nu marcata ca picata.
 
@@ -369,6 +424,7 @@ def execute_proposal(
             f"'{target.kind}' pe {target.platform}. Propunerea ramane in "
             "asteptare - aplic-o manual in platforma."
         )
+    _enforce_spend_cap(proposal, target, max_daily_spend)
 
     try:
         result = asyncio.run(executor(provider, proposal, target))
@@ -385,6 +441,13 @@ def execute_proposal(
             target.kind,
             type(exc).__name__,
             exc,
+            extra={
+                "event": "proposal_execution_failed",
+                "resource": proposal.resource,
+                "platform": target.platform,
+                "op": proposal.op,
+                "error_type": type(exc).__name__,
+            },
         )
         return ExecutionResult(
             executed=False,
@@ -393,5 +456,15 @@ def execute_proposal(
             created=_leftovers(exc),
         )
 
-    logger.info("executat: %s", result.detail)
+    logger.info(
+        "executat: %s",
+        result.detail,
+        extra={
+            "event": "proposal_executed",
+            "resource": proposal.resource,
+            "platform": target.platform,
+            "op": proposal.op,
+            "amount": str(proposal.projected_daily_spend),
+        },
+    )
     return result

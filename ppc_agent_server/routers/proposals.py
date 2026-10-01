@@ -18,6 +18,7 @@ separat inclus dupa - o dependenta de ordine intre fisiere e o capcana.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -54,9 +55,15 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import ExecuteProposalRequest, ProposedChangeRead
+from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.spend_guard import check_spend_limit
 
 router = APIRouter(prefix="/api/v1/proposals", tags=["proposals"])
+logger = logging.getLogger("ppc_agent_server.routers.proposals")
+
+#: Plafonul global (``MAX_DAILY_SPEND_RON``) e in lei: pe un cont Meta in alta
+#: moneda, "50" ar insemna 50 EUR sau 50 USD - de cateva ori mai mult.
+_GUARD_CURRENCY = "RON"
 
 
 def _require_mutation_provider(
@@ -96,6 +103,16 @@ def _require_mutation_provider(
             detail=(
                 "serverul ruleaza in mod mock (PPC_PROVIDER_MODE), deci nu aplica "
                 "schimbari reale. Propunerea ramane in asteptare."
+            ),
+        )
+    currency = config.settings.meta_currency.strip().upper()
+    if currency != _GUARD_CURRENCY:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"contul Meta e in {currency}, iar plafonul de siguranta e in "
+                f"{_GUARD_CURRENCY} - nu aplic schimbari reale pana nu coincid "
+                "(PPC_META_CURRENCY)."
             ),
         )
     provider = ProviderFactory(config).meta_mutations()
@@ -260,7 +277,14 @@ def approve_proposal(
         check_spend_limit(
             session, account, proposal.projected_daily_spend, exclude_id=proposal.id
         )
-        result = run_execution(proposal, provider, current_status=ChangeStatus.PENDING.value)
+        result = run_execution(
+            proposal,
+            provider,
+            current_status=ChangeStatus.PENDING.value,
+            max_daily_spend=min(
+                account.max_daily_spend, get_server_settings().max_daily_spend_ron
+            ),
+        )
     except (SpendLimitExceeded, ProposalNotExecutableError, NoExecutorError) as exc:
         # Nimic n-a plecat spre platforma: rezervarea se elibereaza.
         _transition(session, proposal, frm=ChangeStatus.APPROVED, to=ChangeStatus.PENDING)
@@ -295,6 +319,22 @@ def approve_proposal(
     session.add(proposal)
     session.commit()
     session.refresh(proposal)
+    logger.log(
+        logging.INFO if result.executed else logging.ERROR,
+        "propunere %s: %s",
+        proposal.id,
+        proposal.status.value,
+        extra={
+            "event": "proposal_decided",
+            "proposal_id": proposal.id,
+            "client_account_id": account.id,
+            "status": proposal.status.value,
+            "op": proposal.op,
+            "resource": proposal.resource,
+            "amount": str(proposal.projected_daily_spend),
+            "client_user_id": client_user.id,
+        },
+    )
 
     if not result.executed:
         raise HTTPException(

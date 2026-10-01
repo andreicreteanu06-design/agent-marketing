@@ -20,6 +20,7 @@ from ppc_agent.errors import (
     SetupRequiredError,
     SpendLimitExceeded,
 )
+from ppc_agent_server.audit_log import configure_audit_logging
 from ppc_agent_server.db import init_db
 from ppc_agent_server.routers import (
     auth,
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Construieste instanta FastAPI (functie, nu obiect global — testabila izolat)."""
+    configure_audit_logging()
     app = FastAPI(
         title="ppc-agent server",
         description="Backend B2B multi-tenant pentru agentii, peste pipeline-urile ppc_agent.",

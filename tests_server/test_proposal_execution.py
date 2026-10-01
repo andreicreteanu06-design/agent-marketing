@@ -36,6 +36,10 @@ from ppc_agent_server.models import (
     Tenant,
 )
 
+#: Plafonul pentru testele motorului care nu sunt despre plafon: cel absolut, ca
+#: sumele lor (ex. 120.50) sa treaca exact ca inainte.
+_CAP = Decimal("500")
+
 
 class _FakeMetaProvider:
     """Provider dublu: retine ce i s-a cerut, sau pica la comanda."""
@@ -128,7 +132,7 @@ def test_consolidarea_de_lichiditate_nu_e_un_obiect_real() -> None:
 
 def test_pauza_pe_set_de_reclame_ajunge_la_provider_fara_prefix() -> None:
     provider = _FakeMetaProvider()
-    result = execute_proposal(_proposal(), provider, current_status="pending")
+    result = execute_proposal(_proposal(), provider, current_status="pending", max_daily_spend=_CAP)
     assert result.executed is True
     assert provider.paused_adsets == ["23848"]
 
@@ -139,12 +143,16 @@ def test_pauza_pe_campanie_si_pe_anunt_merg_pe_metode_diferite() -> None:
         _proposal(resource="meta_campaign/120", resource_type="campaign"),
         campaign,
         current_status="pending",
+        max_daily_spend=_CAP,
     )
     assert campaign.paused_campaigns == ["120"]
 
     ad = _FakeMetaProvider()
     execute_proposal(
-        _proposal(resource="meta_ad/7", resource_type="ad"), ad, current_status="pending"
+        _proposal(resource="meta_ad/7", resource_type="ad"),
+        ad,
+        current_status="pending",
+        max_daily_spend=_CAP,
     )
     assert ad.paused_ads == ["7"]
 
@@ -152,7 +160,7 @@ def test_pauza_pe_campanie_si_pe_anunt_merg_pe_metode_diferite() -> None:
 def test_actualizarea_de_buget_trimite_suma() -> None:
     provider = _FakeMetaProvider()
     proposal = _proposal(op=ChangeOp.UPDATE, spend="120.50")
-    execute_proposal(proposal, provider, current_status="pending")
+    execute_proposal(proposal, provider, current_status="pending", max_daily_spend=_CAP)
     assert provider.budgets == [("23848", Decimal("120.50"))]
 
 
@@ -161,14 +169,16 @@ def test_un_anunt_nu_are_buget_propriu() -> None:
     provider = _FakeMetaProvider()
     proposal = _proposal(op=ChangeOp.UPDATE, resource="meta_ad/7", resource_type="ad")
     with pytest.raises(NoExecutorError, match="UPDATE"):
-        execute_proposal(proposal, provider, current_status="pending")
+        execute_proposal(proposal, provider, current_status="pending", max_daily_spend=_CAP)
     assert provider.touched is False
 
 
 def test_o_propunere_ne_pending_nu_se_re_executa() -> None:
     """Un dublu-click pe aprobare nu trebuie sa dubleze o schimbare de buget."""
     with pytest.raises(ProposalNotExecutableError):
-        execute_proposal(_proposal(), _FakeMetaProvider(), current_status="executed")
+        execute_proposal(
+            _proposal(), _FakeMetaProvider(), current_status="executed", max_daily_spend=_CAP
+        )
 
 
 def test_un_termen_google_ads_nu_pleaca_niciodata_spre_meta() -> None:
@@ -181,20 +191,22 @@ def test_un_termen_google_ads_nu_pleaca_niciodata_spre_meta() -> None:
     provider = _FakeMetaProvider()
     proposal = _proposal(resource="service auto", resource_type="ppc_keyword")
     with pytest.raises(NoExecutorError, match="google_ads"):
-        execute_proposal(proposal, provider, current_status="pending")
+        execute_proposal(proposal, provider, current_status="pending", max_daily_spend=_CAP)
     assert provider.touched is False
 
 
 def test_tip_fara_executor_nu_se_aplica_pe_aproape() -> None:
     proposal = _proposal(resource="ceva", resource_type="widget_necunoscut")
     with pytest.raises(NoExecutorError, match="widget_necunoscut"):
-        execute_proposal(proposal, _FakeMetaProvider(), current_status="pending")
+        execute_proposal(
+            proposal, _FakeMetaProvider(), current_status="pending", max_daily_spend=_CAP
+        )
 
 
 def test_esecul_platformei_devine_rezultat_nu_exceptie() -> None:
     """Propunerea trebuie marcata FAILED cu motiv, nu sa arunce in sus."""
     provider = _FakeMetaProvider(fail=RuntimeError("token expirat"))
-    result = execute_proposal(_proposal(), provider, current_status="pending")
+    result = execute_proposal(_proposal(), provider, current_status="pending", max_daily_spend=_CAP)
     assert result.executed is False
     assert "token expirat" in result.error
 
@@ -557,7 +569,7 @@ def test_asyncio_run_nu_ramane_cu_bucla_pornita() -> None:
     """Puntea sincrona trebuie sa poata fi apelata de mai multe ori la rand."""
     provider = _FakeMetaProvider()
     for _ in range(3):
-        execute_proposal(_proposal(), provider, current_status="pending")
+        execute_proposal(_proposal(), provider, current_status="pending", max_daily_spend=_CAP)
     assert provider.paused_adsets == ["23848"] * 3
     assert asyncio.get_event_loop_policy() is not None
 
