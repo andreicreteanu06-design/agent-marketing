@@ -1170,6 +1170,33 @@ Securitate:
 (la fel ca restul proiectului). `ruff check` (fara argument de cale) acopera
 deja tot, inclusiv `ppc_agent_server/` si `tests_server/`.
 
+### Inainte de pilotul Meta (si de orice lansare majora)
+
+**1. Pilotul simulat.** Ruleaza tot lantul pe date fictive, in mod `live` real, dar
+cu Meta interceptata local (nicio cerere nu pleaca): CAPI cu `event_id`,
+deduplicarea, aprobarile, lansarea OPRITA, plafonul `MAX_DAILY_SPEND_RON` (409 +
+alerta CRITICAL), refuzul unui cont in alta moneda. Sare implicit in suita:
+
+```powershell
+$env:PILOT_E2E = "1"; .venv\Scripts\python.exe -m pytest tests_server/test_e2e_pilot_simulation.py -v
+```
+
+**2. Cele 4 lucruri din afara codului** (testul nu le poate verifica):
+
+1. **Account Spending Limit in Ads Manager.** Singura oprire garantata: Meta poate
+   cheltui intr-o zi pana la +75% peste bugetul zilnic, iar plafonul nostru vede
+   doar ce trece prin aplicatie.
+2. **Token real de System User** (nu personal), cu `ads_management` si acces la pixel;
+   aplicatia Meta in modul Live, Business Verification facuta. In `.env`:
+   `PPC_PROVIDER_MODE=live`, `PPC_META_CURRENCY=RON`.
+3. **`eventID` in pixelul din Gomag.** Purchase-ul din browser trebuie sa poarte
+   exact `gomag_order_{id}`, altfel fiecare vanzare apare de doua ori. Verifica in
+   Events Manager -> Test Events (cu `META_CAPI_TEST_EVENT_CODE`), apoi goleste codul.
+4. **Server public, HTTPS, pornit permanent.** Webhook-ul Gomag trebuie sa ajunga la
+   `/api/v1/tracking/conversion/{id}` (cu `Authorization: Bearer <cheia agentiei>` -
+   verifica daca Gomag permite antete pe webhook). Si imaginea reclamei: un URL
+   public, direct (fara redirect), altfel lansarea pica la primul pas.
+
 ## Date de cautare organica (`ppc_agent/search_data/`)
 
 Partea organica a platformei, pe surse gratuite si oficiale. **Niciun API
