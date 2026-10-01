@@ -375,6 +375,25 @@ class CreativeArtifact(SQLModel, table=True):
     client_account: ClientAccount = Relationship(back_populates="creative_artifacts")
 
 
+class McpAccessKey(SQLModel, table=True):
+    """Cheia cu care un agent AI extern se conecteaza la serverul MCP, pentru UN client.
+
+    Separata de token-ul de login, deliberat: token-ul de login deschide tot contul
+    (inclusiv aprobarea propunerilor, adica cheltuiala), expira in 7 zile si nu se
+    poate revoca. Cheia MCP merge DOAR pe endpoint-ul MCP - unelte de citire si
+    propuneri care asteapta aprobarea omului - nu expira si se revoca oricand.
+    Doar hash-ul (SHA-256) se pastreaza; cheia in clar se arata o singura data.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    #: Cine o foloseste ("ChatGPT agentie", "n8n"), ca sa stii ce revoci.
+    name: str
+    key_hash: str = Field(unique=True, index=True)
+    created_at: datetime = Field(default_factory=_now)
+    revoked_at: datetime | None = None
+
+
 class ConversionEvent(SQLModel, table=True):
     """O conversie normalizata, cu PII deja hash-uit (SHA-256) - niciodata in clar.
 

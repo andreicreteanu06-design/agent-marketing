@@ -27,9 +27,11 @@ from ppc_agent_server.routers import (
     campaigns,
     client_auth,
     clients,
+    creative,
     hybrid_insights,
     integrations,
     jobs,
+    mcp_keys,
     proposals,
     queen,
     reports,
@@ -70,9 +72,11 @@ def _error_handler(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """La pornire: creeaza tabelele lipsa (SQLite dev) — Postgres foloseste Alembic."""
+    """La pornire: creeaza tabelele lipsa (SQLite dev) — Postgres foloseste Alembic —
+    si porneste managerul de sesiuni MCP (Streamable HTTP), pe toata durata aplicatiei."""
     init_db()
-    yield
+    async with app.state.mcp_sessions.run():
+        yield
 
 
 def create_app() -> FastAPI:
@@ -104,9 +108,11 @@ def create_app() -> FastAPI:
     app.include_router(campaigns.router)
     app.include_router(client_auth.router)
     app.include_router(clients.router)
+    app.include_router(creative.router)
     app.include_router(hybrid_insights.router)
     app.include_router(integrations.router)
     app.include_router(jobs.router)
+    app.include_router(mcp_keys.router)
     app.include_router(proposals.router)
     app.include_router(queen.router)
     app.include_router(reports.router)
@@ -114,9 +120,11 @@ def create_app() -> FastAPI:
     app.include_router(tracking.router)
 
     # Serverul MCP e o aplicatie ASGI separata, montata - nu un APIRouter:
-    # SSE-ul isi tine propriul ciclu de viata al conexiunii, iar schema lui de
-    # unelte nu apartine OpenAPI-ului REST.
-    app.mount(MCP_MOUNT_PATH, build_mcp_asgi_app())
+    # transporturile isi tin propriul ciclu de viata al conexiunii, iar schema lui
+    # de unelte nu apartine OpenAPI-ului REST. Managerul de sesiuni il porneste
+    # lifespan-ul de mai sus.
+    mcp_app, app.state.mcp_sessions = build_mcp_asgi_app()
+    app.mount(MCP_MOUNT_PATH, mcp_app)
 
     @app.get("/health")
     def health() -> dict[str, str]:

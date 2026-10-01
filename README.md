@@ -1159,6 +1159,75 @@ Securitate:
   `Retry-After`. Memoria e per proces: cu mai multi workeri uvicorn, limita se
   inmulteste cu numarul lor.
 
+### Agenti AI externi prin MCP
+
+Platforma e un server MCP: orice agent AI care vorbeste MCP (Claude, ChatGPT prin
+API, Cursor, n8n, agenti scrisi cu OpenAI Agents SDK sau LangChain) ii poate folosi
+datele. Unelte: `get_budget_summary`, `get_cannibalization_insights`,
+`get_seo_opportunities` si `propose_budget_change` - aceasta din urma doar CREEAZA o
+propunere care asteapta aprobarea omului.
+
+**Cheia.** Clientul isi face cate o cheie per agent - `POST /api/v1/me/mcp-keys`
+`{"name": "ChatGPT agentie"}` - si primeste, o singura data, cheia `mcp_...` si adresa
+serverului. Cheia merge DOAR pe MCP (nu poate aproba nimic, deci nu poate cheltui),
+vede un singur client si se revoca oricand: `DELETE /api/v1/me/mcp-keys/{id}`.
+Token-ul de login nu se da unui agent: deschide tot contul.
+
+**Agenti de la distanta - Streamable HTTP** (serverul trebuie sa fie public, HTTPS):
+`POST {PUBLIC_API_URL}/api/v1/mcp/stream`, cu `Authorization: Bearer mcp_...`.
+
+```powershell
+# Claude Code
+claude mcp add --transport http agentie https://api.domeniu.ro/api/v1/mcp/stream --header "Authorization: Bearer mcp_..."
+```
+
+```python
+# OpenAI Responses API: modelul cheama singur uneltele
+client.responses.create(
+    model="<modelul tau>",
+    tools=[{
+        "type": "mcp",
+        "server_label": "agentie",
+        "server_url": "https://api.domeniu.ro/api/v1/mcp/stream",
+        "headers": {"Authorization": "Bearer mcp_..."},
+    }],
+    input="Cat buget zilnic mai am disponibil?",
+)
+```
+
+**Aplicatii locale - stdio** (Claude Desktop): serverul porneste ca proces, pe un
+singur client, ales prin `MCP_CLIENT_ACCOUNT_ID`.
+
+```json
+{
+  "mcpServers": {
+    "agentie": {
+      "command": "C:\\...\\Agent marketing\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "ppc_agent_server.mcp_server"],
+      "env": {
+        "PYTHONPATH": "C:\\...\\Agent marketing",
+        "DATABASE_URL": "sqlite:///C:/.../Agent marketing/ppc_agent_server.db",
+        "MCP_CLIENT_ACCOUNT_ID": "3"
+      }
+    }
+  }
+}
+```
+
+Inca nu: conectorii din interfata web Claude.ai si ChatGPT cer OAuth 2.1 - urmatorul
+pas. Endpoint-ul SSE (`/api/v1/mcp/sse`) ramane pentru clientii vechi.
+
+### CCO: evaluarea creativelor
+
+`POST /api/v1/creative/upload` (fisier JPEG/PNG, max 5 MB, token de client) intoarce
+`aesthetic_score` (1-10, scala Aesthetic Predictor V2.5: peste 5,5 profesionist, peste
+8 premium), `virality_potential` (High/Medium/Low), `algorithm_compatibility` (cum o
+trateaza Explore/Reels si TikTok) si `feedback` de media buyer. Un model Ollama cu
+vision (`OLLAMA_VISION_MODEL`) noteaza compozitia, culorile, zgomotul vizual, calitatea,
+hook-ul, oprirea scroll-ului, incarcarea cognitiva, textul si CTA-ul; scorul,
+potentialul si verdictul le calculeaza codul. Modelul imita scala predictorului, nu il
+ruleaza; "potential viral" e o euristica, nu o predictie. Fara model configurat: 503.
+
 ### Teste server
 
 ```powershell

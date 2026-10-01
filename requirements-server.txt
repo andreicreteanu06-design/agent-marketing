@@ -27,9 +27,13 @@ cryptography>=43,<44
 redis>=5,<6
 arq>=0.26,<1
 
-# Server MCP peste SSE (ppc_agent_server/mcp/) - expune motorul hibrid catre
-# agenti externi (Claude Desktop, Cursor). SDK-ul oficial Anthropic.
+# Server MCP (ppc_agent_server/mcp/) - expune platforma catre agenti AI externi:
+# Streamable HTTP + SSE in aplicatie (routers/mcp_router.py), stdio pentru aplicatiile
+# locale (ppc_agent_server/mcp_server.py). SDK-ul oficial MCP; extra-ul [cli] nu
+# trebuie (e doar unealta de dezvoltare «mcp dev»).
 mcp>=2,<3
+# Incarcarea fisierelor (UploadFile) - creativele evaluate de CCO (routers/creative.py).
+python-multipart>=0.0.20,<1
 # Cautarea pe web a Researcher-ului (services/researcher.py): DuckDuckGo, fara cheie.
 # (Fostul duckduckgo-search, redenumit ddgs de autori; acelasi DDGS().text().)
 ddgs>=9.16,<10

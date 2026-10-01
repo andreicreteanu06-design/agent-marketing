@@ -27,6 +27,7 @@ from ppc_agent_server.mcp.server import (
     set_client_account_id,
 )
 from ppc_agent_server.models import (
+    ChangeOp,
     ChangeStatus,
     ClientAccount,
     ProposedChange,
@@ -35,6 +36,7 @@ from ppc_agent_server.models import (
     SerpSource,
     Tenant,
 )
+from ppc_agent_server.settings import get_server_settings
 
 
 def _call(name: str, **arguments: Any) -> dict[str, Any]:
@@ -93,12 +95,13 @@ def _seed(session: Session, account_id: int, term: str, rank: float, cost: str) 
     session.commit()
 
 
-def test_cele_trei_unelte_sunt_expuse_cu_scheme_generate() -> None:
+def test_cele_patru_unelte_sunt_expuse_cu_scheme_generate() -> None:
     """Schemele vin din adnotarile de tip - scrise de mana s-ar desincroniza."""
     tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
     assert set(tools) == {
         "get_cannibalization_insights",
         "get_seo_opportunities",
+        "get_budget_summary",
         "propose_budget_change",
     }
     schema = tools["propose_budget_change"].input_schema or {}
@@ -163,6 +166,50 @@ def test_bugetul_negativ_e_refuzat(connected: ClientAccount) -> None:
                 {"keyword": "x", "proposed_daily_budget": -5, "rationale": "y"},
             )
         )
+
+
+def test_sumarul_de_buget_citeste_datele_reale_ale_clientului(
+    connected: ClientAccount, session: Session
+) -> None:
+    """Plafonul efectiv, ce e angajat (executat + in curs), ce mai incape, ce asteapta."""
+    for status, spend in (
+        (ChangeStatus.EXECUTED, "20"),
+        (ChangeStatus.APPROVED, "5"),
+        (ChangeStatus.PENDING, "8"),
+        (ChangeStatus.REJECTED, "99"),
+    ):
+        session.add(
+            ProposedChange(
+                client_account_id=connected.id or 0,
+                op=ChangeOp.UPDATE,
+                resource="meta_ad_set/1",
+                resource_type="ad_set",
+                projected_daily_spend=Decimal(spend),
+                rationale="test",
+                source_module="test",
+                status=status,
+            )
+        )
+    session.commit()
+
+    assert _call("get_budget_summary") == {
+        "client": "Client MCP",
+        "currency": "RON",
+        "daily_cap": "50.00",
+        "committed_daily_budget": "25.00",
+        "remaining_daily_budget": "25.00",
+        "pending_proposals": 1,
+        "pending_daily_budget": "8.00",
+    }
+
+
+def test_sumarul_de_buget_nu_trece_peste_plafonul_platformei(
+    connected: ClientAccount, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Limita clientului e 50, dar MAX_DAILY_SPEND_RON=30: plafonul efectiv e 30."""
+    monkeypatch.setenv("MAX_DAILY_SPEND_RON", "30")
+    get_server_settings.cache_clear()
+    assert _call("get_budget_summary")["daily_cap"] == "30"
 
 
 # --- poarta de autentificare a transportului --------------------------------

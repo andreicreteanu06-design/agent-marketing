@@ -1,4 +1,8 @@
-"""Serverul MCP "Arting_Hybrid_Engine" si cele trei unelte ale lui.
+"""Serverul MCP "Arting_Hybrid_Engine" si cele patru unelte ale lui.
+
+Doua transporturi, acelasi server: SSE in aplicatia web (``routers/mcp_router.py``,
+contul vine din token) si stdio pentru aplicatiile locale (``ppc_agent_server/
+mcp_server.py``, contul vine din ``MCP_CLIENT_ACCOUNT_ID``).
 
 Contextul de client NU e un parametru al uneltelor, ci vine din conexiunea
 autentificata (:data:`current_client_account_id`). Doua motive, ambele serioase:
@@ -21,7 +25,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ppc_agent.search_data.insights import CannibalizationDetector, SeoOpportunityFinder
 from ppc_agent_server.db import get_engine
@@ -30,7 +34,9 @@ from ppc_agent_server.hybrid_queries import (
     load_organic_positions,
     load_paid_terms,
 )
-from ppc_agent_server.models import ChangeOp, ChangeStatus, ProposedChange
+from ppc_agent_server.models import ChangeOp, ChangeStatus, ClientAccount, ProposedChange
+from ppc_agent_server.settings import get_server_settings
+from ppc_agent_server.spend_guard import committed_daily_spend
 
 SERVER_NAME = "Arting_Hybrid_Engine"
 
@@ -75,7 +81,7 @@ def current_client_account_id() -> int:
 
 
 def build_server() -> MCPServer[None]:
-    """Construieste serverul MCP cu cele trei unelte.
+    """Construieste serverul MCP cu cele patru unelte.
 
     Functie, nu obiect global, din acelasi motiv ca ``create_app()``: se poate
     instantia izolat intr-un test, fara sa ramana stare intre ele.
@@ -167,6 +173,43 @@ def build_server() -> MCPServer[None]:
                 }
                 for item in opportunities
             ],
+        }
+
+    @server.tool(
+        name="get_budget_summary",
+        title="Bugetul curent: plafonul zilnic si cat e deja angajat",
+        description=(
+            "Sumarul bugetului zilnic al clientului, din datele reale ale aplicatiei: "
+            "plafonul efectiv (limita clientului, dar niciodata peste plafonul de "
+            "siguranta al platformei), bugetele deja angajate (propuneri executate sau "
+            "in curs de aplicare), cat mai incape si ce propuneri asteapta aprobarea. "
+            "Nu citeste cheltuiala reala din Meta - doar ce a trecut prin aplicatie."
+        ),
+    )
+    def get_budget_summary() -> dict[str, Any]:
+        account_id = current_client_account_id()
+        with Session(get_engine()) as session:
+            account = session.get(ClientAccount, account_id)
+            if account is None:
+                raise ToolError("contul clientului nu mai exista")
+            cap = min(account.max_daily_spend, get_server_settings().max_daily_spend_ron)
+            committed = committed_daily_spend(session, account_id)
+            pending = session.exec(
+                select(ProposedChange).where(
+                    ProposedChange.client_account_id == account_id,
+                    ProposedChange.status == ChangeStatus.PENDING,
+                )
+            ).all()
+        return {
+            "client": account.name,
+            "currency": "RON",
+            "daily_cap": str(cap),
+            "committed_daily_budget": str(committed),
+            "remaining_daily_budget": str(max(cap - committed, Decimal("0"))),
+            "pending_proposals": len(pending),
+            "pending_daily_budget": str(
+                sum((change.projected_daily_spend for change in pending), Decimal("0"))
+            ),
         }
 
     @server.tool(

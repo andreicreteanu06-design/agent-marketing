@@ -412,6 +412,30 @@ class IntegrationUpdate(BaseModel):
 # --- Urmarire conversii ---
 
 
+class McpKeyCreate(BaseModel):
+    """Corpul cererii ``POST /api/v1/me/mcp-keys``: cui ii dai cheia."""
+
+    name: str = Field(min_length=1, max_length=100)
+
+
+class McpKeyRead(BaseModel):
+    """O cheie MCP, fara cheia in clar (aceea se arata o singura data, la creare)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    created_at: datetime
+    revoked_at: datetime | None
+
+
+class McpKeyCreated(McpKeyRead):
+    """Raspunsul la creare: cheia in clar (singura data) si adresa serverului MCP."""
+
+    key: str
+    mcp_url: str
+
+
 class ConversionOutcome(BaseModel):
     """Raspunsul ``POST /api/v1/tracking/conversion/{client_id}``."""
 

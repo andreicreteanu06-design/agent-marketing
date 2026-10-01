@@ -103,7 +103,10 @@ CHAT_BURST = RateLimiter(limit=6, window_seconds=60)
 #: ...si plafonul pe ora (modelul local e partajat, Jev se plateste pe token).
 CHAT_HOURLY = RateLimiter(limit=60, window_seconds=60 * 60)
 
-ALL_LIMITERS = (LOGIN_BY_IP, LOGIN_FAILURES_BY_EMAIL, CHAT_BURST, CHAT_HOURLY)
+#: Creative evaluate de CCO: un model cu vision pe CPU tine minute intregi o imagine.
+CREATIVE_HOURLY = RateLimiter(limit=20, window_seconds=60 * 60)
+
+ALL_LIMITERS = (LOGIN_BY_IP, LOGIN_FAILURES_BY_EMAIL, CHAT_BURST, CHAT_HOURLY, CREATIVE_HOURLY)
 
 
 def reset_rate_limits() -> None:

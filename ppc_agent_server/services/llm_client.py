@@ -473,20 +473,39 @@ class OllamaChatClient:
     transport: httpx.BaseTransport | None = None
     clock: Callable[[], float] = time.monotonic
 
-    def complete(self, *, system: str, user: str) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        images: Sequence[str] = (),
+        schema: Mapping[str, Any] | None = None,
+    ) -> str:
         """Raspunsul modelului la cele doua mesaje, intreg (adunat din flux).
+
+        ``images``: imagini base64 atasate mesajului utilizatorului (doar pentru un
+        model cu vision). ``schema``: JSON Schema impusa raspunsului (``format`` Ollama).
 
         Raises:
             LLMUnavailableError: Ollama nu accepta conexiunea (sau n-a raspuns de
                 curand - atunci fara sa mai incerce).
             OllamaError: niciun token la timp, generare intrerupta sau raspuns gol.
         """
-        text = "".join(self.stream(system=system, user=user)).strip()
+        text = "".join(
+            self.stream(system=system, user=user, images=images, schema=schema)
+        ).strip()
         if not text:
             raise OllamaError("Ollama a întors un mesaj gol")
         return text
 
-    def stream(self, *, system: str, user: str) -> Iterator[str]:
+    def stream(
+        self,
+        *,
+        system: str,
+        user: str,
+        images: Sequence[str] = (),
+        schema: Mapping[str, Any] | None = None,
+    ) -> Iterator[str]:
         """Raspunsul modelului, fragment cu fragment, pe masura ce il genereaza.
 
         Nimic nu pleaca spre server pana la primul ``next()``. Erorile vin din
@@ -514,20 +533,28 @@ class OllamaChatClient:
                 raise LLMUnavailableError(
                     f"Ollama nu a răspuns de curând la {self.host} - reîncerc după pauză"
                 )
-            yield from self._generate(system, user)
+            yield from self._generate(system, user, images, schema)
         finally:
             gate.release()
 
-    def _generate(self, system: str, user: str) -> Iterator[str]:
+    def _generate(
+        self,
+        system: str,
+        user: str,
+        images: Sequence[str] = (),
+        schema: Mapping[str, Any] | None = None,
+    ) -> Iterator[str]:
+        user_message: dict[str, Any] = {"role": "user", "content": user}
+        if images:
+            user_message["images"] = list(images)
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": [{"role": "system", "content": system}, user_message],
             "stream": True,
             "options": {"temperature": self.temperature, "num_predict": self.max_tokens},
         }
+        if schema is not None:
+            payload["format"] = dict(schema)
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
         # Termenul de citire e si termenul primului token: raspunsul incepe cu el.
