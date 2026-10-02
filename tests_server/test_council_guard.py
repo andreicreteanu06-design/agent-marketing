@@ -286,6 +286,7 @@ def test_a_cfo_cut_keeps_kelly_from_raising_the_budget(session: Session) -> None
         session, account, "cfo", CFO_CUT, "budget", days_ago=2,
         observation="CPA-ul e 175 RON, peste ținta de 80 RON",
     )
+    _ads(session, account, spend="1750", conversions=10)  # cifrele de azi: tot pe pierdere
     launch = _launch(session, account)
 
     result = run_propose_job(client_account_id=account.id or 0)
@@ -309,6 +310,19 @@ def test_a_cfo_cut_keeps_kelly_from_raising_the_budget(session: Session) -> None
     assert launch.status == ChangeStatus.BLOCKED
     assert launch.error_message is not None
     assert launch.error_message.endswith("Cheltuiala nu crește până nu se ridică restricția.")
+
+
+def test_a_cfo_cut_without_data_does_not_block_a_first_launch(session: Session) -> None:
+    """Fara conversii, CFO-ul taie cresterea bugetului - dar un prim test e felul in care
+    se strang datele; altfel un client nou n-ar putea lansa niciodata."""
+    account = _client_account(session, max_daily_spend="50.00")
+    _remember(session, account, "cfo", CFO_CUT, "budget", days_ago=1)
+    launch = _launch(session, account)
+
+    run_propose_job(client_account_id=account.id or 0)
+
+    session.refresh(launch)
+    assert launch.status == ChangeStatus.PENDING
 
 
 def test_a_cfo_cut_leaves_a_plan_that_does_not_grow_untouched(session: Session) -> None:

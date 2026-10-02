@@ -6,8 +6,9 @@ cu specificatia completa in ``after`` - exact ce va vedea omul care aproba.
 Campania apare in contul Meta abia dupa ``POST /api/v1/proposals/{id}/approve``,
 si si atunci totul se creeaza OPRIT: activarea ramane un pas manual.
 
-Deci intre cererea de lansare si primul leu cheltuit stau doua decizii umane:
-aprobarea in ``/cont`` si activarea in Ads Manager.
+Deci intre cererea de lansare si primul leu cheltuit stau consiliul si doua decizii
+umane: avizul consiliului (``services/launch_council.py``), aprobarea in ``/cont`` si
+activarea in Ads Manager. Cu oprirea de urgenta activa, nu se depune nimic (423).
 """
 
 from __future__ import annotations
@@ -34,13 +35,43 @@ from ppc_agent_server.models import (
     ClientUser,
     ProposedChange,
 )
+from ppc_agent_server.routers import queen
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
+from ppc_agent_server.services.council import CouncilReply
+from ppc_agent_server.services.council_guard import DECIDED_BY
+from ppc_agent_server.services.emergency_stop import require_running
+from ppc_agent_server.services.launch_council import (
+    REVIEW_KEY,
+    Council,
+    blocked_by,
+    growth_block,
+    launch_question,
+    review,
+)
 from ppc_agent_server.spend_guard import check_spend_limit, committed_daily_spend
 
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
 SOURCE_MODULE = "campaign_launch"
+
+
+def get_launch_council() -> Council:
+    """Dependinta: consiliul din chat, cu sursele live (injectabil in teste)."""
+
+    def consult(session: Session, client_account_id: int, question: str) -> CouncilReply:
+        llm = queen.get_llm_router()
+        return queen._deliberate(
+            session,
+            client_account_id,
+            question,
+            voice=None,  # avizul e determinist: nu asteapta minute dupa modelul local
+            system_one=queen.get_system_one(llm),
+            seo_intent=queen.get_seo_intent(),
+            traffic=queen.get_organic_traffic(),
+        )
+
+    return consult
 
 
 def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaLaunchSpec:
@@ -90,14 +121,21 @@ def propose_launch(
     payload: CampaignLaunchRequest,
     client_user: Annotated[ClientUser, Depends(get_current_client_user)],
     session: Annotated[Session, Depends(get_session)],
+    council: Annotated[Council, Depends(get_launch_council)],
 ) -> ProposedChange:
-    """Depune o propunere de lansare. Nu creeaza nimic in Meta.
+    """Depune o propunere de lansare, cu avizul consiliului. Nu creeaza nimic in Meta.
 
     Raises:
-        HTTPException: 409 cand contul Meta nu e configurat; 422 cand
-            specificatia nu e valida sau cand brief-ul gaseste o problema
-            obiectiva (pagina de destinatie care nu exista sau nu e publica).
+        HTTPException: 423 cu oprirea de urgenta activa; 409 cand contul Meta nu e
+            configurat; 422 cand specificatia nu e valida sau cand brief-ul gaseste o
+            problema obiectiva (pagina de destinatie care nu exista sau nu e publica);
+            503 cand consiliul nu poate delibera - fara aviz, nu se lanseaza nimic.
         SpendLimitExceeded: bugetul ar depasi plafonul zilnic (-> 409).
+
+    Consiliul delibereaza pe lansare cu toate datele clientului; avizul lui sta in
+    ``before["council_review"]``. Daca dupa deliberare exista un veto pe bani sau o
+    inghetare a cheltuielilor, propunerea se scrie ``blocked``, cu motivul - clientul
+    o vede in ``GET /proposals/blocked`` si nu o poate aproba.
 
     Plafonul se verifica aici ca sa nu intre in coada o lansare care n-ar
     putea fi aprobata oricum - si se verifica DIN NOU la aprobare, fiindca
@@ -110,6 +148,7 @@ def propose_launch(
     sta in ``before`` - contextul in care s-a luat decizia - langa
     specificatia din ``after``.
     """
+    require_running(session)
     account = session.get(ClientAccount, client_user.client_account_id)
     if account is None:  # pragma: no cover - FK garanteaza existenta
         raise HTTPException(status_code=404, detail="contul clientului nu exista")
@@ -149,21 +188,42 @@ def propose_launch(
             },
         )
 
+    client_id = account.id or 0
+    try:
+        reply = council(session, client_id, launch_question(spec.campaign_name, spec.daily_budget))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="consiliul nu a putut delibera acum - fără avizul lui nu se lansează nimic",
+        ) from exc
+    # Dupa deliberare: o taietura a CFO-ului de acum e deja in memorie, deci conteaza.
+    block = growth_block(session, client_id)
+
     proposal = ProposedChange(
-        client_account_id=account.id or 0,
+        client_account_id=client_id,
         op=ChangeOp.CREATE_CAMPAIGN,
         # Tinta e contul de reclame: campania nu exista inca, deci n-are id.
         # Contul ramane inghetat in propunere - se creeaza exact acolo unde
         # scria cand omul a aprobat, chiar daca setarea clientului se schimba.
         resource=f"meta_ad_account/{ad_account}",
         resource_type="campaign",
-        before=brief.to_payload(),
+        before={**brief.to_payload(), REVIEW_KEY: review(reply)},
         after=spec.to_payload(),
         projected_daily_spend=spec.daily_budget,
-        rationale=f"{_rationale(spec, ad_account)} {brief.summary()}",
+        rationale=(
+            f"{_rationale(spec, ad_account)} {brief.summary()} "
+            f"Consiliul: {reply.ruling.decision}"
+        ),
         source_module=SOURCE_MODULE,
         status=ChangeStatus.PENDING,
     )
+    if block is not None:
+        stopped = blocked_by(block)
+        proposal.status = ChangeStatus.BLOCKED
+        proposal.decided_at = reply.generated_at
+        proposal.decided_by = DECIDED_BY
+        proposal.error_message = stopped["message"]
+        proposal.before = {**proposal.before, "council": stopped["context"]}
     session.add(proposal)
     session.commit()
     session.refresh(proposal)

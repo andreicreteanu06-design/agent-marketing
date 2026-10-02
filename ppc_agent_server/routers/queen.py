@@ -46,10 +46,12 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
+import unicodedata
 from collections.abc import Callable, Iterator
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -60,11 +62,13 @@ from ppc_agent_server.db import get_engine, get_session
 from ppc_agent_server.models import ClientUser
 from ppc_agent_server.rate_limit import CHAT_BURST, CHAT_HOURLY, too_many_requests
 from ppc_agent_server.routers.client_auth import get_current_client_user
+from ppc_agent_server.services import emergency_stop
 from ppc_agent_server.services.council import (
     MAX_QUESTION_CHARS,
     CouncilEvent,
     CouncilListener,
     CouncilReply,
+    CouncilRuling,
     QueenCouncil,
     clean_question,
 )
@@ -202,6 +206,74 @@ def _event_sse(event: CouncilEvent) -> str:
     return _sse("stage", {"stage": event.stage})
 
 
+_STOP = frozenset({
+    "opreste campaniile", "opreste toate campaniile", "opreste tot", "opreste agentul",
+    "stop campanii", "stop campaniile", "stop tot",
+})
+_RESUME = frozenset({
+    "reporneste agentul", "reporneste platforma", "reia campaniile", "reia agentul",
+})
+Command = Literal["stop", "resume"]
+
+
+def admin_command(message: str) -> Command | None:
+    """"Opreste campaniile!" -> ``stop``: fara diacritice, majuscule si punctuatie."""
+    plain = "".join(
+        char for char in unicodedata.normalize("NFKD", message.lower())
+        if not unicodedata.combining(char)
+    )
+    words = " ".join(re.sub(r"[^a-z0-9 ]", " ", plain).split())
+    return "stop" if words in _STOP else "resume" if words in _RESUME else None
+
+
+def _command_reply(client_account_id: int, text: str) -> CouncilReply:
+    """Raspunsul unei comenzi, in forma raspunsului consiliului (chatul il afiseaza la fel)."""
+    ruling = CouncilRuling(
+        topic="general", new_channel=None, financial_status="insufficient_data",
+        brand_status="insufficient_data", decision=text, approved=[], cut=[],
+    )
+    return CouncilReply(
+        client_account_id=client_account_id, reply=text, source="template", model=None,
+        fallback_reason=None, topic="general", ruling=ruling, opinions=[], psychology=None,
+        financial_status="insufficient_data", directive_status="insufficient_data",
+        generated_at=_utc_now(),
+    )
+
+
+def _run_command(session: Session, user: ClientUser, command: Command) -> CouncilReply:
+    if user.email.lower() not in get_server_settings().admins:
+        logger.warning("comanda de admin refuzata pentru client_user %s", user.id)
+        return _command_reply(
+            user.client_account_id,
+            "Doar un administrator al platformei poate opri sau reporni campaniile din chat. "
+            "Dacă vrei să oprești ceva, scrie-i agenției.",
+        )
+    if command == "resume":
+        resumed = emergency_stop.resume(session, by=user.email)
+        text = (
+            "Platforma a fost repornită: propunerile noi se pot depune și aproba din nou. "
+            "Campaniile oprite rămân pe pauză - le pornești manual din Ads Manager, când decizi."
+            if resumed else "Platforma nu era oprită - nu era nimic de repornit."
+        )
+        return _command_reply(user.client_account_id, text)
+    report = emergency_stop.stop_all(session, by=user.email)
+    parts = [
+        "Oprirea de urgență era deja activă." if report.already_stopped
+        else "Oprire de urgență activă.",
+        f"Propuneri care ar fi cheltuit, oprite: {report.blocked_proposals}.",
+        "Campanii puse pe pauză în Meta: "
+        + (", ".join(report.paused) if report.paused else "niciuna (nicio campanie lansată "
+           "de platformă)") + ".",
+    ]
+    if report.failed:
+        parts.append(
+            "NU am putut opri: " + "; ".join(report.failed)
+            + " - oprește-le manual din Ads Manager."
+        )
+    parts.append("Nimic nou nu mai cheltuie până scrii «repornește agentul».")
+    return _command_reply(user.client_account_id, " ".join(parts))
+
+
 _Done = object()
 
 
@@ -266,7 +338,22 @@ def chat_with_queen(
     modulului). Limitat per client (``rate_limit.py``): fiecare mesaj costa pana la
     sase generari pe modelul local, cateva apeluri Jev si tine un fir ocupat - 429
     peste rafala sau plafonul orar, inainte sa inceapa vreun flux.
+
+    Comenzile de admin (``ADMIN_EMAILS``) nu trec prin consiliu si nici prin limita:
+    "opreste campaniile" / "opreste tot" (oprirea de urgenta, ``emergency_stop.py``) si
+    "reporneste agentul" (o ridica). Doar frazele exacte - o intrebare care contine
+    "opreste" ajunge la consiliu ca oricare alta.
     """
+    command = admin_command(body.message)
+    if command is not None:
+        reply = _run_command(session, user, command)
+        if SSE_MEDIA_TYPE not in request.headers.get("accept", ""):
+            return reply
+        return StreamingResponse(
+            council_event_stream(lambda on_event: reply),
+            media_type=SSE_MEDIA_TYPE,
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     key = f"client:{user.client_account_id}"
     wait = CHAT_BURST.retry_after(key) or CHAT_HOURLY.retry_after(key)
     if wait is not None:

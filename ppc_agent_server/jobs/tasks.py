@@ -39,6 +39,7 @@ from ppc_agent_server.models import (
     ChangeStatus,
     ClientAccount,
     CreativeArtifact,
+    EmergencyStop,
     Platform,
     ProposedChange,
     SiteAuditSnapshot,
@@ -50,6 +51,7 @@ from ppc_agent_server.services.council_guard import (
     COUNCIL_MEMORY_DAYS,
     DECIDED_BY,
     MONEY_MODULES,
+    CouncilBlock,
     CouncilConstraints,
     GuardedChange,
     blocked_message,
@@ -288,6 +290,24 @@ def _council_constraints(session: Session, client_account_id: int) -> CouncilCon
     return constraints
 
 
+def launch_block(
+    session: Session, client_account_id: int, constraints: CouncilConstraints
+) -> CouncilBlock | None:
+    """Ce opreste o lansare NOUA - mai putin decat ce opreste cresterea bugetului.
+
+    Veto-ul Tehnicianului (tracking picat, site lent) o opreste mereu. Restrictia CFO-ului,
+    doar cand contul pierde bani dovedit (``unprofitable``): fara conversii sau fara tinta,
+    CFO-ul taie "cresterea bugetului", dar o prima campanie, in plafonul zilnic, e chiar
+    felul in care se strang datele - altfel un client nou n-ar putea lansa niciodata
+    (restrictia se ridica doar pe un cont rentabil). Rezerva lui ramane in aviz.
+    """
+    block = constraints.growth_block
+    if block is None or block.role != "cfo":
+        return block
+    finances = build_financial_snapshot(DbFinancialSignals(session).load(client_account_id))
+    return block if finances.status == "unprofitable" else None
+
+
 def _block_pending(
     session: Session, client_account_id: int, constraints: CouncilConstraints, now: datetime
 ) -> int:
@@ -301,6 +321,7 @@ def _block_pending(
     block = constraints.growth_block
     if block is None:
         return 0
+    launches = launch_block(session, client_account_id, constraints)
     query = select(ProposedChange).where(
         ProposedChange.client_account_id == client_account_id,
         ProposedChange.status == ChangeStatus.PENDING,
@@ -310,7 +331,9 @@ def _block_pending(
     for proposal in pending:
         money_based = proposal.source_module in MONEY_MODULES
         if proposal.op is ChangeOp.CREATE_CAMPAIGN:
-            reason = block
+            if launches is None:
+                continue
+            reason = launches
         elif money_based and constraints.money_veto is not None:
             reason = constraints.money_veto
         else:
@@ -375,6 +398,12 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
     """
     with Session(get_engine()) as session:
         account = _require_client(session, client_account_id)
+        # Oprirea de urgenta (``services/emergency_stop.py``): noaptea nu propune nimic.
+        stop = session.exec(
+            select(EmergencyStop).where(col(EmergencyStop.resumed_at).is_(None))
+        ).first()
+        if stop is not None:
+            return {"client_account_id": client_account_id, "skipped": "oprire de urgență"}
         config = _app_config_for(account)
         factory = ProviderFactory(config)
 

@@ -394,6 +394,22 @@ class McpAccessKey(SQLModel, table=True):
     revoked_at: datetime | None = None
 
 
+class EmergencyStop(SQLModel, table=True):
+    """Oprirea de urgenta a platformei, data de un admin (``ADMIN_EMAILS``) din chat.
+
+    Activa = randul fara ``resumed_at``. Cat e activa: campaniile lansate de platforma
+    sunt oprite in Meta, nicio propunere care cheltuie nu se depune, nu se aproba si
+    nu se executa, iar jobul de noapte nu mai propune bugete. Doar un jurnal: o
+    reluare nu sterge oprirea, ii completeaza ``resumed_*``.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    stopped_at: datetime = Field(default_factory=_now)
+    stopped_by: str
+    resumed_at: datetime | None = None
+    resumed_by: str | None = None
+
+
 class ConversionEvent(SQLModel, table=True):
     """O conversie normalizata, cu PII deja hash-uit (SHA-256) - niciodata in clar.
 

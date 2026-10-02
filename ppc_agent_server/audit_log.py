@@ -17,6 +17,7 @@ AUDIT_LOGGERS = (
     "ppc_agent_server.spend_guard",
     "ppc_agent_server.routers.proposals",
     "ppc_agent_server.tracking.meta_capi",
+    "ppc_agent_server.services.emergency_stop",
 )
 
 #: Atributele pe care orice ``LogRecord`` le are; restul vin din ``extra``.

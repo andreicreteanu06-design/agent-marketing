@@ -33,6 +33,8 @@ from sqlmodel import Session, select
 
 from ppc_agent.providers.live.meta import LiveMetaMarketingProvider
 from ppc_agent_server.models import ChangeOp, ChangeStatus, ConversionEvent, ProposedChange, Tenant
+from ppc_agent_server.routers.campaigns import get_launch_council
+from ppc_agent_server.services.launch_council import REVIEW_KEY, launch_question, review
 from ppc_agent_server.settings import get_server_settings
 from tests_server.test_campaign_launch import _spec
 
@@ -170,12 +172,17 @@ def test_pilotul_meta_simulat_cap_coada(
     def propose(
         op: ChangeOp, resource: str, kind: str, spend: str, after: dict[str, Any] | None = None
     ) -> int:
+        before: dict[str, Any] = {}
+        if op is ChangeOp.CREATE_CAMPAIGN:  # ca propose_launch: avizul consiliului real
+            reply = get_launch_council()(session, cid, launch_question("Pilot", spend))
+            before = {REVIEW_KEY: review(reply)}
         change = ProposedChange(
             client_account_id=cid,
             op=op,
             resource=resource,
             resource_type=kind,
             projected_daily_spend=Decimal(spend),
+            before=before,
             after=after or {},
             rationale="pilot simulat",
             source_module="e2e",

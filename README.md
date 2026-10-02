@@ -1291,6 +1291,21 @@ alerta CRITICAL), refuzul unui cont in alta moneda. Sare implicit in suita:
 $env:PILOT_E2E = "1"; .venv\Scripts\python.exe -m pytest tests_server/test_e2e_pilot_simulation.py -v
 ```
 
+**Consiliul inainte de orice lansare.** `POST /campaigns/propose_launch` delibereaza
+consiliul pe lansare, cu toate datele clientului, si ataseaza avizul in
+`before.council_review`; fara consiliu (sursele pica) - 503, nu se depune nimic. Un veto al
+Tehnicianului sau CFO-ul pe un cont care pierde bani dovedit scriu lansarea `blocked`;
+rezerva CFO-ului pe un cont fara date ramane doar in aviz (un prim test, in plafon, e
+felul in care se strang datele). La aprobare se verifica din nou.
+
+**Oprirea de urgenta (admin, din chat).** Emailurile din `ADMIN_EMAILS` pot scrie in
+chatul consiliului, exact: «oprește campaniile» / «oprește tot» / «stop campanii».
+Efect: campaniile lansate de platforma trec pe pauza in Meta, propunerile in asteptare
+care ar cheltui devin `blocked`, nimic nou nu se depune, aproba sau executa (423), iar
+jobul de noapte nu mai propune. «repornește agentul» ridica blocajul; campaniile raman pe
+pauza pana le pornesti din Ads Manager. Ce nu s-a putut opri apare in raspuns - de oprit
+manual.
+
 **2. Cele 4 lucruri din afara codului** (testul nu le poate verifica):
 
 1. **Account Spending Limit in Ads Manager.** Singura oprire garantata: Meta poate

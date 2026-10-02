@@ -123,6 +123,9 @@ class ServerSettings(BaseSettings):
     # JEV_API_KEY = cheia OpenCode.
     jev_url: str = ""
     jev_model: str = ""
+    # Adminii platformei (emailurile lor de login, separate prin virgula): doar ei pot da
+    # din chatul consiliului oprirea de urgenta ("opreste campaniile") si reluarea.
+    admin_emails: str = ""
     # Sistemul 2 - Ollama, local: tot textul scris (vocea Reginei, consiliul, sinteza).
     # Necompletat => mesajele vin din template-urile interne, fara niciun model.
     ollama_host: str = DEFAULT_OLLAMA_HOST
@@ -189,6 +192,10 @@ class ServerSettings(BaseSettings):
     @classmethod
     def _ollama_host(cls, value: str) -> str:
         return normalize_ollama_host(value)
+
+    @property
+    def admins(self) -> frozenset[str]:
+        return frozenset(e.strip().lower() for e in self.admin_emails.split(",") if e.strip())
 
     @property
     def cors_origins(self) -> list[str]:

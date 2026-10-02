@@ -47,6 +47,7 @@ from ppc_agent_server.db import get_session
 from ppc_agent_server.deps import get_owned_client
 from ppc_agent_server.jobs.tasks import _app_config_for
 from ppc_agent_server.models import (
+    ChangeOp,
     ChangeStatus,
     ClientAccount,
     ClientUser,
@@ -55,6 +56,8 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import ExecuteProposalRequest, ProposedChangeRead
+from ppc_agent_server.services.emergency_stop import SPENDING_OPS, require_running
+from ppc_agent_server.services.launch_council import require_council_clearance
 from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.spend_guard import check_spend_limit
 
@@ -247,6 +250,8 @@ def approve_proposal(
     schimba ceva la ei.
     """
     proposal, account = _client_proposal(proposal_id, client_user, session)
+    if proposal.op in SPENDING_OPS:
+        require_running(session)
     if proposal.status is not ChangeStatus.PENDING:
         # Verificat si de motor. Aici, ca mesajul sa fie despre STARE - altfel
         # o propunere deja executata ar primi raspunsul despre provider lipsa.
@@ -257,6 +262,8 @@ def approve_proposal(
                 f"(aceasta e '{proposal.status.value}')"
             ),
         )
+    if proposal.op is ChangeOp.CREATE_CAMPAIGN:
+        require_council_clearance(session, proposal)
     _check_spend_limit(session, account, proposal)
 
     try:
@@ -413,6 +420,8 @@ def execute_proposal(
             clientului (-> 409).
     """
     proposal, account = _find_owned_proposal(proposal_id, tenant, session)
+    if proposal.op in SPENDING_OPS:
+        require_running(session)
 
     if not payload.confirm:
         raise ApprovalRequiredError(
