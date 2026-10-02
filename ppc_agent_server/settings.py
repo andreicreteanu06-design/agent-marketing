@@ -141,6 +141,14 @@ class ServerSettings(BaseSettings):
     # Modelul Ollama cu vision pentru evaluarea creativelor (CCO, POST /creative/upload),
     # ex. "qwen2.5vl:3b" sau "llava:7b". Gol = evaluarea raspunde 503 (nu e configurata).
     ollama_vision_model: str = ""
+    # Calea spre un model whisper.cpp (ggml, ex. ggml-small-q5_1.bin) cu care CCO-ul
+    # transcrie vocea din video-uri. Gol = vocea nu se transcrie (restul sunetului se
+    # masoara oricum).
+    whisper_model: str = ""
+    # Cheia ElevenLabs: cu ea, vocea din video-uri o transcrie ElevenLabs Scribe (romana
+    # mai buna decat whisper local), in locul lui WHISPER_MODEL. Sunetul clientului
+    # pleaca la ElevenLabs. Gol = whisper local (sau nimic).
+    elevenlabs_api_key: str = ""
     # Scutul financiar al pilotului: suma bugetelor zilnice angajate pe TOATA
     # platforma (toti clientii, toate propunerile executate sau in curs) nu trece
     # de aici, orice ar permite limita fiecarui client. Moneda contului Meta
@@ -151,7 +159,10 @@ class ServerSettings(BaseSettings):
     # Completat la inceputul pilotului, golit dupa ce evenimentele arata corect.
     meta_capi_test_event_code: str = ""
 
-    @field_validator("jev_api_key", "ollama_model", "ollama_keep_alive", "ollama_vision_model")
+    @field_validator(
+        "jev_api_key", "ollama_model", "ollama_keep_alive", "ollama_vision_model",
+        "elevenlabs_api_key",
+    )
     @classmethod
     def _no_blanks(cls, value: str) -> str:
         value = value.strip()

@@ -1223,7 +1223,9 @@ pas. Endpoint-ul SSE (`/api/v1/mcp/sse`) ramane pentru clientii vechi.
 pana la 50 MB, token de client) intoarce verdictul unui Senior Media Buyer, INAINTE de
 bani: `decision` (`ELIGIBLE_FOR_TEST` / `REVISE_BEFORE_TEST` / `HUMAN_REVIEW_REQUIRED`),
 `scores` (`trust`, `hook_power`, `cognitive_load_and_hierarchy`, `format_suitability`,
-0-10), `detected_risks` si top 3 `priority_fixes`.
+0-10; la video si `audio`, `retention`), `detected_risks`, top 3 `priority_fixes` si, la
+video, `video_facts` (durata, cadre vazute, taieturi, voce, muzica/efecte, LUFS,
+transcrierea).
 
 Modelul Ollama cu vision (`OLLAMA_VISION_MODEL`) doar observa fapte; scorurile si
 decizia le calculeaza codul (`services/creative_evaluator.py`):
@@ -1234,9 +1236,22 @@ decizia le calculeaza codul (`services/creative_evaluator.py`):
 - **Ierarhie**: peste 3 blocuri de text concurente sau hook-ul ingropat = incarcare mare;
 - **Hook**: la video, primele 3 secunde - timpul mort (cadru inghetat sau negru peste
   1 s) il masoara ffmpeg, iar un intro de logo il prabuseste;
-- **Format**: din dimensiunile fisierului (4:5 si 9:16 sunt nativele).
+- **Format**: din dimensiunile fisierului (4:5 si 9:16 sunt nativele);
+- **Audio** (video): cand porneste sunetul, loudness EBU R128 (sub -24 LUFS = prea
+  incet), distorsiunea si - cu transcrierea - vocea fara subtitrari (-3: feed-ul se
+  priveste des mut). Video mut = risc, nu blocaj (scor 5);
+- **Retentie** (video, tot clipul, max 3 minute): peste 60 s, pauzele moarte de dupa
+  hook (negru >= 1 s, cadru static >= 4 s), ritmul lent cand nu vorbeste nimeni si
+  lipsa CTA-ului de la final. Modelul vede 4 cadre din deschidere + 5 pana la final.
 
-Fara model configurat: 503; video-ul cere si `ffmpeg`/`ffprobe` in PATH.
+Vocea se transcrie cu ElevenLabs Scribe cand e setat `ELEVENLABS_API_KEY` (romana cea mai
+buna; pleaca doar sunetul, dar pleaca la ElevenLabs si costa pe minut), altfel local cu
+whisper.cpp din ffmpeg (`WHISPER_MODEL`, ex. `ggml-small-q5_1.bin`, ~190 MB de pe
+huggingface.co/ggerganov/whisper.cpp; ~1 min pe CPU pentru 15 s). Fara niciuna, sunetul
+se masoara oricum, dar vocea ramane neverificata (apare ca risc).
+
+Fara model de vision: 503; video-ul cere si `ffmpeg`/`ffprobe` in PATH (build cu
+filtrul `whisper` pentru transcrierea locala - ffmpeg 8+, ex. gyan.dev full).
 
 ### Teste server
 

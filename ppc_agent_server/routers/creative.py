@@ -40,12 +40,12 @@ def upload_creative(
     model: Annotated[VisionModel, Depends(get_vision_model)],
 ) -> dict[str, object]:
     """Verdictul CCO-ului: ``asset_type``, ``decision``, ``scores``, ``detected_risks``,
-    ``priority_fixes``.
+    ``priority_fixes`` si, la video, ``video_facts`` (durata, taieturi, voce, muzica).
 
     Raises:
-        HTTPException: 413 prea mare, 415 tip nesuportat, 422 fisier ilizibil,
-            429 peste limita pe ora.
-        SetupRequiredError: modelul de vision sau ffmpeg lipsesc (-> 503).
+        HTTPException: 413 prea mare, 415 tip nesuportat, 422 fisier ilizibil sau video
+            peste 3 minute, 429 peste limita pe ora.
+        SetupRequiredError: modelul de vision, ffmpeg sau modelul whisper lipsesc (-> 503).
         ProviderError: modelul a picat sau a raspuns invalid (-> 502).
     """
     key = f"client:{user.client_account_id}"
@@ -63,7 +63,13 @@ def upload_creative(
         raise HTTPException(
             status_code=413, detail=f"fișierul depășește {limit // (1024 * 1024)} MB"
         )
+    settings = get_server_settings()
     try:
-        return evaluate_creative(data, model=model)
+        return evaluate_creative(
+            data,
+            model=model,
+            whisper_model=settings.whisper_model,
+            elevenlabs_api_key=settings.elevenlabs_api_key,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
