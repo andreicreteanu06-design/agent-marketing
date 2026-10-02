@@ -35,6 +35,9 @@ x-backend: &backend
   build:
     context: .
     dockerfile: Dockerfile.backend
+    # Fara target, Docker ia ULTIMUL stadiu ("worker", cu Chromium): API-ul si agentul
+    # SEO/GEO raman pe "runtime", fara browser.
+    target: runtime
   image: ac-media/backend:latest
   env_file: .env
   restart: unless-stopped
