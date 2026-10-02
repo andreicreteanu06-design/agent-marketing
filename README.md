@@ -1219,14 +1219,24 @@ pas. Endpoint-ul SSE (`/api/v1/mcp/sse`) ramane pentru clientii vechi.
 
 ### CCO: evaluarea creativelor
 
-`POST /api/v1/creative/upload` (fisier JPEG/PNG, max 5 MB, token de client) intoarce
-`aesthetic_score` (1-10, scala Aesthetic Predictor V2.5: peste 5,5 profesionist, peste
-8 premium), `virality_potential` (High/Medium/Low), `algorithm_compatibility` (cum o
-trateaza Explore/Reels si TikTok) si `feedback` de media buyer. Un model Ollama cu
-vision (`OLLAMA_VISION_MODEL`) noteaza compozitia, culorile, zgomotul vizual, calitatea,
-hook-ul, oprirea scroll-ului, incarcarea cognitiva, textul si CTA-ul; scorul,
-potentialul si verdictul le calculeaza codul. Modelul imita scala predictorului, nu il
-ruleaza; "potential viral" e o euristica, nu o predictie. Fara model configurat: 503.
+`POST /api/v1/creative/upload` (imagine JPEG/PNG pana la 5 MB sau video MP4/MOV/WebM
+pana la 50 MB, token de client) intoarce verdictul unui Senior Media Buyer, INAINTE de
+bani: `decision` (`ELIGIBLE_FOR_TEST` / `REVISE_BEFORE_TEST` / `HUMAN_REVIEW_REQUIRED`),
+`scores` (`trust`, `hook_power`, `cognitive_load_and_hierarchy`, `format_suitability`,
+0-10), `detected_risks` si top 3 `priority_fixes`.
+
+Modelul Ollama cu vision (`OLLAMA_VISION_MODEL`) doar observa fapte; scorurile si
+decizia le calculeaza codul (`services/creative_evaluator.py`):
+
+- **Trust**, prioritatea 0: in recrutare, financiar si sanatate, fara firma
+  identificabila (un telefon nu e o identitate) -> sub 4 -> `HUMAN_REVIEW_REQUIRED`;
+  conditiile lipsa, 3+ greseli de scriere si stock-ul prezentat drept "echipa reala" scad;
+- **Ierarhie**: peste 3 blocuri de text concurente sau hook-ul ingropat = incarcare mare;
+- **Hook**: la video, primele 3 secunde - timpul mort (cadru inghetat sau negru peste
+  1 s) il masoara ffmpeg, iar un intro de logo il prabuseste;
+- **Format**: din dimensiunile fisierului (4:5 si 9:16 sunt nativele).
+
+Fara model configurat: 503; video-ul cere si `ffmpeg`/`ffprobe` in PATH.
 
 ### Teste server
 

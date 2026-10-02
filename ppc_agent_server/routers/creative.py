@@ -1,8 +1,8 @@
 """``POST /api/v1/creative/upload`` - CCO-ul evalueaza o creativa (``creative_evaluator.py``).
 
-Doar pentru clientul autentificat (zona ``/cont``) si cu limita pe ora: un model cu
-vision pe CPU tine minute intregi o imagine. Fisierul se citeste in memorie, cu
-plafon de marime, si se verifica dupa semnatura (JPEG/PNG), nu dupa extensie.
+Imagine (JPEG/PNG, max 5 MB) sau video scurt (MP4/MOV/WebM, max 50 MB), verificate dupa
+semnatura, nu dupa extensie. Doar pentru clientul autentificat (zona ``/cont``) si cu
+limita pe ora: un model cu vision pe CPU tine minute intregi o evaluare.
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ from ppc_agent_server.rate_limit import CREATIVE_HOURLY, too_many_requests
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.services.creative_evaluator import (
     MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
     CreativeEvaluation,
     VisionModel,
+    asset_kind,
     evaluate_creative,
-    image_kind,
     vision_model_from_settings,
 )
 from ppc_agent_server.settings import get_server_settings
@@ -38,23 +39,31 @@ def upload_creative(
     user: Annotated[ClientUser, Depends(get_current_client_user)],
     model: Annotated[VisionModel, Depends(get_vision_model)],
 ) -> dict[str, object]:
-    """Evaluarea CCO-ului pentru imaginea incarcata: ``aesthetic_score``,
-    ``virality_potential``, ``algorithm_compatibility`` si ``feedback``.
+    """Verdictul CCO-ului: ``asset_type``, ``decision``, ``scores``, ``detected_risks``,
+    ``priority_fixes``.
 
     Raises:
-        HTTPException: 413 prea mare, 415 nu e JPEG/PNG, 429 peste limita pe ora.
-        SetupRequiredError: modelul de vision nu e configurat sau nu raspunde (-> 503).
+        HTTPException: 413 prea mare, 415 tip nesuportat, 422 fisier ilizibil,
+            429 peste limita pe ora.
+        SetupRequiredError: modelul de vision sau ffmpeg lipsesc (-> 503).
         ProviderError: modelul a picat sau a raspuns invalid (-> 502).
     """
     key = f"client:{user.client_account_id}"
     wait = CREATIVE_HOURLY.hit(key)
     if wait is not None:
         raise too_many_requests(wait, "Ai trimis multe creative la evaluat în ultima oră.")
-    data = file.file.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
+    data = file.file.read(MAX_VIDEO_BYTES + 1)
+    kind = asset_kind(data)
+    if kind is None:
         raise HTTPException(
-            status_code=413, detail=f"imaginea depășește {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+            status_code=415, detail="doar imagini JPEG/PNG sau video MP4/MOV/WebM"
         )
-    if image_kind(data) is None:
-        raise HTTPException(status_code=415, detail="doar imagini JPEG sau PNG")
-    return evaluate_creative(data, model=model)
+    limit = MAX_IMAGE_BYTES if kind == "image" else MAX_VIDEO_BYTES
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=413, detail=f"fișierul depășește {limit // (1024 * 1024)} MB"
+        )
+    try:
+        return evaluate_creative(data, model=model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

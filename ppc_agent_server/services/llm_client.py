@@ -469,6 +469,8 @@ class OllamaChatClient:
     #: Raspunsuri scurte si temperatura mica: formulare, nu creativitate - faptele vin din date.
     max_tokens: int = 450
     temperature: float = 0.3
+    #: Samanta fixa: aceeasi intrare da acelasi raspuns si cu temperatura peste 0.
+    seed: int | None = None
     cooldown: float = OLLAMA_COOLDOWN_SECONDS
     transport: httpx.BaseTransport | None = None
     clock: Callable[[], float] = time.monotonic
@@ -555,6 +557,8 @@ class OllamaChatClient:
         }
         if schema is not None:
             payload["format"] = dict(schema)
+        if self.seed is not None:
+            payload["options"]["seed"] = self.seed
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
         # Termenul de citire e si termenul primului token: raspunsul incepe cu el.
