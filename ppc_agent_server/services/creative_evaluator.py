@@ -88,8 +88,9 @@ BODY_FRAMES = 3
 OCR_LANG = "ron"
 #: Sub atat (0-100), un cuvant citit de Tesseract e zgomot (fotografii, emoji).
 MIN_OCR_CONFIDENCE = 50.0
-#: Cate randuri (cele mai mari) ii dam lui Jev sa aleaga beneficiul.
-MAX_HOOK_CANDIDATES = 8
+#: Cate randuri ii dam lui Jev sa aleaga beneficiul. Vazut real: cu 8, salariul (scris
+#: mic) nu intra in lista si Jev alegea titlul. Jev e precis pana pe la 20 de optiuni.
+MAX_HOOK_CANDIDATES = 16
 #: Beneficiul "domina" cand randul lui are macar atat din inaltimea celui mai mare rand.
 DOMINANT_SHARE = 0.85
 #: Firma conteaza doar daca Jev e sigur: e plasa de siguranta a domeniilor sensibile.
@@ -693,6 +694,11 @@ def _missing_diacritics(texts: Sequence[str]) -> bool:
     return marked / len(words) < MIN_DIACRITIC_SHARE
 
 
+def _in_romanian(sentence: str) -> bool:
+    words = {w.lower() for w in re.findall(r"[^\W\d_]+", sentence)}
+    return any(char in _DIACRITICS for char in sentence) or bool(words & _RO_WORDS)
+
+
 def _texts(lines: Sequence[_Line]) -> list[str]:
     return list(dict.fromkeys(line.text for line in lines))
 
@@ -836,8 +842,9 @@ def _observe(
         opens_with_brand_intro=yes("intro"),
         captions_present=yes("captions"),
         cta_present=yes("cta"),
-        risks=list(seen.risks),
-        fixes=list(seen.fixes),
+        # Vazut real: modelul mic scrie uneori in engleza, orice i-ai cere.
+        risks=[risk for risk in seen.risks if _in_romanian(risk)],
+        fixes=[fix for fix in seen.fixes if _in_romanian(fix)],
     )
 
 

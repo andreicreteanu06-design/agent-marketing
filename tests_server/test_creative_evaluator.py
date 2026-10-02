@@ -443,6 +443,28 @@ def test_modelul_vede_un_singur_cadru_si_primeste_textul_ca_date() -> None:
     assert call["user"].endswith("Scrie risks și fixes în limba română.")
 
 
+def test_frazele_modelului_in_engleza_se_arunca() -> None:
+    """Vazut real pe video: gemma3:4b a scris riscurile in engleza."""
+    model = _FakeVision(_look(
+        risks=["The stock photo looks generic", "Fotografia pare artificială"],
+        fixes=["Use a real photo", "Pune o fotografie reală cu echipa"],
+    ))
+    result = _run(_png(), model=model)
+    assert "Fotografia pare artificială" in result["detected_risks"]
+    assert "The stock photo looks generic" not in result["detected_risks"]
+    assert result["priority_fixes"] == ["Pune o fotografie reală cu echipa"]
+
+
+def test_un_beneficiu_scris_mic_ajunge_totusi_la_jev(ocr: _FakeOcr) -> None:
+    """Vazut real: cu 8 candidati, salariul (al 10-lea ca marime) nu putea fi ales."""
+    ocr.lines = [ce._Line(f"titlu {i}", 60 - i, "1") for i in range(9)]
+    ocr.lines.append(ce._Line("Salarizare 2300€/luna", 32, "2"))
+    judge = _FakeJudge(hook="line_9")
+    with mock.patch.object(ce, "_hierarchy", wraps=ce._hierarchy) as rule:
+        _run(_png(), judge=judge)
+    assert rule.call_args.args[0].main_hook == "Salarizare 2300€/luna"
+
+
 def test_cererea_reala_catre_jev_respecta_api_ul() -> None:
     """Clientul Jev adevarat, pe serverul fals care verifica forma documentata."""
     fake = FakeJev()
