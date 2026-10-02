@@ -18,9 +18,11 @@ from ppc_agent_server.services.creative_evaluator import (
     MAX_IMAGE_BYTES,
     MAX_VIDEO_BYTES,
     CreativeEvaluation,
+    TextJudge,
     VisionModel,
     asset_kind,
     evaluate_creative,
+    text_judge_from_settings,
     vision_model_from_settings,
 )
 from ppc_agent_server.settings import get_server_settings
@@ -33,11 +35,17 @@ def get_vision_model() -> VisionModel:
     return vision_model_from_settings(get_server_settings())
 
 
+def get_text_judge() -> TextJudge:
+    """Dependinta: Jev, sau 503 daca lipseste JEV_API_KEY."""
+    return text_judge_from_settings(get_server_settings())
+
+
 @router.post("/upload", response_model=CreativeEvaluation)
 def upload_creative(
     file: UploadFile,
     user: Annotated[ClientUser, Depends(get_current_client_user)],
     model: Annotated[VisionModel, Depends(get_vision_model)],
+    judge: Annotated[TextJudge, Depends(get_text_judge)],
 ) -> dict[str, object]:
     """Verdictul CCO-ului: ``asset_type``, ``decision``, ``scores``, ``detected_risks``,
     ``priority_fixes`` si, la video, ``video_facts`` (durata, taieturi, voce, muzica).
@@ -45,7 +53,8 @@ def upload_creative(
     Raises:
         HTTPException: 413 prea mare, 415 tip nesuportat, 422 fisier ilizibil sau video
             peste 3 minute, 429 peste limita pe ora.
-        SetupRequiredError: modelul de vision, ffmpeg sau modelul whisper lipsesc (-> 503).
+        SetupRequiredError: modelul de vision, JEV_API_KEY, ffmpeg, tesseract sau modelul
+            whisper lipsesc (-> 503).
         ProviderError: modelul a picat sau a raspuns invalid (-> 502).
     """
     key = f"client:{user.client_account_id}"
@@ -68,6 +77,7 @@ def upload_creative(
         return evaluate_creative(
             data,
             model=model,
+            judge=judge,
             whisper_model=settings.whisper_model,
             elevenlabs_api_key=settings.elevenlabs_api_key,
         )

@@ -47,6 +47,13 @@ ENV PATH="/opt/venv/bin:${PATH}" \
 RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app
 
+# CCO-ul (POST /api/v1/creative/upload): ffmpeg masoara video-ul si sunetul, Tesseract
+# (cu romana) citeste textul de pe creative. ffmpeg-ul din Debian n-are filtrul whisper:
+# in Docker, vocea o transcrie ElevenLabs (ELEVENLABS_API_KEY).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr tesseract-ocr-ron \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=deps /opt/venv /opt/venv
 COPY --chown=root:root ppc_agent ./ppc_agent

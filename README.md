@@ -512,7 +512,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `SITE_URL` | `http://localhost:3000` | Unde revine clientul dupa ecranul de consimtamant Google |
 | `OLLAMA_HOST` | `http://localhost:11434` | Sistemul 2: modelul LOCAL care scrie tot textul Reginei si al consiliului (datele nu parasesc masina); gol -> template-uri |
 | `OLLAMA_MODEL` | `llama3` | Modelul Ollama (acelasi ca `PPC_LLM_MODEL`: un singur `ollama pull`); accepta si `ollama/<tag>` |
-| `JEV_API_KEY` | necompletat -> reguli fixe | Sistemul 1: Jev (TypeSafe AI) noteaza RICE-ul CPO-ului si filtreaza fragmentele web ale Researcher-ului |
+| `JEV_API_KEY` | necompletat -> reguli fixe (CCO: 503) | Sistemul 1: Jev (TypeSafe AI) noteaza RICE-ul CPO-ului, filtreaza fragmentele web ale Researcher-ului si judeca textul si vocea creativelor (CCO) |
 
 ### Endpoint-uri
 
@@ -1227,8 +1227,20 @@ bani: `decision` (`ELIGIBLE_FOR_TEST` / `REVISE_BEFORE_TEST` / `HUMAN_REVIEW_REQ
 video, `video_facts` (durata, cadre vazute, taieturi, voce, muzica/efecte, LUFS,
 transcrierea).
 
-Modelul Ollama cu vision (`OLLAMA_VISION_MODEL`) doar observa fapte; scorurile si
-decizia le calculeaza codul (`services/creative_evaluator.py`):
+Cine aduna faptele (`services/creative_evaluator.py`):
+
+| Fapt | Sursa |
+|------|-------|
+| cadre, pauze, taieturi, sunet | ffmpeg |
+| vocea | ElevenLabs Scribe / whisper.cpp |
+| textul de pe creativa, marimea si blocul fiecarui rand | Tesseract (`ron`) |
+| domeniul, firma, conditiile, greselile, beneficiul, intro-ul, subtitrarile, CTA-ul | Jev (`JEV_API_KEY`), o singura cerere |
+| poza stock, impactul vizual, riscurile si remedierile scrise | modelul cu vision (`OLLAMA_VISION_MODEL`), pe UN cadru |
+
+Jev nu vede imagini (doar text), dar costa ~$0,04 pe milion de tokeni si raspunde in
+secunde; modelul cu vision vede un singur cadru (pe CPU, ~90 s pe cadru cu gemma3:4b).
+Firma conteaza doar cand Jev e sigur (>= 0,7): e plasa de siguranta a domeniilor
+sensibile. Scorurile si decizia le calculeaza codul:
 
 - **Trust**, prioritatea 0: in recrutare, financiar si sanatate, fara firma
   identificabila (un telefon nu e o identitate) -> sub 4 -> `HUMAN_REVIEW_REQUIRED`;
@@ -1242,7 +1254,7 @@ decizia le calculeaza codul (`services/creative_evaluator.py`):
   priveste des mut). Video mut = risc, nu blocaj (scor 5);
 - **Retentie** (video, tot clipul, max 3 minute): peste 60 s, pauzele moarte de dupa
   hook (negru >= 1 s, cadru static >= 4 s), ritmul lent cand nu vorbeste nimeni si
-  lipsa CTA-ului de la final. Modelul vede 4 cadre din deschidere + 5 pana la final.
+  lipsa CTA-ului de la final. OCR-ul si Jev vad 2 cadre din deschidere + 3 pana la final.
 
 Vocea se transcrie cu ElevenLabs Scribe cand e setat `ELEVENLABS_API_KEY` (romana cea mai
 buna; pleaca doar sunetul, dar pleaca la ElevenLabs si costa pe minut), altfel local cu
@@ -1250,8 +1262,11 @@ whisper.cpp din ffmpeg (`WHISPER_MODEL`, ex. `ggml-small-q5_1.bin`, ~190 MB de p
 huggingface.co/ggerganov/whisper.cpp; ~1 min pe CPU pentru 15 s). Fara niciuna, sunetul
 se masoara oricum, dar vocea ramane neverificata (apare ca risc).
 
-Fara model de vision: 503; video-ul cere si `ffmpeg`/`ffprobe` in PATH (build cu
-filtrul `whisper` pentru transcrierea locala - ffmpeg 8+, ex. gyan.dev full).
+Fara model de vision sau fara `JEV_API_KEY`: 503. Mai trebuie `tesseract` cu limba
+romana (`tesseract-ocr-ron`) si, pentru video, `ffmpeg`/`ffprobe` in PATH - imaginea
+Docker le are pe toate. Transcrierea locala cere un ffmpeg 8+ cu filtrul `whisper` (ex.
+gyan.dev full pe Windows); cel din Debian (Docker) nu-l are, deci acolo vocea o
+transcrie ElevenLabs.
 
 ### Teste server
 
