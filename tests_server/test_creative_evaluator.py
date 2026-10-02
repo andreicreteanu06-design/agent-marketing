@@ -381,6 +381,38 @@ def test_greselile_vin_din_nivelul_ales_de_jev(level: int, trust: int) -> None:
     assert _run(_png(), judge=_FakeJudge(typos=level))["scores"]["trust"] == trust
 
 
+#: Textul anuntului real: Jev (jev-1.13-free) a zis "fara greseli" - diacriticele lipsesc.
+REAL_AD_TEXT = [
+    "‼️ SE CĂUTA INGRIJITOARE ‼️", "pentru o doamna in varsta din GERMANA, Nurnberg",
+    "locuieste cu sotul ei", "Salariu: 2300€/luna", "Cazare si masa asigurate",
+    "Plecare imediata!", "Suna acum: 0799720720",
+]
+
+
+@pytest.mark.parametrize(
+    ("texts", "missing"),
+    [
+        (REAL_AD_TEXT, True),
+        (["Câștigi 2300 €/lună în Germania", "Îngrijitoare la Nürnberg, contract pe un an",
+          "cazare inclusă și masă asigurată pentru tine", "Agenția Lumina Recrutare"], False),
+        (["Revizie completa in 24h", "Programeaza-te azi"], False),  # prea scurt
+        (["Call us today for a free quote and get your car serviced in one day",
+          "Book online with our certified team of mechanics now"], False),  # engleza
+    ],
+    ids=["reala-fara-diacritice", "corecta", "scurta", "engleza"],
+)
+def test_diacriticele_lipsa_se_masoara_in_cod(texts: list[str], missing: bool) -> None:
+    assert ce._missing_diacritics(texts) is missing
+
+
+def test_diacriticele_lipsa_bat_raspunsul_jev(ocr: _FakeOcr) -> None:
+    ocr.lines = [ce._Line(text, 40, str(index)) for index, text in enumerate(REAL_AD_TEXT)]
+    result = _run(_png(), judge=_FakeJudge(typos=0))
+    assert "greșeli de scriere sau diacritice lipsă (3 sau mai multe) în textul reclamei" in (
+        result["detected_risks"]
+    )
+
+
 def test_fara_text_jev_nu_e_intrebat_de_greseli_si_beneficiu(ocr: _FakeOcr) -> None:
     ocr.lines = []
     judge = _FakeJudge()

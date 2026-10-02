@@ -753,10 +753,22 @@ class LLMRouter:
         return self.stream_text_local(system=system, user=user)
 
 
+def jev_client_from_settings(settings: ServerSettings) -> JevClient | None:
+    """Jev din ``.env`` (``None`` fara ``JEV_API_KEY``): TypeSafe direct sau un gateway
+    cu acelasi protocol (``JEV_URL``/``JEV_MODEL``, ex. OpenCode Zen)."""
+    if not settings.jev_api_key:
+        return None
+    return JevClient(
+        api_key=settings.jev_api_key,
+        model=settings.jev_model or DEFAULT_JEV_MODEL,
+        url=settings.jev_url or JEV_URL,
+    )
+
+
 def llm_router_from_settings(settings: ServerSettings) -> LLMRouter:
     """Ruterul din ``.env``: fara ``JEV_API_KEY`` nu exista Sistemul 1, fara
     ``OLLAMA_HOST`` nu exista Sistemul 2 - fiecare cade pe regulile lui fixe."""
-    jev = JevClient(api_key=settings.jev_api_key) if settings.jev_api_key else None
+    jev = jev_client_from_settings(settings)
     ollama = None
     if settings.ollama_host:
         model = ollama_model_tag(settings.ollama_model) or DEFAULT_OLLAMA_MODEL

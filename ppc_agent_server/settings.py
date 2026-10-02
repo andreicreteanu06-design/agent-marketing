@@ -117,6 +117,12 @@ class ServerSettings(BaseSettings):
     # fragmentelor web ale Researcher-ului). Cheie de pe console.typesafe.ai.
     # Necompletat => reguli fixe (estimarile RICE din tabel, toate fragmentele web).
     jev_api_key: str = ""
+    # Unde e Jev si ce versiune: gol = TypeSafe direct (JEV_URL si DEFAULT_JEV_MODEL din
+    # services/llm_client.py). Un gateway cu acelasi protocol, ex. OpenCode Zen:
+    # JEV_URL=https://opencode.ai/zen/v1/systemone, JEV_MODEL=jev-1.13-free, iar
+    # JEV_API_KEY = cheia OpenCode.
+    jev_url: str = ""
+    jev_model: str = ""
     # Sistemul 2 - Ollama, local: tot textul scris (vocea Reginei, consiliul, sinteza).
     # Necompletat => mesajele vin din template-urile interne, fara niciun model.
     ollama_host: str = DEFAULT_OLLAMA_HOST
@@ -160,7 +166,7 @@ class ServerSettings(BaseSettings):
     meta_capi_test_event_code: str = ""
 
     @field_validator(
-        "jev_api_key", "ollama_model", "ollama_keep_alive", "ollama_vision_model",
+        "jev_api_key", "jev_model", "ollama_model", "ollama_keep_alive", "ollama_vision_model",
         "elevenlabs_api_key",
     )
     @classmethod
@@ -168,6 +174,15 @@ class ServerSettings(BaseSettings):
         value = value.strip()
         if any(char.isspace() for char in value):
             raise ValueError("nu poate conține spații")
+        return value
+
+    @field_validator("jev_url")
+    @classmethod
+    def _jev_url(cls, value: str) -> str:
+        """Cheia Jev pleaca la adresa asta: doar HTTPS, cu host."""
+        value = value.strip()
+        if value and (urlsplit(value).scheme != "https" or not urlsplit(value).hostname):
+            raise ValueError("JEV_URL trebuie să fie o adresă https://")
         return value
 
     @field_validator("ollama_host")

@@ -32,6 +32,7 @@ from ppc_agent_server.services.llm_client import (
     Score,
     ScoreAnswer,
     _ThinkingFilter,
+    jev_client_from_settings,
     llm_router_from_settings,
 )
 from ppc_agent_server.settings import DEFAULT_OLLAMA_HOST, ServerSettings, normalize_ollama_host
@@ -549,6 +550,21 @@ def test_the_streaming_limits_come_from_the_env(monkeypatch: pytest.MonkeyPatch)
     assert llm_router_from_settings(defaults)._local().keep_alive is None
     with pytest.raises(ValidationError):
         ServerSettings(_env_file=None, ollama_first_token_timeout=0)
+
+
+def test_jev_prin_gateway_compatibil(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fara JEV_URL/JEV_MODEL: TypeSafe; cu ele: un gateway (ex. OpenCode Zen), doar HTTPS."""
+    direct = jev_client_from_settings(ServerSettings(_env_file=None, jev_api_key="jev_x"))
+    assert direct is not None and (direct.url, direct.model) == (JEV_URL, DEFAULT_JEV_MODEL)
+
+    gateway = jev_client_from_settings(ServerSettings(
+        _env_file=None, jev_api_key="oc_x",
+        jev_url="https://opencode.ai/zen/v1/systemone", jev_model="jev-1.13-free",
+    ))
+    assert gateway is not None
+    assert (gateway.url, gateway.model) == ("https://opencode.ai/zen/v1/systemone", "jev-1.13-free")
+    with pytest.raises(ValidationError, match="https"):
+        ServerSettings(_env_file=None, jev_url="http://opencode.ai/zen/v1/systemone")
 
 
 def test_settings_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -513,6 +513,7 @@ Fiecare cerere: antetul `Authorization: Bearer <cheie>`.
 | `OLLAMA_HOST` | `http://localhost:11434` | Sistemul 2: modelul LOCAL care scrie tot textul Reginei si al consiliului (datele nu parasesc masina); gol -> template-uri |
 | `OLLAMA_MODEL` | `llama3` | Modelul Ollama (acelasi ca `PPC_LLM_MODEL`: un singur `ollama pull`); accepta si `ollama/<tag>` |
 | `JEV_API_KEY` | necompletat -> reguli fixe (CCO: 503) | Sistemul 1: Jev (TypeSafe AI) noteaza RICE-ul CPO-ului, filtreaza fragmentele web ale Researcher-ului si judeca textul si vocea creativelor (CCO) |
+| `JEV_URL` / `JEV_MODEL` | necompletat -> TypeSafe, `jev-latest` | Un gateway cu acelasi protocol, ex. OpenCode Zen: `https://opencode.ai/zen/v1/systemone` cu `jev-1.13-free` (gratuit temporar) si cheia OpenCode in `JEV_API_KEY`; doar `https://` |
 
 ### Endpoint-uri
 

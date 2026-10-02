@@ -68,6 +68,7 @@ from ppc_agent_server.services.llm_client import (
     Question,
     Score,
     ScoreAnswer,
+    jev_client_from_settings,
     ollama_model_tag,
 )
 from ppc_agent_server.settings import ServerSettings
@@ -673,6 +674,25 @@ def _read_text(image: bytes) -> list[_Line]:
 # --- faptele: OCR + Jev + un cadru vazut de model --------------------------------------
 
 
+_RO_WORDS = frozenset({"si", "și", "de", "la", "pentru", "cu", "din", "in", "în", "pe", "sau"})
+_DIACRITICS = frozenset("ăâîșțşţĂÂÎȘȚŞŢ")
+#: Sub atatea cuvinte, textul e prea scurt ca lipsa diacriticelor sa spuna ceva.
+MIN_WORDS_FOR_DIACRITICS = 15
+#: Romana scrisa corect are diacritice in ~1 din 5 cuvinte; sub 5% lipsesc sistematic.
+MIN_DIACRITIC_SHARE = 0.05
+
+
+def _missing_diacritics(texts: Sequence[str]) -> bool:
+    """Text romanesc lung aproape fara diacritice - Jev nu-l prinde (vazut real)."""
+    words = [w for text in texts for w in re.findall(r"[^\W\d_]{2,}", text)]
+    if len(words) < MIN_WORDS_FOR_DIACRITICS:
+        return False
+    if len({w.lower() for w in words} & _RO_WORDS) < 2:  # nu e romana (ex. engleza)
+        return False
+    marked = sum(any(char in _DIACRITICS for char in w) for w in words)
+    return marked / len(words) < MIN_DIACRITIC_SHARE
+
+
 def _texts(lines: Sequence[_Line]) -> list[str]:
     return list(dict.fromkeys(line.text for line in lines))
 
@@ -788,6 +808,8 @@ def _observe(
         if not isinstance(level, ScoreAnswer):
             raise ProviderError("Jev a întors un răspuns neașteptat pentru «typos»")
         typos = (0, 1, MASSIVE_TYPOS)[level.level]
+    if _missing_diacritics(_texts(every)):
+        typos = MASSIVE_TYPOS
     main_hook, dominant = "", True  # fara text in deschidere, nimic nu e ingropat
     if candidates:
         picked = choice("hook")
@@ -1069,12 +1091,13 @@ def text_judge_from_settings(settings: ServerSettings) -> JevClient:
     Raises:
         SetupRequiredError: lipseste ``JEV_API_KEY`` (-> 503).
     """
-    if not settings.jev_api_key:
+    client = jev_client_from_settings(settings)
+    if client is None:
         raise SetupRequiredError(
             "Evaluarea creativelor nu e configurată: setează JEV_API_KEY (Jev judecă textul "
             "și vocea creativei)."
         )
-    return JevClient(api_key=settings.jev_api_key)
+    return client
 
 
 def vision_model_from_settings(settings: ServerSettings) -> OllamaChatClient:
