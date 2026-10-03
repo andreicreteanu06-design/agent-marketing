@@ -16,14 +16,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlmodel import Session, col, select, update
+from sqlmodel import Session, col, delete, select, update
 
 from ppc_agent.alignment.pipeline import run_alignment
-from ppc_agent.config import AppConfig, BudgetConfig, Settings
+from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent.config import AppConfig, BudgetConfig, ProviderMode, Settings
 from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.creative.creative_pipeline import generate_full_ad_creative
 from ppc_agent.creative.factory import CreativeFactory
-from ppc_agent.decision.pipeline import run_plan
+from ppc_agent.decision.pipeline import arms_from_performance, run_plan
 from ppc_agent.guardrails.models import ProposedChange as CliProposedChange
 from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
@@ -41,6 +42,7 @@ from ppc_agent_server.models import (
     CreativeArtifact,
     EmergencyStop,
     Platform,
+    PlatformArmSnapshot,
     ProposedChange,
     SiteAuditSnapshot,
     SiteSpeedSample,
@@ -145,6 +147,11 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
         budget=BudgetConfig(
             max_daily_spend=account.max_daily_spend,
             target_cpa=account.default_lead_value,
+            lead_value=(
+                account.default_lead_value
+                if account.objective is CampaignObjective.LEAD_GEN
+                else None
+            ),
         ),
         settings=settings,
     )
@@ -357,6 +364,38 @@ def _block_pending(
     return blocked
 
 
+#: Modulele care isi refac planul complet in fiecare noapte: o propunere de ieri din
+#: ele, inca neaprobata, are cifre vechi. Aprobata dupa cea de azi, le-ar suprascrie.
+NIGHTLY_MODULES = frozenset({"budget", "negatives", "meta_liquidity"})
+SUPERSEDED_BY = "planul de noapte"
+
+
+def _supersede(
+    session: Session, client_account_id: int, modules: frozenset[str], now: datetime
+) -> int:
+    """Respinge propunerile inca in asteptare din ``modules``: planul nou le inlocuieste.
+
+    Conditionat pe ``pending``, ca la aprobare: una aprobata chiar acum nu se atinge.
+    """
+    result = session.exec(
+        update(ProposedChange)
+        .where(
+            col(ProposedChange.client_account_id) == client_account_id,
+            col(ProposedChange.status) == ChangeStatus.PENDING,
+            col(ProposedChange.source_module).in_(modules),
+        )
+        .values(
+            status=ChangeStatus.REJECTED,
+            decided_at=now,
+            decided_by=SUPERSEDED_BY,
+            error_message=(
+                f"Înlocuită de planul din {now:%d.%m.%Y}: cifrele ei nu mai sunt la zi."
+            ),
+        )
+    )
+    return result.rowcount
+
+
 def _consult_queen(session: Session, client_account_id: int) -> dict[str, Any]:
     """Directiva Reginei, transformata in rescrieri in asteptare.
 
@@ -419,19 +458,24 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
             negatives=ingestion.negative_keywords,
             liquidity=alignment.liquidity_plan,
             kelly=decision.kelly,
+            ad_sets=alignment.ad_sets,
         )
         guarded = guard_changes(changes, constraints, spend_cap=config.budget.max_daily_spend)
         allowed = [item for item in guarded if item.blocked is None]
 
         total = sum((item.change.projected_daily_spend for item in allowed), Decimal("0"))
-        AbsoluteSpendLimiter(decision.kelly.sized_daily_cap).check(total)
+        AbsoluteSpendLimiter(decision.kelly.sized_daily_cap).check(
+            sum((item.change.spend_against_cap for item in allowed), Decimal("0"))
+        )
 
         now = datetime.now(tz=UTC)
         rows = [_guarded_row(client_account_id, item, constraints, now) for item in guarded]
+        superseded = _supersede(session, client_account_id, NIGHTLY_MODULES, now)
         session.add_all(rows)
         session.commit()
         result: dict[str, Any] = {
             "created": len(allowed),
+            "superseded": superseded,
             "total_projected_daily_spend": str(total),
             "brand_alignment": brand_alignment,
         }
@@ -478,11 +522,13 @@ def run_fatigue_check_job(*, client_account_id: int) -> dict[str, Any]:
         ).all()
         states = [to_ad_performance_state(record) for record in records]
 
-        changes = build_fatigue_changes(states, datetime.now(tz=UTC))
+        now = datetime.now(tz=UTC)
+        changes = build_fatigue_changes(states, now)
         rows = [_to_db_row(client_account_id, change) for change in changes]
+        superseded = _supersede(session, client_account_id, frozenset({"fatigue_monitor"}), now)
         session.add_all(rows)
         session.commit()
-        return {"evaluated": len(states), "created": len(rows)}
+        return {"evaluated": len(states), "created": len(rows), "superseded": superseded}
 
 
 def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
@@ -501,26 +547,55 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
     ascuns. NU creeaza randuri noi (doar actualizeaza randuri deja existente) -
     crearea ramane in sarcina pipeline-ului de conversii, care are contextul
     (target_cpa, platforma) necesar unui rand nou.
+
+    Tot aici se inlocuieste :class:`PlatformArmSnapshot` al clientului: ce a citit
+    agentul din platforme in noaptea asta, pentru CFO. Doar in ``live``: in ``mock``
+    cifrele sunt inventate, iar restrictiile CFO-ului raman 7 zile in memoria
+    consiliului - una ridicata pe date fictive ar ajunge in pilotul real. In ``mock``
+    rezumatul se goleste, iar CFO-ul ramane pe conversiile primite prin webhook.
     """
     with Session(get_engine()) as session:
         account = _require_client(session, client_account_id)
         config = _app_config_for(account)
         factory = ProviderFactory(config)
 
-        performance_by_arm: dict[str, tuple[float, int]] = {}
         google_id = account.google_ads_customer_id or _MOCK_CUSTOMER_ID
         tiktok_id = account.tiktok_advertiser_id or _MOCK_ADVERTISER_ID
         meta_id = account.meta_ad_account_id or _MOCK_AD_ACCOUNT_ID
-        for frame in (
-            factory.google_ads().campaign_performance(google_id),
-            factory.tiktok_ads().campaign_performance(tiktok_id),
-            factory.meta().campaign_performance(meta_id),
-        ):
-            for row in frame.to_dict(orient="records"):
-                performance_by_arm[str(row["arm_id"])] = (
-                    float(row["cost"]),
-                    int(row["clicks"]),
-                )
+        arms = [
+            arm
+            for platform, read, account_id in (
+                ("google_ads", factory.google_ads, google_id),
+                ("tiktok_ads", factory.tiktok_ads, tiktok_id),
+                ("meta_ads", factory.meta, meta_id),
+            )
+            if factory.configured(platform)
+            for arm in arms_from_performance(
+                read().campaign_performance(account_id), platform=platform
+            )
+        ]
+        performance_by_arm = {arm.arm_id: (arm.cost, arm.clicks) for arm in arms}
+        now = datetime.now(tz=UTC)
+        session.exec(
+            delete(PlatformArmSnapshot).where(
+                col(PlatformArmSnapshot.client_account_id) == client_account_id
+            )
+        )
+        arms_for_cfo = arms if factory.mode is ProviderMode.LIVE else []
+        session.add_all(
+            PlatformArmSnapshot(
+                client_account_id=client_account_id,
+                platform=arm.platform,
+                arm_id=arm.arm_id,
+                name=arm.name,
+                clicks=arm.clicks,
+                conversions=arm.conversions,
+                cost=arm.cost,
+                revenue=arm.revenue,
+                synced_at=now,
+            )
+            for arm in arms_for_cfo
+        )
 
         records = session.exec(
             select(AdPerformanceRecord).where(
@@ -533,14 +608,12 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
             source = performance_by_arm.get(record.ad_id)
             if source is None:
                 continue
-            cost, clicks = source
-            record.spend = Decimal(str(cost))
-            record.clicks = clicks
-            record.updated_at = datetime.now(tz=UTC)
+            record.spend, record.clicks = source
+            record.updated_at = now
             session.add(record)
             updated += 1
         session.commit()
-        return {"checked": len(records), "updated": updated}
+        return {"checked": len(records), "updated": updated, "platform_arms": len(arms_for_cfo)}
 
 
 def list_client_account_ids() -> list[int]:

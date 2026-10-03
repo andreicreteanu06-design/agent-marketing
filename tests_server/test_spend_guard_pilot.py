@@ -235,3 +235,27 @@ def test_alerta_iese_ca_o_linie_json_cu_campurile_evenimentului() -> None:
     assert line["event"] == "spend_limit_exceeded"
     assert line["total"] == "60"
     assert "args" not in line
+
+
+def test_un_buget_nou_pe_acelasi_set_il_inlocuieste_pe_cel_vechi(
+    hitl: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    meta_live: None,
+    graph_api: _GraphApiStub,
+) -> None:
+    """Setul are deja 40/zi executat; 48/zi pe ACELASI set inseamna 48, nu 88 > 50."""
+    client, headers, account_id = hitl
+    executed = _proposal(account_id, op=ChangeOp.UPDATE, spend="40")
+    executed.status = ChangeStatus.EXECUTED
+    session.add(executed)
+    session.commit()
+    same_set = _add_pending(session, account_id, op=ChangeOp.UPDATE, spend="48")
+    other_set = _add_pending(
+        session, account_id, op=ChangeOp.UPDATE, resource="meta_ad_set/777", spend="5"
+    )
+
+    approved = client.post(f"/api/v1/proposals/{same_set}/approve", headers=headers)
+    assert approved.status_code == 200, approved.text
+    # Acum sunt angajati 48: inca 5 pe alt set ar insemna 53 > 50.
+    refused = client.post(f"/api/v1/proposals/{other_set}/approve", headers=headers)
+    assert refused.status_code == 409

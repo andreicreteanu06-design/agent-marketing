@@ -119,6 +119,11 @@ class BudgetConfig(BaseModel):
     # daca e prea mica pentru buget (vezi decision/budget_strategy.py) - relevant
     # mai ales la conturi cu buget mic. None (implicit) = comportament neschimbat.
     target_cpa: Decimal | None = None
+    # Valoarea unui lead, pentru clientii care cer lead-uri (``CampaignObjective.LEAD_GEN``).
+    # Meta nu raporteaza venit pe lead-uri: fara ea ROAS-ul iese 0, iar Kelly ar taia la
+    # jumatate bugetul oricarui client de lead-uri, oricat de ieftine ar fi lead-urile.
+    # None = conversiile raman cu venitul raportat de platforma (magazine).
+    lead_value: Decimal | None = None
 
 
 class MetaConfig(BaseModel):

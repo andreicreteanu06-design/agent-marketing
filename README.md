@@ -1306,7 +1306,18 @@ jobul de noapte nu mai propune. «repornește agentul» ridica blocajul; campani
 pauza pana le pornesti din Ads Manager. Ce nu s-a putut opri apare in raspuns - de oprit
 manual.
 
-**2. Cele 4 lucruri din afara codului** (testul nu le poate verifica):
+**Bugetele de noapte (Kelly + Thompson).** Din Meta, fiecare conversie se numara o data
+(`omni_purchase`, altfel `purchase`; la fel lead-urile) si doar in 7 zile dupa click,
+fara view-through. Bugetul se imparte dupa valoarea adusa pe leu cheltuit, nu dupa rata
+de conversie pe click. Un set Meta se misca cel mult 20% pe noapte, de la bugetul lui de
+acum; seturile aflate in invatare (`LEARNING` - cele cu invatarea limitata primesc pasi)
+si cele cu bugetul pe campanie (CBO) nu se ating. Planul nou
+inlocuieste propunerile de ieri inca neaprobate, iar plafonul numara bugetul de acum al
+fiecarui set (nu suma tuturor ajustarilor). Platformele fara chei sunt sarite. CFO-ul
+judeca aceleasi cifre: sincronizarea de noapte le scrie in `PlatformArmSnapshot` (doar
+in `live` - in `mock` sunt inventate).
+
+**2. Cele 5 lucruri din afara codului** (testul nu le poate verifica):
 
 1. **Account Spending Limit in Ads Manager.** Singura oprire garantata: Meta poate
    cheltui intr-o zi pana la +75% peste bugetul zilnic, iar plafonul nostru vede
@@ -1321,6 +1332,11 @@ manual.
    `/api/v1/tracking/conversion/{id}` (cu `Authorization: Bearer <cheia agentiei>` -
    verifica daca Gomag permite antete pe webhook). Si imaginea reclamei: un URL
    public, direct (fara redirect), altfel lansarea pica la primul pas.
+5. **Obiectivul si valoarea unui lead, pe client** (`PATCH /clients/{id}`). Magazin:
+   `objective=sales` - Kelly si CFO-ul judeca dupa venit. Lead-uri:
+   `objective=lead_generation` si `default_lead_value` = cat valoreaza REAL un lead
+   (implicit 300 lei): Kelly creste bugetul cand CPA-ul e sub ea, CFO-ul taie cand e
+   peste. O valoare umflata face orice cont sa para rentabil.
 
 ## Date de cautare organica (`ppc_agent/search_data/`)
 

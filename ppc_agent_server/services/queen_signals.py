@@ -57,6 +57,7 @@ from ppc_agent_server.models import (
     ClientAccount,
     ConversionEvent,
     MemoryStream,
+    PlatformArmSnapshot,
     ProposedChange,
     SearchTermConversion,
     SerpPosition,
@@ -514,37 +515,64 @@ class DbFinancialSignals:
         if account is None:
             raise LookupError(f"clientul {client_account_id} nu exista")
         headlines = _launched_headlines(self._session, client_account_id)
-        records = self._session.exec(
-            select(AdPerformanceRecord).where(
-                AdPerformanceRecord.client_account_id == client_account_id
+        terms = load_paid_terms(self._session, client_account_id, days=self._days)
+        # Ce a citit agentul PPC din platforme azi-noapte - aceleasi cifre din care Kelly
+        # si Thompson muta bugetele. Doar fara ele, rollup-ul din conversiile primite
+        # prin webhook (care fara un magazin conectat nu exista deloc). Campaniile Google
+        # intra doar fara termenii de cautare: aceiasi bani, numarati o singura data.
+        arms = self._session.exec(
+            select(PlatformArmSnapshot).where(
+                PlatformArmSnapshot.client_account_id == client_account_id
             )
         ).all()
-        terms = load_paid_terms(self._session, client_account_id, days=self._days)
+        ads = [
+            AdSpend(
+                ad_id=arm.arm_id,
+                platform=arm.platform,
+                label=arm.name,
+                spend=arm.cost,
+                conversions=arm.conversions,
+                revenue=arm.revenue,
+                target_cpa=account.default_lead_value,
+            )
+            for arm in arms
+            if arm.platform != "google_ads" or not terms
+        ]
+        records = (
+            []
+            if ads
+            else self._session.exec(
+                select(AdPerformanceRecord).where(
+                    AdPerformanceRecord.client_account_id == client_account_id
+                )
+            ).all()
+        )
+        ads += [
+            AdSpend(
+                ad_id=record.ad_id,
+                platform=record.platform.value,
+                label=headlines.get(record.ad_id, ""),
+                spend=record.spend,
+                conversions=record.conversions,
+                revenue=record.revenue,
+                target_cpa=record.target_cpa,
+            )
+            for record in records
+        ]
         pending = self._session.exec(
             select(ProposedChange.id)
             .where(ProposedChange.client_account_id == client_account_id)
             .where(ProposedChange.status == ChangeStatus.PENDING)
         ).all()
         notes: list[str] = []
-        if not records and not terms:
+        if not ads and not terms:
             notes.append(
                 "Nicio cheltuială înregistrată: nici reclame Meta/TikTok cu performanță, nici "
                 f"termeni Google Ads în ultimele {self._days} de zile."
             )
         return FinancialSignals(
             objective=account.objective.value,
-            ads=[
-                AdSpend(
-                    ad_id=record.ad_id,
-                    platform=record.platform.value,
-                    label=headlines.get(record.ad_id, ""),
-                    spend=record.spend,
-                    conversions=record.conversions,
-                    revenue=record.revenue,
-                    target_cpa=record.target_cpa,
-                )
-                for record in records
-            ],
+            ads=ads,
             search_terms=[
                 TermSpend(
                     term=term.term,

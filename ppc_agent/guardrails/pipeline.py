@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
 
-from ppc_agent.alignment.models import LiquidityPlan
+from ppc_agent.alignment.models import AdSet, LiquidityPlan
 from ppc_agent.decision.fatigue_models import AdPerformanceState, FatigueVerdict
 from ppc_agent.decision.fatigue_monitor import evaluate_ad, explain_verdict
 from ppc_agent.decision.models import BudgetPlan, KellySizing
@@ -17,6 +19,11 @@ from ppc_agent.guardrails.models import ChangeSet, ProposedChange
 from ppc_agent.ingestion.models import NegativeKeywordSet
 
 _MAX_NEGATIVES_IN_CHANGESET = 40
+#: Cat poate urca sau cobori bugetul unui set Meta intr-o noapte. Un salt mare e o
+#: "editare semnificativa" pentru Meta: reporneste faza de invatare, iar ROAS-ul
+#: scade cateva zile. Planul Thompson ajunge la tinta in pasi, noapte de noapte.
+MAX_BUDGET_STEP = Decimal("0.20")
+_CENT = Decimal("0.01")
 _PAUSE_VERDICTS: frozenset[FatigueVerdict] = frozenset(
     {"PAUSE_HARD", "PAUSE_PROVISIONAL", "PAUSE_REPLACE"}
 )
@@ -28,6 +35,7 @@ def build_proposed_changes(
     negatives: NegativeKeywordSet,
     liquidity: LiquidityPlan,
     kelly: KellySizing | None = None,
+    ad_sets: Sequence[AdSet] | None = None,
 ) -> list[ProposedChange]:
     """Traduce planurile Modulelor 1-3 in modificari propuse, inca neaplicate.
 
@@ -49,15 +57,23 @@ def build_proposed_changes(
         negatives: Setul de cuvinte cheie negative.
         liquidity: Planul de lichiditate Meta.
         kelly: Dimensionarea Kelly a plafonului zilnic (optional).
+        ad_sets: Seturile Meta citite din cont (``AlignmentResult.ad_sets``). Cand sunt
+            date, bugetele Meta pleaca de la bugetul de acum: cel mult
+            ``MAX_BUDGET_STEP`` pe noapte, niciunul pe un set aflat in invatare
+            (``LEARNING``) sau cu bugetul pe campanie, iar un set "dus la 0" coboara
+            treptat, nu se opreste. Un set cu invatarea limitata primeste pasi: lui
+            bugetul ii poate aduce conversiile care ii lipsesc.
 
     Returns:
         Lista de :class:`ProposedChange`.
     """
     changes: list[ProposedChange] = []
     kelly_note = f" {kelly.rationale}" if kelly is not None else ""
+    current = {ad_set.ad_set_id: ad_set for ad_set in ad_sets or ()}
 
     for allocation in budget_plan.allocations:
-        zeroed = allocation.daily_budget == 0
+        target = allocation.daily_budget
+        before: dict[str, Any] = {}
         thompson = (
             allocation.note
             or f"Thompson Sampling: P(cel mai bun)={allocation.win_probability:.3f}"
@@ -68,17 +84,32 @@ def build_proposed_changes(
         elif allocation.platform == "meta_ads":
             resource = f"meta_ad_set/{allocation.arm_id}"
             resource_type = "ad_set"
+            if ad_sets is not None:
+                ad_set = current.get(allocation.arm_id)
+                if (
+                    ad_set is None
+                    or ad_set.learning_status == "LEARNING"
+                    or ad_set.daily_budget is None
+                ):
+                    continue  # necunoscut, in invatare sau buget pe campanie: nu se atinge
+                now = ad_set.daily_budget
+                step = (now * MAX_BUDGET_STEP).quantize(_CENT)
+                target = min(now + step, max(now - step, target))
+                if target == now:
+                    continue
+                before = {"daily_budget": str(now)}
+                thompson += f" (tinta {allocation.daily_budget}, pas maxim {step}/noapte)"
         else:
             resource = f"campaign/{allocation.arm_id}"
             resource_type = "campaign"
         changes.append(
             ProposedChange(
-                op="PAUSE" if zeroed else "UPDATE",
+                op="PAUSE" if target == 0 else "UPDATE",
                 resource=resource,
                 resource_type=resource_type,
-                before={},
-                after={"daily_budget": str(allocation.daily_budget)},
-                projected_daily_spend=allocation.daily_budget,
+                before=before,
+                after={"daily_budget": str(target)},
+                projected_daily_spend=target,
                 rationale=f"{thompson}.{kelly_note}",
                 source_module="budget",
             )

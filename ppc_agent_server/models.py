@@ -450,6 +450,28 @@ class ConversionEvent(SQLModel, table=True):
     client_account: ClientAccount = Relationship(back_populates="conversion_events")
 
 
+class PlatformArmSnapshot(SQLModel, table=True):
+    """Ultimele 30 de zile ale unui set de reclame/campanii, cum le citeste agentul PPC.
+
+    Scris de sincronizarea de noapte (``jobs/tasks.py::run_metrics_sync_job``) din
+    acelasi ``campaign_performance()`` din care Kelly si Thompson muta bugetele. Il
+    citeste CFO-ul: consiliul judeca aceiasi bani pe care ii muta algoritmul, nu doar
+    conversiile venite prin webhook. Doar ultima citire per client - nu istoric.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    #: ``google_ads`` / ``tiktok_ads`` / ``meta_ads`` - ca ``ArmStats.platform``.
+    platform: str
+    arm_id: str
+    name: str = ""
+    clicks: int = Field(default=0, ge=0)
+    conversions: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    revenue: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    synced_at: datetime = Field(default_factory=_now)
+
+
 class AdPerformanceRecord(SQLModel, table=True):
     """Rollup persistat per (client, anunt) - alimenteaza direct AdPerformanceState.
 

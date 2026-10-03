@@ -81,18 +81,21 @@ _ZERO_DECIMAL_CURRENCIES = frozenset(
 )
 _LEARNING_STATUSES = frozenset({"LEARNING", "LEARNING_LIMITED"})
 
-# Tipurile de "actions" numarate ca si conversii/venit - proxy, la fel ca
-# default_lead_value deja existent in proiect (depinde de evenimentele de
-# pixel/CAPI configurate de agentie pe contul respectiv).
-_CONVERSION_ACTION_TYPES = frozenset(
-    {
-        "purchase",
-        "omni_purchase",
-        "lead",
-        "offsite_conversion.fb_pixel_lead",
-        "onsite_conversion.lead_grouped",
-    }
+# Meta raporteaza ACEEASI conversie sub mai multe tipuri de "actions": o cumparare
+# de pe site apare si ca "purchase", si ca "omni_purchase", si ca
+# "offsite_conversion.fb_pixel_purchase". Adunate, vanzarile si venitul ies dublate
+# sau triplate - un cont pe pierdere arata rentabil. Din fiecare familie se ia
+# DOAR primul tip prezent (agregatul, apoi variantele lui); cumpararile si lead-urile
+# sunt evenimente diferite, deci familiile se aduna intre ele.
+_CONVERSION_FAMILIES: tuple[tuple[str, ...], ...] = (
+    ("omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase"),
+    ("lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"),
 )
+# Doar conversiile de dupa un click, in 7 zile. Implicit Meta adauga si 1 zi dupa o
+# simpla vizualizare (view-through), care umfla ROAS-ul cu vanzari pe care reclama
+# nu le-a adus neaparat.
+_ATTRIBUTION_WINDOW = "7d_click"
+_INSIGHTS_ATTRIBUTION = json.dumps([_ATTRIBUTION_WINDOW])
 
 # Vezi google_ads.py::_single_touch_paths - acelasi fallback (Meta Insights nu
 # expune parcursuri multi-touch simplu), duplicat aici deliberat ca fiecare
@@ -113,23 +116,27 @@ def _single_touch_paths(name: str, clicks: int, conversions: int) -> list[list[s
     ]
 
 
-def _conversion_totals(row: dict[str, Any]) -> tuple[float, float]:
-    """Conversiile si venitul unui rand Insights, numarate pe ``_CONVERSION_ACTION_TYPES``.
+def _counted(actions: list[dict[str, Any]] | None) -> float:
+    """Suma unei liste ``actions``/``action_values``, o singura data pe conversie."""
+    by_type = {
+        str(action.get("action_type")): float(
+            action.get(_ATTRIBUTION_WINDOW, action.get("value", 0))
+        )
+        for action in actions or []
+    }
+    return sum(
+        next((by_type[kind] for kind in family if kind in by_type), 0.0)
+        for family in _CONVERSION_FAMILIES
+    )
 
-    Folosit si de agregatul pe 30 de zile, si de citirea zilnica - aceeasi
-    definitie a "conversiei", ca raportul sa nu contrazica planul de buget.
+
+def _conversion_totals(row: dict[str, Any]) -> tuple[float, float]:
+    """Conversiile si venitul unui rand Insights, fiecare conversie numarata o data.
+
+    Folosit si de agregatul pe 30 de zile, si de citirea zilnica, si de lichiditate -
+    aceeasi definitie a "conversiei", ca raportul sa nu contrazica planul de buget.
     """
-    conversions = sum(
-        float(action["value"])
-        for action in row.get("actions", []) or []
-        if action.get("action_type") in _CONVERSION_ACTION_TYPES
-    )
-    revenue = sum(
-        float(action["value"])
-        for action in row.get("action_values", []) or []
-        if action.get("action_type") in _CONVERSION_ACTION_TYPES
-    )
-    return conversions, revenue
+    return _counted(row.get("actions")), _counted(row.get("action_values"))
 
 
 def _summarize_targeting(targeting: dict[str, Any]) -> str:
@@ -296,7 +303,7 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         """Seturile de reclame + performanta ultimelor 7 zile (pentru lichiditate)."""
         adsets = self._paginate(
             f"{ad_account_id}/adsets",
-            {"fields": "id,name,targeting,learning_stage_info", "limit": 200},
+            {"fields": "id,name,targeting,learning_stage_info,daily_budget", "limit": 200},
         )
         insights = self._paginate(
             f"{ad_account_id}/insights",
@@ -304,6 +311,7 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 "level": "adset",
                 "date_preset": "last_7d",
                 "fields": "adset_id,spend,actions",
+                "action_attribution_windows": _INSIGHTS_ATTRIBUTION,
                 "limit": 200,
             },
         )
@@ -313,13 +321,16 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         for adset in adsets:
             adset_id = str(adset.get("id", ""))
             insight = insight_by_id.get(adset_id, {})
-            actions = insight.get("actions", []) or []
-            weekly_conversions = sum(
-                float(a["value"])
-                for a in actions
-                if a.get("action_type") in _CONVERSION_ACTION_TYPES
-            )
+            weekly_conversions = _counted(insight.get("actions"))
             learning_status = str((adset.get("learning_stage_info") or {}).get("status", ""))
+            # In unitatea minima a monedei (bani), ca la scriere; lipseste cand bugetul
+            # e pe campanie (CBO).
+            raw_budget = adset.get("daily_budget")
+            daily_budget = (
+                float(Decimal(str(raw_budget)) / minor_units_factor(self._currency))
+                if raw_budget not in (None, "", "0")
+                else None
+            )
             rows.append(
                 {
                     "ad_set_id": adset_id,
@@ -328,6 +339,8 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                     "weekly_conversions": weekly_conversions,
                     "weekly_spend": float(insight.get("spend", 0.0)),
                     "learning_phase": learning_status in _LEARNING_STATUSES,
+                    "learning_status": learning_status,
+                    "daily_budget": daily_budget,
                 }
             )
         columns = [
@@ -337,6 +350,8 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
             "weekly_conversions",
             "weekly_spend",
             "learning_phase",
+            "learning_status",
+            "daily_budget",
         ]
         return pd.DataFrame(rows, columns=columns)
 
@@ -348,6 +363,7 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 "level": "adset",
                 "date_preset": "last_30d",
                 "fields": "adset_id,adset_name,clicks,spend,actions,action_values",
+                "action_attribution_windows": _INSIGHTS_ATTRIBUTION,
                 "limit": 200,
             },
         )
@@ -394,6 +410,7 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 "time_increment": 1,
                 "time_range": json.dumps({"since": start.isoformat(), "until": end.isoformat()}),
                 "fields": "adset_id,adset_name,clicks,spend,actions,action_values",
+                "action_attribution_windows": _INSIGHTS_ATTRIBUTION,
                 "limit": 500,
             },
         )

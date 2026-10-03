@@ -11,7 +11,15 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from ppc_agent.decision.pipeline import SupportsDailyPerformance, collect_daily_histories
+from ppc_agent.config import AppConfig, ProviderMode, Settings
+from ppc_agent.decision.kelly_sizing import size_daily_budget
+from ppc_agent.decision.pipeline import (
+    SupportsDailyPerformance,
+    arms_from_performance,
+    collect_daily_histories,
+    run_plan,
+)
+from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.providers.mock.ads import MockGoogleAdsProvider
 from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
 from ppc_agent.providers.mock.tiktok import MockTikTokAdsProvider
@@ -71,3 +79,32 @@ def test_collect_daily_histories_uses_only_supporting_providers() -> None:
 def test_collect_daily_histories_returns_empty_when_nothing_supports_it() -> None:
     histories = collect_daily_histories([(_ProviderWithoutDailySupport(), "acc-1")])
     assert histories == {}
+
+
+def test_live_plan_reads_only_the_configured_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pilot doar pe Meta: cheile Google/TikTok lipsa nu mai opresc planul de noapte."""
+    settings = Settings(
+        provider_mode=ProviderMode.LIVE, meta_access_token="t", meta_ad_account_id="act_1"
+    )
+    config = AppConfig(settings=settings)
+    factory = ProviderFactory(config)
+    monkeypatch.setattr(factory, "meta", MockMetaMarketingProvider)  # Meta "live", fara retea
+
+    plan = run_plan(factory, config, n_samples=200)
+    assert {item.platform for item in plan.budget_plan.allocations} == {"meta_ads"}
+
+
+def test_lead_value_keeps_a_cheap_lead_account_from_being_halved() -> None:
+    """40 de lead-uri la 25 lei, fara venit raportat: fara valoare, Kelly vede ROAS 0."""
+    frame = pd.DataFrame(
+        [{"arm_id": "a", "name": "a", "clicks": 800, "conversions": 40, "cost": 1000.0,
+          "revenue": 0.0}]
+    )
+
+    def cap(lead_value: Decimal | None) -> Decimal:
+        arms = arms_from_performance(frame, platform="meta_ads", lead_value=lead_value)
+        kelly = size_daily_budget(arms, baseline_cap=Decimal("50"), hard_ceiling=Decimal("500"))
+        return kelly.sized_daily_cap
+
+    assert cap(None) == Decimal("25.00")  # bugetul taiat la jumatate
+    assert cap(Decimal("80")) > Decimal("50")  # lead de 80 lei luat cu 25: merita mai mult

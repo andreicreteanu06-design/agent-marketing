@@ -12,6 +12,8 @@ import pytest
 from sqlmodel import Session, select
 
 import ppc_agent_server.jobs.tasks as tasks_module
+from ppc_agent.providers.factory import ProviderFactory
+from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
 from ppc_agent_server.jobs.tasks import (
     ClientNotFoundError,
     _app_config_for,
@@ -30,6 +32,7 @@ from ppc_agent_server.models import (
     Tenant,
 )
 from ppc_agent_server.security import encrypt_secret
+from ppc_agent_server.services.queen_signals import DbFinancialSignals
 
 #: Pasii mentenantei de noapte per client, in ordine.
 STEPS = {"sync", "propose", "fatigue_check", "speed_check", "site_audit", "tracking_contract"}
@@ -322,3 +325,37 @@ def test_jobul_unui_client_izoleaza_pasii(
     assert set(result) == STEPS
     assert "RuntimeError" in result["sync"]["error"]
     assert "error" not in result["fatigue_check"]
+
+
+def test_the_cfo_judges_the_same_platform_numbers_the_budget_algorithm_moves(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fara magazin conectat nu exista conversii prin webhook: CFO-ul citea "date
+    insuficiente" pentru totdeauna, in timp ce Kelly muta bani pe cifrele din Meta."""
+    account = _client_account(session)
+    account.meta_ad_account_id = "act_1"
+    session.add(account)
+    session.commit()
+    account_id = account.id or 0
+
+    run_metrics_sync_job(client_account_id=account_id)  # mock: cifre inventate
+    assert DbFinancialSignals(session).load(account_id).ads == []  # nu ajung la CFO
+
+    # Pilot doar pe Meta: live, fara chei Google/TikTok; Meta raspunde fara retea.
+    monkeypatch.setenv("PPC_PROVIDER_MODE", "live")
+    monkeypatch.setenv("PPC_META_ACCESS_TOKEN", "token-de-test")
+    monkeypatch.setattr(ProviderFactory, "meta", lambda self: MockMetaMarketingProvider())
+    run_metrics_sync_job(client_account_id=account_id)
+    run_metrics_sync_job(client_account_id=account_id)  # a doua noapte inlocuieste, nu dubleaza
+
+    meta = MockMetaMarketingProvider().campaign_performance("act_1").to_dict(orient="records")
+    ads = DbFinancialSignals(session).load(account_id).ads
+    assert len(ads) == len(meta)
+    seen = {ad.ad_id: ad for ad in ads}
+    for row in meta:
+        ad = seen[str(row["arm_id"])]
+        assert (ad.platform, ad.spend, ad.conversions) == (
+            "meta_ads",
+            Decimal(str(row["cost"])).quantize(Decimal("0.01")),
+            row["conversions"],
+        )

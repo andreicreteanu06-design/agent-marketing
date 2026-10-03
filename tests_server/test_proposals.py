@@ -35,11 +35,12 @@ def _add_change(
     *,
     spend: str = "10.00",
     status: ChangeStatus = ChangeStatus.PENDING,
+    resource: str = "campaign/c_brand",
 ) -> ProposedChange:
     change = ProposedChange(
         client_account_id=client_id,
         op=ChangeOp.UPDATE,
-        resource="campaign/c_brand",
+        resource=resource,
         resource_type="campaign",
         projected_daily_spend=Decimal(spend),
         rationale="Thompson Sampling: P(cel mai bun)=1.000",
@@ -110,10 +111,10 @@ def test_execute_over_absolute_limit_returns_409(
 def test_execute_checks_cumulative_committed_spend_not_just_this_row(
     client: TestClient, auth_headers: dict[str, str], session: Session
 ) -> None:
-    """Doua propuneri, fiecare sub plafon individual, dar impreuna peste - a doua refuzata."""
+    """Doua campanii, fiecare sub plafon individual, dar impreuna peste - a doua refuzata."""
     client_id = _create_client(client, auth_headers, max_daily_spend="30.00")
     first = _add_change(session, client_id, spend="20.00")
-    second = _add_change(session, client_id, spend="20.00")
+    second = _add_change(session, client_id, spend="20.00", resource="campaign/c_generic")
 
     ok = client.post(
         f"/api/v1/proposals/{first.id}/execute", headers=auth_headers, json={"confirm": True}

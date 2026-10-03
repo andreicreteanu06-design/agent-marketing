@@ -415,7 +415,13 @@ def _budget_position(
         section.update(_unavailable(exc))
         return
 
-    arms = [arm for arm in arms_from_performance(frame, platform="meta_ads") if arm.clicks > 0]
+    arms = [
+        arm
+        for arm in arms_from_performance(
+            frame, platform="meta_ads", lead_value=config.budget.lead_value
+        )
+        if arm.clicks > 0
+    ]
     if not arms:
         section.update(status="no_history", note=_NO_HISTORY_NOTE)
         return
@@ -449,10 +455,10 @@ def _budget_position(
     if kelly.sized_daily_cap <= 0:
         return
 
-    # Campania noua NU intra ca brat in Thompson: fara date, priorul Beta(1,1) ii
-    # da o rata de conversie medie de 50%, deci ar "castiga" aproape mereu in
-    # fata campaniilor reale - un artefact statistic, nu un semnal. Thompson
-    # ruleaza pe ce exista si spune ce trebuie sa bata campania noua.
+    # Campania noua NU intra ca brat in Thompson: fara date, ar avea doar priorul
+    # (media contului) si incertitudinea maxima - "castigul" ei ar fi un artefact
+    # statistic, nu un semnal. Thompson ruleaza pe ce exista si spune ce trebuie
+    # sa bata campania noua.
     try:
         plan = ThompsonBudgetAllocator().allocate(
             arms, float(kelly.sized_daily_cap), seed=_THOMPSON_SEED

@@ -65,6 +65,45 @@ def test_campaign_performance_sums_conversion_actions() -> None:
     assert row["revenue"] == pytest.approx(500.0)
 
 
+def test_same_purchase_reported_under_three_types_counts_once() -> None:
+    """Meta raporteaza aceleasi 10 cumparari ca purchase, omni_purchase si pixel: nu 30."""
+    sent: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.update(parse_qsl(request.url.query.decode()))
+        kinds = ("purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase")
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "adset_id": "as_1",
+                        "clicks": "800",
+                        "spend": "1000",
+                        # "value" include si view-through; se ia fereastra de 7 zile la click
+                        "actions": [
+                            *({"action_type": t, "value": "12", "7d_click": "10"} for t in kinds),
+                            {"action_type": "lead", "value": "4"},
+                            {"action_type": "offsite_conversion.fb_pixel_lead", "value": "4"},
+                        ],
+                        "action_values": [
+                            {"action_type": t, "value": "1800", "7d_click": "1500"} for t in kinds
+                        ],
+                    }
+                ],
+                "paging": {},
+            },
+        )
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    row = provider.campaign_performance("act_999").iloc[0]
+    assert row["conversions"] == 14  # 10 cumparari + 4 lead-uri, fiecare o data
+    assert row["revenue"] == pytest.approx(1500.0)
+    assert sent["action_attribution_windows"] == '["7d_click"]'
+
+
 def test_ad_sets_merges_adsets_and_insights() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -82,6 +121,7 @@ def test_ad_sets_merges_adsets_and_insights() -> None:
                                 "geo_locations": {"countries": ["RO"]},
                             },
                             "learning_stage_info": {"status": "LEARNING"},
+                            "daily_budget": "2550",  # in bani, ca la scriere
                         }
                     ],
                     "paging": {},
@@ -112,6 +152,8 @@ def test_ad_sets_merges_adsets_and_insights() -> None:
     assert row["weekly_conversions"] == pytest.approx(12.0)
     assert row["weekly_spend"] == pytest.approx(180.0)
     assert bool(row["learning_phase"]) is True
+    assert row["learning_status"] == "LEARNING"
+    assert row["daily_budget"] == pytest.approx(25.50)
     assert "25" in row["audience_def"] and "ro" in row["audience_def"]
 
 

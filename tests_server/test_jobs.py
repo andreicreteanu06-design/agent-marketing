@@ -76,7 +76,7 @@ def test_dispatch_fatigue_check_job_for_client_with_no_ads(
     )
     assert dispatch.status_code == 202
     status = client.get(f"/api/v1/jobs/{dispatch.json()['task_id']}", headers=auth_headers)
-    assert status.json()["result"] == {"evaluated": 0, "created": 0}
+    assert status.json()["result"] == {"evaluated": 0, "created": 0, "superseded": 0}
 
 
 def test_dispatch_sync_metrics_job_for_client_with_no_records(
@@ -89,7 +89,8 @@ def test_dispatch_sync_metrics_job_for_client_with_no_records(
     )
     assert dispatch.status_code == 202
     status = client.get(f"/api/v1/jobs/{dispatch.json()['task_id']}", headers=auth_headers)
-    assert status.json()["result"] == {"checked": 0, "updated": 0}
+    # mock: cifrele inventate nu ajung la CFO (rezumatul platformelor ramane gol)
+    assert status.json()["result"] == {"checked": 0, "updated": 0, "platform_arms": 0}
 
 
 def test_dispatch_copy_job_writes_ad_queue_item(

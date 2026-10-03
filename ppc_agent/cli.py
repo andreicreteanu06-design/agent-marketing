@@ -518,6 +518,7 @@ def propose(
         negatives=ingestion.negative_keywords,
         liquidity=alignment.liquidity_plan,
         kelly=decision.kelly,
+        ad_sets=alignment.ad_sets,
     )
 
     # Plafonul limitatorului = plafonul dimensionat Kelly (poate depasi

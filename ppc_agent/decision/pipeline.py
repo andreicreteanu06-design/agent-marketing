@@ -18,8 +18,10 @@ from ppc_agent.decision.forecasting import Forecaster, apply_forecast
 from ppc_agent.decision.kelly_sizing import size_daily_budget
 from ppc_agent.decision.models import ArmCapacityAdvice, ArmStats, DailyArmMetric, PlanResult
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
+from ppc_agent.providers import base
 from ppc_agent.providers.factory import ProviderFactory
 
+_AdsReader = base.GoogleAdsProvider | base.TikTokAdsProvider | base.MetaMarketingProvider
 _CUSTOMER_PLACEHOLDER = "mock-customer"
 _ADVERTISER_PLACEHOLDER = "mock-advertiser"
 _META_ACCOUNT_PLACEHOLDER = "mock-account"
@@ -98,22 +100,31 @@ def collect_daily_histories(
     return histories
 
 
-def arms_from_performance(frame: pd.DataFrame, *, platform: str = "google_ads") -> list[ArmStats]:
+def arms_from_performance(
+    frame: pd.DataFrame, *, platform: str = "google_ads", lead_value: Decimal | None = None
+) -> list[ArmStats]:
     """Tabelul ``campaign_performance()`` al unui furnizor, ca brate pentru Kelly/Thompson.
 
     Public fiindca il foloseste si brief-ul de lansare (``services/launch_brief.py``):
     aceeasi conversie a banilor in ``Decimal``, nu o a doua.
+
+    ``lead_value`` (``BudgetConfig.lead_value``): conversiile fara venit raportat valoreaza
+    atat fiecare - altfel un client de lead-uri ar avea ROAS 0.
     """
     arms: list[ArmStats] = []
     for record in frame.to_dict(orient="records"):
+        conversions = int(record["conversions"])
+        revenue = Decimal(str(record.get("revenue", 0)))
+        if lead_value is not None and revenue == 0:
+            revenue = lead_value * conversions
         arms.append(
             ArmStats(
                 arm_id=str(record["arm_id"]),
                 name=str(record["name"]),
                 clicks=int(record["clicks"]),
-                conversions=int(record["conversions"]),
+                conversions=conversions,
                 cost=Decimal(str(record["cost"])),
-                revenue=Decimal(str(record.get("revenue", 0))),
+                revenue=revenue,
                 platform=platform,
             )
         )
@@ -175,21 +186,28 @@ def run_plan(
     Returns:
         Planul complet: dimensionare Kelly + alocare de buget + atribuire.
     """
-    ads = factory.google_ads()
-    tiktok_ads = factory.tiktok_ads()
-    meta_ads = factory.meta()
     customer_id, advertiser_id, ad_account_id = resolve_account_ids(config)
-
-    google_arms = arms_from_performance(
-        ads.campaign_performance(customer_id), platform="google_ads"
-    )
-    tiktok_arms = arms_from_performance(
-        tiktok_ads.campaign_performance(advertiser_id), platform="tiktok_ads"
-    )
-    meta_arms = arms_from_performance(
-        meta_ads.campaign_performance(ad_account_id), platform="meta_ads"
-    )
-    arms = google_arms + tiktok_arms + meta_arms
+    # Doar platformele configurate (in ``live``): un pilot doar pe Meta nu cade pe
+    # cheile Google lipsa. O platforma configurata care pica opreste tot planul -
+    # altfel plafonul Kelly al contului s-ar imparti doar intre platformele ramase.
+    sources: list[tuple[str, _AdsReader, str]] = [
+        (platform, provider(), account)
+        for platform, provider, account in (
+            ("google_ads", factory.google_ads, customer_id),
+            ("tiktok_ads", factory.tiktok_ads, advertiser_id),
+            ("meta_ads", factory.meta, ad_account_id),
+        )
+        if factory.configured(platform)
+    ]
+    arms = [
+        arm
+        for platform, provider, account in sources
+        for arm in arms_from_performance(
+            provider.campaign_performance(account),
+            platform=platform,
+            lead_value=config.budget.lead_value,
+        )
+    ]
     if forecaster is not None and histories:
         arms = apply_forecast(arms, histories, forecaster, horizon_days=forecast_horizon_days)
 
@@ -216,11 +234,8 @@ def run_plan(
 
     journeys = [
         Journey.from_tokens(path)
-        for path in (
-            *ads.conversion_paths(customer_id),
-            *tiktok_ads.conversion_paths(advertiser_id),
-            *meta_ads.conversion_paths(ad_account_id),
-        )
+        for _, provider, account in sources
+        for path in provider.conversion_paths(account)
     ]
     attribution = attribute(journeys)
 

@@ -38,16 +38,21 @@ def run_ingestion(
     """
     page_context = crawl(factory.crawler(), url)
 
-    seeds = to_seed_keywords(factory.gsc().top_queries(url))
+    # Sursele neconfigurate (in ``live``) raman goale, nu opresc ingestia.
+    seeds = to_seed_keywords(factory.gsc().top_queries(url)) if factory.configured("gsc") else []
     local_signals = to_local_signals(
         factory.gbp().local_signals(
             config.settings.gbp_location_id or _GBP_LOCATION_PLACEHOLDER
         )
+        if factory.configured("gbp")
+        else {}
     )
 
     seed_terms = [seed.query for seed in seeds] or [config.target_domain]
-    expanded = expand_keywords(
-        factory.keyword_planner().expand(seed_terms, config.geo, config.language)
+    expanded = (
+        expand_keywords(factory.keyword_planner().expand(seed_terms, config.geo, config.language))
+        if factory.configured("keyword_planner")
+        else []
     )
 
     negatives = scaffold_negatives(expanded, page_context, config.competitor_brands)

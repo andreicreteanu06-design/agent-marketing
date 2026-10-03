@@ -67,7 +67,7 @@ class ApprovalGate:
         """Construieste :class:`ChangeSet` din modificarile tamponate (fara scriere)."""
         total = Decimal("0")
         for change in self._pending:
-            total += change.projected_daily_spend
+            total += change.spend_against_cap
         return ChangeSet(
             created_at=datetime.now(tz=UTC),
             account=self._account,

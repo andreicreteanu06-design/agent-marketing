@@ -134,7 +134,14 @@ def _check_spend_limit(
     session: Session, account: ClientAccount, proposal: ProposedChange
 ) -> None:
     """Angajamentul TOTAL al clientului plus aceasta propunere - vezi ``spend_guard``."""
-    check_spend_limit(session, account, proposal.projected_daily_spend)
+    check_spend_limit(
+        session, account, proposal.projected_daily_spend, replaces=_replaces(proposal)
+    )
+
+
+def _replaces(proposal: ProposedChange) -> str | None:
+    """Obiectul al carui buget il inlocuieste propunerea; o lansare nu inlocuieste nimic."""
+    return None if proposal.op is ChangeOp.CREATE_CAMPAIGN else proposal.resource
 
 
 def _transition(
@@ -282,7 +289,11 @@ def approve_proposal(
         # Rezervarea e acum vizibila celorlalte aprobari: plafonul se re-verifica
         # impreuna cu ele (``spend_guard`` numara si propunerile APPROVED).
         check_spend_limit(
-            session, account, proposal.projected_daily_spend, exclude_id=proposal.id
+            session,
+            account,
+            proposal.projected_daily_spend,
+            exclude_id=proposal.id,
+            replaces=_replaces(proposal),
         )
         result = run_execution(
             proposal,
@@ -446,7 +457,11 @@ def execute_proposal(
     # din ApprovalGate.flush() (CLI).
     try:
         check_spend_limit(
-            session, account, proposal.projected_daily_spend, exclude_id=proposal.id
+            session,
+            account,
+            proposal.projected_daily_spend,
+            exclude_id=proposal.id,
+            replaces=_replaces(proposal),
         )
     except SpendLimitExceeded:
         _transition(session, proposal, frm=ChangeStatus.APPROVED, to=ChangeStatus.PENDING)

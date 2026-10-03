@@ -479,6 +479,9 @@ def test_modulul_1_ruleaza_cap_coada_cu_toti_furnizorii_live() -> None:
     class _LiveFactory:
         """Fabrica reala, dar cu transportul injectat - altfel ar iesi in retea."""
 
+        def configured(self, source: str) -> bool:
+            return True  # toate sursele de mai jos au chei (fictive)
+
         def crawler(self) -> LiveCrawlerProvider:
             return LiveCrawlerProvider(transport=transport)
 

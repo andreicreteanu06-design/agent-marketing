@@ -121,6 +121,9 @@ class MockMetaMarketingProvider(MetaMarketingProvider):
                 "weekly_conversions": ad_set.weekly_conversions,
                 "weekly_spend": ad_set.weekly_spend,
                 "learning_phase": ad_set.learning_phase,
+                "learning_status": "LEARNING" if ad_set.learning_phase else "SUCCESS",
+                # bugetul de acum = cheltuiala medie pe zi, ca o singura sursa a adevarului
+                "daily_budget": round(ad_set.weekly_spend / 7, 2),
             }
             for ad_set in _AD_SETS
         ]

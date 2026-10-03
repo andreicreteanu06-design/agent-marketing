@@ -46,6 +46,12 @@ class AdSet(BaseModel):
     weekly_conversions: float = Field(ge=0.0)
     weekly_spend: Decimal = Decimal("0")
     learning_phase: bool = False
+    #: Starea bruta din Meta: ``LEARNING`` (invata acum - fara editari) sau
+    #: ``LEARNING_LIMITED`` (nu strange destule conversii - bugetul e chiar un remediu).
+    learning_status: str = ""
+    #: Bugetul zilnic setat acum pe set. ``None`` = bugetul e pe campanie (CBO) sau
+    #: necunoscut - atunci agentul nu propune buget pe set.
+    daily_budget: Decimal | None = None
 
 
 class AdSetMerge(BaseModel):
@@ -74,3 +80,6 @@ class AlignmentResult(BaseModel):
 
     quality_score_reports: list[QualityScoreReport] = Field(default_factory=list)
     liquidity_plan: LiquidityPlan
+    #: Seturile citite din cont: bugetul de acum si faza de invatare, pentru
+    #: limitarea pasului de buget (``guardrails.pipeline.build_proposed_changes``).
+    ad_sets: list[AdSet] = Field(default_factory=list)

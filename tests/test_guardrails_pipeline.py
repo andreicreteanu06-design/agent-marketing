@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from ppc_agent.alignment.models import LiquidityPlan
+from ppc_agent.alignment.models import AdSet, LiquidityPlan
 from ppc_agent.decision.fatigue_models import AdPerformanceState
 from ppc_agent.decision.models import BudgetAllocation, BudgetPlan
 from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
@@ -85,6 +85,60 @@ def test_meta_ads_allocation_uses_ad_set_resource_naming() -> None:
     assert len(changes) == 1
     assert changes[0].resource == "meta_ad_set/as_brand"
     assert changes[0].resource_type == "ad_set"
+
+
+def test_meta_budgets_move_at_most_twenty_percent_a_night() -> None:
+    """Tinta Thompson e departe; Meta primeste un pas, nu un salt care reporneste invatarea."""
+
+    def meta(arm_id: str, budget: str) -> BudgetAllocation:
+        return BudgetAllocation(
+            arm_id=arm_id,
+            name=arm_id,
+            platform="meta_ads",
+            win_probability=0.5,
+            final_share=0.25,
+            daily_budget=Decimal(budget),
+        )
+
+    def ad_set(ad_set_id: str, budget: str | None, *, learning: str = "") -> AdSet:
+        return AdSet(
+            ad_set_id=ad_set_id,
+            name=ad_set_id,
+            audience_def="x",
+            weekly_conversions=0,
+            learning_phase=bool(learning),
+            learning_status=learning,
+            daily_budget=None if budget is None else Decimal(budget),
+        )
+
+    changes = build_proposed_changes(
+        budget_plan=_plan(
+            meta("sus", "90"), meta("jos", "0"), meta("invata", "90"), meta("cbo", "90"),
+            meta("la_tinta", "50.40"), meta("necunoscut", "90"), meta("limitat", "90"),
+        ),
+        negatives=_EMPTY_NEGATIVES,
+        liquidity=_EMPTY_LIQUIDITY,
+        ad_sets=[
+            ad_set("sus", "50"),
+            ad_set("jos", "50"),
+            ad_set("invata", "50", learning="LEARNING"),
+            ad_set("limitat", "50", learning="LEARNING_LIMITED"),
+            ad_set("cbo", None),
+            ad_set("la_tinta", "50.40"),
+        ],
+    )
+
+    by_set = {change.resource: change for change in changes}
+    assert set(by_set) == {"meta_ad_set/sus", "meta_ad_set/jos", "meta_ad_set/limitat"}
+    # Invatare limitata: bugetul e unul din remediile Meta, deci primeste pasul lui.
+    assert by_set["meta_ad_set/limitat"].projected_daily_spend == Decimal("60.00")
+    up, down = by_set["meta_ad_set/sus"], by_set["meta_ad_set/jos"]
+    assert (up.op, up.projected_daily_spend, up.before) == (
+        "UPDATE", Decimal("60.00"), {"daily_budget": "50"}
+    )
+    # "Dus la 0" de Thompson: coboara un pas, nu se opreste peste noapte.
+    assert (down.op, down.projected_daily_spend) == ("UPDATE", Decimal("40.00"))
+    assert down.spend_against_cap == 0  # o reducere nu se numara la plafon
 
 
 def test_default_platform_omitted_still_resolves_to_google_ads() -> None:

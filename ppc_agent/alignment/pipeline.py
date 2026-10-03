@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 
 import pandas as pd
@@ -31,9 +32,18 @@ def _ad_sets_from_frame(frame: pd.DataFrame) -> list[AdSet]:
                 weekly_conversions=float(record["weekly_conversions"]),
                 weekly_spend=Decimal(str(record["weekly_spend"])),
                 learning_phase=bool(record["learning_phase"]),
+                learning_status=str(record.get("learning_status") or ""),
+                daily_budget=_budget(record.get("daily_budget")),
             )
         )
     return out
+
+
+def _budget(value: object) -> Decimal | None:
+    """Bugetul zilnic al setului; ``None`` cand lipseste (buget pe campanie)."""
+    if isinstance(value, int | float) and not math.isnan(value):
+        return Decimal(str(value))
+    return None
 
 
 def run_alignment(
@@ -58,10 +68,16 @@ def run_alignment(
     # In mod live, ID-ul real de cont vine din configuratie; placeholder-ul e
     # folosit doar cand campul e gol (implicit).
     ad_account_id = config.settings.meta_ad_account_id or _META_ACCOUNT_PLACEHOLDER
-    ad_sets = _ad_sets_from_frame(factory.meta().ad_sets(ad_account_id))
+    ad_sets = (
+        _ad_sets_from_frame(factory.meta().ad_sets(ad_account_id))
+        if factory.configured("meta_ads")
+        else []
+    )
     liquidity = consolidation_plan(ad_sets, config.meta.target_weekly_conversions)
 
-    return AlignmentResult(quality_score_reports=reports, liquidity_plan=liquidity)
+    return AlignmentResult(
+        quality_score_reports=reports, liquidity_plan=liquidity, ad_sets=ad_sets
+    )
 
 
 def render_alignment(result: AlignmentResult, console: Console) -> None:

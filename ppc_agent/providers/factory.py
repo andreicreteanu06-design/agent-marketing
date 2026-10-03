@@ -5,6 +5,26 @@ from __future__ import annotations
 from ppc_agent.config import AppConfig, ProviderMode
 from ppc_agent.providers import base, live, mock
 
+#: Ce trebuie sa existe in setari ca o sursa ``live`` sa poata fi citita. Fara ele,
+#: providerul live ar ridica ``SetupRequiredError`` - si ar opri tot jobul de noapte,
+#: desi clientul (ex. un pilot doar pe Meta) nu foloseste deloc platforma aceea.
+_REQUIRED_SETTINGS: dict[str, tuple[str, ...]] = {
+    "google_ads": (
+        "google_ads_developer_token",
+        "google_ads_refresh_token",
+        "google_ads_customer_id",
+    ),
+    "keyword_planner": (
+        "google_ads_developer_token",
+        "google_ads_refresh_token",
+        "google_ads_customer_id",
+    ),
+    "tiktok_ads": ("tiktok_access_token", "tiktok_advertiser_id"),
+    "meta_ads": ("meta_access_token", "meta_ad_account_id"),
+    "gsc": ("google_oauth_refresh_token",),
+    "gbp": ("google_oauth_refresh_token", "gbp_location_id"),
+}
+
 
 class ProviderFactory:
     """Construieste furnizori concreti pornind de la :class:`AppConfig`.
@@ -22,6 +42,18 @@ class ProviderFactory:
     def mode(self) -> ProviderMode:
         """Modul activ al furnizorilor (``mock`` sau ``live``)."""
         return self._config.provider_mode
+
+    def configured(self, source: str) -> bool:
+        """Adevarat daca ``source`` (cheie din ``_REQUIRED_SETTINGS``) se poate citi acum.
+
+        In ``mock`` totul e disponibil. In ``live``, o sursa fara chei/cont e sarita de
+        apelant - nu inlocuita cu date mock: cifre fictive amestecate in decizii reale
+        ar fi mai rau decat lipsa lor.
+        """
+        if self.mode is not ProviderMode.LIVE:
+            return True
+        settings = self._config.settings
+        return all(getattr(settings, field) for field in _REQUIRED_SETTINGS[source])
 
     def crawler(self) -> base.CrawlerProvider:
         """Returneaza furnizorul de crawling pentru modul activ."""
@@ -90,7 +122,8 @@ class ProviderFactory:
         """Returneaza furnizorul Meta Marketing pentru modul activ."""
         if self.mode is ProviderMode.LIVE:
             return live.LiveMetaMarketingProvider(
-                access_token=self._config.settings.meta_access_token
+                access_token=self._config.settings.meta_access_token,
+                currency=self._config.settings.meta_currency,  # bugetele citite, in lei
             )
         return mock.MockMetaMarketingProvider()
 

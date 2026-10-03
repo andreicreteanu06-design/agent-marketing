@@ -1,8 +1,10 @@
-"""Alocarea de buget prin Thompson Sampling (bandit bayesian, posteriori Beta).
+"""Alocarea de buget prin Thompson Sampling (bandit bayesian, posteriori Gamma-Poisson).
 
 Fara reguli euristice: fiecare brat primeste buget proportional cu probabilitatea
-sa de a fi cel mai bun, estimata prin esantionare din posteriorul Beta al ratei
-de conversie.
+sa de a aduce cea mai mare valoare pe leu cheltuit - conversii pe leu (posterior
+Gamma) inmultite cu valoarea unei conversii. Nu rata de conversie pe click: un brat
+cu 5% conversie la click de 10 lei (CPA 200) e mai prost decat unul cu 3% la 1 leu
+(CPA 33), desi ar castiga la CVR.
 """
 
 from __future__ import annotations
@@ -32,51 +34,61 @@ def _sum_decimals(values: list[Decimal]) -> Decimal:
 class ThompsonBudgetAllocator:
     """Aloca bugetul zilnic intre brate proportional cu sansa de a fi optim.
 
-    Math: pentru fiecare brat, rata de conversie are un posterior
-    ``Beta(alpha, beta)`` cu ``alpha = prior_alpha + conversii`` si
-    ``beta = prior_beta + (click-uri - conversii)``. Se trag ``n_samples``
-    esantioane din fiecare posterior; cota bruta a unui brat este fractia de
-    esantioane in care el are cea mai mare rata (probabilitatea de castig).
-    Cotele se taie la ``[min_share, max_share]`` si se renormalizeaza.
+    Math: conversiile unui brat sunt Poisson in cost, cu ``lambda`` conversii pe leu.
+    Priorul e ``prior_conversions`` pseudo-conversii la CPA-ul mediu al contului, deci
+    posteriorul e ``Gamma(prior + conversii, prior * CPA_cont + cost)``. Fiecare
+    esantion ``lambda`` se inmulteste cu valoarea unei conversii a bratului (venit /
+    conversii, tras spre media contului cu aceeasi pseudo-conversie; 1 cand nimeni nu
+    are venit - atunci se compara doar CPA-urile). Cota bruta a unui brat este fractia
+    de esantioane in care el aduce cea mai multa valoare pe leu (probabilitatea de
+    castig). Cotele se taie la ``[min_share, max_share]`` si se renormalizeaza.
     """
 
     def __init__(
         self,
         *,
-        prior_alpha: float = 1.0,
-        prior_beta: float = 1.0,
+        prior_conversions: float = 1.0,
         min_arm_daily_spend: Decimal = Decimal("0"),
     ) -> None:
-        """Configureaza priorul Beta si pragul minim absolut per brat.
+        """Configureaza priorul si pragul minim absolut per brat.
 
         Args:
-            prior_alpha: Parametrul ``alpha`` al priorului (pseudo-conversii).
-            prior_beta: Parametrul ``beta`` al priorului (pseudo-non-conversii).
+            prior_conversions: Cate pseudo-conversii, la media contului, primeste
+                fiecare brat - un brat nou porneste de la media, nu de la zero.
             min_arm_daily_spend: Buget zilnic minim sub care un brat este
                 dezactivat (``0`` = fara prag).
         """
-        if prior_alpha <= 0 or prior_beta <= 0:
-            raise BudgetAllocationError("priorul Beta trebuie sa fie strict pozitiv")
-        self._prior_alpha = prior_alpha
-        self._prior_beta = prior_beta
+        if prior_conversions <= 0:
+            raise BudgetAllocationError("priorul trebuie sa fie strict pozitiv")
+        self._prior = prior_conversions
         self._floor = min_arm_daily_spend
 
     def _win_probabilities(
         self, arms: list[ArmStats], n_samples: int, seed: int | None
     ) -> list[float]:
-        """Probabilitatea fiecarui brat de a avea cea mai mare rata de conversie."""
-        alphas = [self._prior_alpha + arm.conversions for arm in arms]
-        betas = [
-            self._prior_beta + max(0, arm.clicks - arm.conversions) for arm in arms
+        """Probabilitatea fiecarui brat de a aduce cea mai multa valoare pe leu."""
+        cost = float(sum((arm.cost for arm in arms), Decimal("0")))
+        conversions = sum(arm.conversions for arm in arms)
+        revenue = float(sum((arm.revenue for arm in arms), Decimal("0")))
+        account_cpa = max(cost, 1.0) / max(conversions, 1)
+        account_value = revenue / conversions if conversions and revenue > 0 else 1.0
+        shapes = [self._prior + arm.conversions for arm in arms]
+        rates = [self._prior * account_cpa + float(arm.cost) for arm in arms]
+        values = [
+            (float(arm.revenue) + self._prior * account_value) / (arm.conversions + self._prior)
+            if revenue > 0
+            else 1.0
+            for arm in arms
         ]
 
         rng_state = torch.random.get_rng_state()
         try:
             if seed is not None:
                 torch.manual_seed(seed)
-            alpha_t = torch.tensor(alphas, dtype=torch.double)
-            beta_t = torch.tensor(betas, dtype=torch.double)
-            samples = torch.distributions.Beta(alpha_t, beta_t).sample((n_samples,))
+            shape_t = torch.tensor(shapes, dtype=torch.double)
+            rate_t = torch.tensor(rates, dtype=torch.double)
+            per_leu = torch.distributions.Gamma(shape_t, rate_t).sample((n_samples,))
+            samples = per_leu * torch.tensor(values, dtype=torch.double)
             winners = torch.argmax(samples, dim=1)
             counts = torch.bincount(winners, minlength=len(arms)).to(torch.double)
             probs = (counts / float(n_samples)).tolist()

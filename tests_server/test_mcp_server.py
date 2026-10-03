@@ -172,17 +172,19 @@ def test_sumarul_de_buget_citeste_datele_reale_ale_clientului(
     connected: ClientAccount, session: Session
 ) -> None:
     """Plafonul efectiv, ce e angajat (executat + in curs), ce mai incape, ce asteapta."""
-    for status, spend in (
-        (ChangeStatus.EXECUTED, "20"),
-        (ChangeStatus.APPROVED, "5"),
-        (ChangeStatus.PENDING, "8"),
-        (ChangeStatus.REJECTED, "99"),
+    for index, (status, spend) in enumerate(
+        (
+            (ChangeStatus.EXECUTED, "20"),
+            (ChangeStatus.APPROVED, "5"),
+            (ChangeStatus.PENDING, "8"),
+            (ChangeStatus.REJECTED, "99"),
+        )
     ):
         session.add(
             ProposedChange(
                 client_account_id=connected.id or 0,
                 op=ChangeOp.UPDATE,
-                resource="meta_ad_set/1",
+                resource=f"meta_ad_set/{index}",  # seturi diferite: bugetele se aduna
                 resource_type="ad_set",
                 projected_daily_spend=Decimal(spend),
                 rationale="test",

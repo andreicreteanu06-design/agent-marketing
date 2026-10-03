@@ -140,3 +140,39 @@ def test_clip_and_normalise_caps_dominant_at_max() -> None:
     assert shares[0] == pytest.approx(0.6, abs=1e-9)
     assert sum(shares) == pytest.approx(1.0, abs=1e-9)
     assert shares[1] == pytest.approx(0.2, abs=1e-9)
+
+
+def test_cheap_conversions_beat_a_higher_click_rate() -> None:
+    """5% conversie la click de 10 lei (CPA 200) pierde in fata a 3% la 1 leu (CPA 33)."""
+    expensive = ArmStats(
+        arm_id="scump", name="scump", clicks=1000, conversions=50, cost=Decimal("10000")
+    )
+    cheap = ArmStats(
+        arm_id="ieftin", name="ieftin", clicks=1000, conversions=30, cost=Decimal("1000")
+    )
+    plan = ThompsonBudgetAllocator().allocate([expensive, cheap], 100.0, seed=_SEED)
+    shares = {a.arm_id: a.win_probability for a in plan.allocations}
+    assert shares["ieftin"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_value_per_leu_beats_conversions_per_leu() -> None:
+    """Acelasi CPA, dar un brat vinde de 3 ori mai scump: el castiga."""
+    cheap_orders = ArmStats(
+        arm_id="mic",
+        name="mic",
+        clicks=500,
+        conversions=40,
+        cost=Decimal("2000"),
+        revenue=Decimal("4000"),
+    )
+    big_orders = ArmStats(
+        arm_id="mare",
+        name="mare",
+        clicks=500,
+        conversions=40,
+        cost=Decimal("2000"),
+        revenue=Decimal("12000"),
+    )
+    plan = ThompsonBudgetAllocator().allocate([cheap_orders, big_orders], 100.0, seed=_SEED)
+    shares = {a.arm_id: a.win_probability for a in plan.allocations}
+    assert shares["mare"] == pytest.approx(1.0, abs=0.01)

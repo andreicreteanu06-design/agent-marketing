@@ -23,6 +23,18 @@ class ProposedChange(BaseModel):
     rationale: str
     source_module: str
 
+    @property
+    def spend_against_cap(self) -> Decimal:
+        """Cat se numara la plafon: o reducere a unui buget cunoscut nu adauga cheltuiala.
+
+        Altfel, un cont deja peste plafon n-ar putea primi nici pasii in jos - setul de
+        propuneri ar fi refuzat intreg, iar cheltuiala ar ramane sus.
+        """
+        before = self.before.get("daily_budget")
+        if before is not None and self.projected_daily_spend <= Decimal(str(before)):
+            return Decimal("0")
+        return self.projected_daily_spend
+
 
 class ChangeSet(BaseModel):
     """Un set complet de modificari propuse pentru un cont, gata de revizuit."""
