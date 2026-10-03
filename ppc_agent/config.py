@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     tiktok_access_token: str = ""
     tiktok_advertiser_id: str = ""
 
+    # OpenAI Ads (ChatGPT): o cheie Ads API e legata de un singur cont de reclame.
+    chatgpt_ads_api_key: str = ""
+
     # Client LLM pentru copywriter (doar pentru PPC_PROVIDER_MODE=live)
     llm_model: str = "ollama/llama3"
     llm_endpoint: str = ""
@@ -124,6 +127,19 @@ class BudgetConfig(BaseModel):
     # jumatate bugetul oricarui client de lead-uri, oricat de ieftine ar fi lead-urile.
     # None = conversiile raman cu venitul raportat de platforma (magazine).
     lead_value: Decimal | None = None
+    # Valoarea asteptata a unei comenzi, la magazine. TikTok nu raporteaza valoarea
+    # comenzilor, iar Google o raporteaza doar cu urmarirea valorii activata: vanzari
+    # cu venit 0 ar insemna ROAS 0. Ele valoreaza cosul mediu al comenzilor raportate
+    # cu valoare, iar pana la destule comenzi, atat. None = nicio estimare.
+    order_value: Decimal | None = None
+    # Comenzile reale ale clientului pe aceeasi fereastra (primite prin webhook), cand
+    # webhook-ul acopera toata fereastra. Venitul raportat de platforme nu trece de el:
+    # o vanzare vazuta si de Meta, si de Google nu devine doua. None = necunoscut.
+    shop_revenue: Decimal | None = None
+    # ROAS-ul de la care contul castiga bani: Kelly masoara avantajul fata de el. 1 =
+    # valoarea conversiilor e deja castigul; un magazin are 1 / marja (vezi
+    # ``campaign_objective.break_even_roas``).
+    min_roas: Decimal = Decimal("1")
 
 
 class MetaConfig(BaseModel):

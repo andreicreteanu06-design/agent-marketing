@@ -24,7 +24,11 @@ from ppc_agent.config import AppConfig, BudgetConfig, ProviderMode, Settings
 from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.creative.creative_pipeline import generate_full_ad_creative
 from ppc_agent.creative.factory import CreativeFactory
-from ppc_agent.decision.pipeline import arms_from_performance, run_plan
+from ppc_agent.decision.pipeline import (
+    arms_from_performance,
+    run_plan,
+    value_unreported_conversions,
+)
 from ppc_agent.guardrails.models import ProposedChange as CliProposedChange
 from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
@@ -71,7 +75,11 @@ from ppc_agent_server.services.queen_signals import (
     DbTechnicalSignals,
 )
 from ppc_agent_server.services.technician import evaluate_technical_health
-from ppc_agent_server.tracking.pipeline import apply_platform_insight, to_ad_performance_state
+from ppc_agent_server.tracking.pipeline import (
+    apply_platform_insight,
+    shop_revenue,
+    to_ad_performance_state,
+)
 from seo_geo_agent.audit.issues import AUDIT_ISSUE_TYPES
 from seo_geo_agent.audit.service import AuditConfig, AuditResult, run_audit
 from seo_geo_agent.audit.url_policy import CrawlTargetBlockedError, normalize_and_validate_start_url
@@ -96,12 +104,11 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
     ``settings=Settings()`` citeste ``PPC_PROVIDER_MODE`` (si restul) din mediu,
     exact ca la CLI — serverul nu reinventeaza o a doua sursa de configurare.
 
-    ``default_lead_value`` alimenteaza ``budget.target_cpa``: acelasi camp
-    serveste deja drept proxy de valoare pentru urmarirea conversiilor (vezi
-    ``tracking/qualification.py``) si drept ``target_cpa`` la crearea unui
-    ``AdPerformanceRecord`` nou (vezi ``tracking/pipeline.py``) — reutilizat
-    aici ca sa activeze automat sfatul de capacitate per buget
-    (``decision.budget_strategy``) pentru fiecare client, fara camp nou.
+    ``budget.target_cpa`` e CPA-ul maxim rentabil al clientului: valoarea unei
+    conversii (``default_lead_value``, si proxy-ul urmaririi conversiilor - vezi
+    ``tracking/qualification.py``) impartita la pragul de rentabilitate
+    (``budget.min_roas``, ``ClientAccount.break_even_roas``). Activeaza sfatul de
+    capacitate per buget (``decision.budget_strategy``) pentru fiecare client.
 
     Cand clientul si-a conectat propriile conturi de reclame (``*_enc`` pe
     ``ClientAccount``, criptate — vezi ``routers/client_auth.py``), acele
@@ -120,6 +127,8 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
         overrides["meta_access_token"] = decrypt_secret(account.meta_access_token_enc)
     if account.tiktok_access_token_enc:
         overrides["tiktok_access_token"] = decrypt_secret(account.tiktok_access_token_enc)
+    if account.chatgpt_ads_api_key_enc:
+        overrides["chatgpt_ads_api_key"] = decrypt_secret(account.chatgpt_ads_api_key_enc)
     if account.gsc_refresh_token_enc:
         # Search Console si Business Profile folosesc acelasi camp OAuth - vezi
         # nota din config.py: un singur token, dar consimtamantul trebuie sa
@@ -149,15 +158,30 @@ def _app_config_for(account: ClientAccount) -> AppConfig:
         language=account.language,
         budget=BudgetConfig(
             max_daily_spend=account.max_daily_spend,
-            target_cpa=account.default_lead_value,
+            target_cpa=account.target_cpa(),
+            min_roas=account.break_even_roas,
             lead_value=(
                 account.default_lead_value
                 if account.objective is CampaignObjective.LEAD_GEN
                 else None
             ),
+            # La un magazin, ``default_lead_value`` e cosul mediu asteptat.
+            order_value=(
+                account.default_lead_value
+                if account.objective is CampaignObjective.SALES
+                else None
+            ),
         ),
         settings=settings,
     )
+
+
+def _plan_config(session: Session, account: ClientAccount) -> AppConfig:
+    """Configuratia planului de buget: ca :func:`_app_config_for`, plus comenzile reale
+    ale clientului, care plafoneaza venitul raportat de platforme (vezi ``run_plan``)."""
+    config = _app_config_for(account)
+    budget = config.budget.model_copy(update={"shop_revenue": shop_revenue(session, account)})
+    return config.model_copy(update={"budget": budget})
 
 
 def _require_client(session: Session, client_account_id: int) -> ClientAccount:
@@ -171,7 +195,7 @@ def run_plan_job(*, client_account_id: int) -> dict[str, Any]:
     """Job Modulul 2: Kelly + Thompson + Markov (Google + Meta + TikTok combinate)."""
     with Session(get_engine()) as session:
         account = _require_client(session, client_account_id)
-        config = _app_config_for(account)
+        config = _plan_config(session, account)
         factory = ProviderFactory(config)
         plan = run_plan(factory, config)
         return plan.model_dump(mode="json")
@@ -446,7 +470,7 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
         ).first()
         if stop is not None:
             return {"client_account_id": client_account_id, "skipped": "oprire de urgență"}
-        config = _app_config_for(account)
+        config = _plan_config(session, account)
         factory = ProviderFactory(config)
 
         brand_alignment = _consult_queen(session, client_account_id)
@@ -462,6 +486,7 @@ def run_propose_job(*, client_account_id: int) -> dict[str, Any]:
             liquidity=alignment.liquidity_plan,
             kelly=decision.kelly,
             ad_sets=alignment.ad_sets,
+            arms=decision.arms,
         )
         guarded = guard_changes(changes, constraints, spend_cap=config.budget.max_daily_spend)
         allowed = [item for item in guarded if item.blocked is None]
@@ -560,18 +585,26 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
         google_id = account.google_ads_customer_id or _MOCK_CUSTOMER_ID
         tiktok_id = account.tiktok_advertiser_id or _MOCK_ADVERTISER_ID
         meta_id = account.meta_ad_account_id or _MOCK_AD_ACCOUNT_ID
-        arms = [
-            arm
-            for platform, read, account_id in (
-                ("google_ads", factory.google_ads, google_id),
-                ("tiktok_ads", factory.tiktok_ads, tiktok_id),
-                ("meta_ads", factory.meta, meta_id),
-            )
-            if factory.configured(platform)
-            for arm in arms_from_performance(
-                read().campaign_performance(account_id), platform=platform
-            )
-        ]
+        # Aceleasi cifre ca planul de buget: lead-urile la valoarea lor, vanzarile
+        # raportate fara valoare (TikTok, Google fara urmarirea valorii) la cosul mediu.
+        arms = value_unreported_conversions(
+            [
+                arm
+                for platform, read, account_id in (
+                    ("google_ads", factory.google_ads, google_id),
+                    ("tiktok_ads", factory.tiktok_ads, tiktok_id),
+                    ("meta_ads", factory.meta, meta_id),
+                    ("chatgpt_ads", factory.chatgpt_ads, ""),
+                )
+                if factory.configured(platform)
+                for arm in arms_from_performance(
+                    read().campaign_performance(account_id),
+                    platform=platform,
+                    lead_value=config.budget.lead_value,
+                )
+            ],
+            fallback=config.budget.order_value,
+        )
         performance_by_arm = {arm.arm_id: (arm.cost, arm.clicks) for arm in arms}
         now = datetime.now(tz=UTC)
         session.exec(
@@ -611,8 +644,19 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
             session.add(record)
             updated += 1
         meta = factory.meta()
+        meta_arms = [arm for arm in arms if arm.platform == "meta_ads"]
         meta_ads = (
-            _sync_meta_ads(session, account, meta.ad_insights(meta_id), now)
+            _sync_meta_ads(
+                session,
+                account,
+                meta.ad_insights(meta_id),
+                now,
+                # CPA-ul maxim rentabil: la un magazin, din cosul mediu real pe 30 de zile.
+                target_cpa=account.target_cpa(
+                    revenue=sum((arm.revenue for arm in meta_arms), Decimal("0")),
+                    conversions=sum(arm.conversions for arm in meta_arms),
+                ),
+            )
             if isinstance(meta, LiveMetaMarketingProvider) and factory.configured("meta_ads")
             else 0
         )
@@ -626,7 +670,12 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
 
 
 def _sync_meta_ads(
-    session: Session, account: ClientAccount, insights: list[AdInsight], now: datetime
+    session: Session,
+    account: ClientAccount,
+    insights: list[AdInsight],
+    now: datetime,
+    *,
+    target_cpa: Decimal,
 ) -> int:
     """Anunturile din Meta, in randurile monitorului de oboseala - si cele fara vanzari.
 
@@ -656,12 +705,12 @@ def _sync_meta_ads(
                 ad_id=insight.ad_id,
                 platform=AdFatiguePlatform.META,
                 launch_time=insight.created_time,
-                target_cpa=account.default_lead_value,
+                target_cpa=target_cpa,
             )
         apply_platform_insight(
             record,
             insight,
-            target_cpa=account.default_lead_value,
+            target_cpa=target_cpa,
             account_median_ctr=median_ctr,
             now=now,
         )

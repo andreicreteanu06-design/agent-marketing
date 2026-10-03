@@ -39,6 +39,7 @@ from ppc_agent_server.models import (
     ProposedChange,
     Tenant,
 )
+from ppc_agent_server.routers.campaigns import get_creative_review
 
 
 def _spec(**overrides: Any) -> MetaLaunchSpec:
@@ -426,3 +427,56 @@ def test_o_pagina_de_destinatie_404_opreste_propunerea(
     assert "404" in detail["message"]
     assert detail["brief"]["verdict"] == "blocked"
     assert session.exec(select(ProposedChange)).all() == []
+
+
+def _cco(decision: str) -> dict[str, Any]:
+    return {
+        "asset_type": "image",
+        "decision": decision,
+        "scores": {},
+        "detected_risks": ["finalul nu spune ce sa faca privitorul (fara CTA)"],
+        "priority_fixes": ["Adauga un CTA clar pe imagine"],
+    }
+
+
+def _launch_with_cco(client: TestClient, headers: dict[str, str], verdict: dict[str, Any]) -> Any:
+    client.app.dependency_overrides[get_creative_review] = lambda: lambda image_url: verdict  # type: ignore[attr-defined]
+    return client.post("/api/v1/campaigns/propose_launch", headers=headers, json=_request())
+
+
+def test_a_weak_creative_blocks_the_launch_with_the_cco_fixes(
+    launcher: tuple[TestClient, dict[str, str], int],
+) -> None:
+    """CCO-ul spune "de revizuit": lansarea nu ajunge de aprobat - nu se cheltuie bani pe
+    o reclama pe care evaluatorul o stie slaba. Motivul si reparatia stau in propunere."""
+    client, headers, _ = launcher
+    body = _launch_with_cco(client, headers, _cco("REVISE_BEFORE_TEST")).json()
+
+    assert (body["status"], body["decided_by"]) == (ChangeStatus.BLOCKED.value, "cco")
+    assert body["before"]["creative_review"]["decision"] == "REVISE_BEFORE_TEST"
+    assert "Adauga un CTA clar pe imagine" in body["error_message"]
+
+
+def test_a_creative_needing_a_human_look_stays_approvable_with_a_warning(
+    launcher: tuple[TestClient, dict[str, str], int],
+) -> None:
+    """Verificarea umana ceruta de CCO e chiar aprobarea: propunerea ramane de aprobat."""
+    client, headers, _ = launcher
+    body = _launch_with_cco(client, headers, _cco("HUMAN_REVIEW_REQUIRED")).json()
+
+    assert body["status"] == ChangeStatus.PENDING.value
+    assert "CCO: creativa cere verificare umana" in body["rationale"]
+
+
+def test_a_cco_that_cannot_run_does_not_stop_the_launch(
+    launcher: tuple[TestClient, dict[str, str], int],
+) -> None:
+    """Ollama oprit: lansarea merge, iar avizul spune ca evaluarea lipseste."""
+    client, headers, _ = launcher
+    response = client.post("/api/v1/campaigns/propose_launch", headers=headers, json=_request())
+
+    body = response.json()
+    assert body["status"] == ChangeStatus.PENDING.value
+    assert "creative_review" in body["before"]
+    assert "evaluarea creativei n-a putut rula" in body["rationale"]
+

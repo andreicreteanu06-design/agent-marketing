@@ -15,6 +15,7 @@ from sqlalchemy import Engine
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from ppc_agent.errors import ProviderError
 from ppc_agent_server.app import create_app
 from ppc_agent_server.auth import create_tenant
 from ppc_agent_server.db import init_db, set_engine
@@ -22,6 +23,7 @@ from ppc_agent_server.jobs import synthetic, tasks
 from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
+from ppc_agent_server.routers import campaigns as campaigns_router
 from ppc_agent_server.services import market_trends
 from ppc_agent_server.services.llm_client import reset_llm_state
 from ppc_agent_server.settings import get_server_settings
@@ -144,6 +146,20 @@ def _no_llm_services(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     get_server_settings.cache_clear()
     reset_llm_state()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_cco(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CCO-ul la lansare nu descarca imagini si nu cheama Ollama din teste.
+
+    Lansarea merge mai departe ca atunci cand CCO-ul nu poate rula; testele care vor un
+    verdict anume inlocuiesc ``get_creative_review`` (vezi ``test_campaign_launch``).
+    """
+
+    async def offline(image_url: str, **_: object) -> bytes:
+        raise ProviderError("CCO-ul nu ruleaza in teste")
+
+    monkeypatch.setattr(campaigns_router, "download_image", offline)
 
 
 @pytest.fixture

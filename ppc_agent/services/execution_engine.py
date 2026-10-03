@@ -23,7 +23,8 @@ are trei reguli pe care nu le incalca:
    centura: ruta verifica deja angajamentul total in baza de date
    (``ppc_agent_server/spend_guard.py``); motorul, fara DB, opreste orice schimbare
    care singura trece de plafon, si o lansare al carei buget din specificatie nu e
-   cel aprobat.
+   cel aprobat. Singura exceptie: o reducere a unui buget aflat deja peste plafon
+   (un set creat manual), verificata cu bugetul citit din platforma chiar atunci.
 
 Lansarea unei campanii noi (``CREATE_CAMPAIGN``) bate in contul de reclame,
 fiindca campania nu exista inca. Specificatia vine din ``proposal.after`` si se
@@ -68,6 +69,7 @@ class NoExecutorError(PpcAgentError):
 PLATFORM_META = "meta"
 PLATFORM_GOOGLE_ADS = "google_ads"
 PLATFORM_TIKTOK = "tiktok"
+PLATFORM_CHATGPT = "chatgpt"
 
 
 class MetaMutationProvider(Protocol):
@@ -83,7 +85,43 @@ class MetaMutationProvider(Protocol):
     async def pause_adset(self, adset_id: str) -> None: ...
     async def pause_ad(self, ad_id: str) -> None: ...
     async def update_budget(self, object_id: str, new_daily_budget: Decimal) -> None: ...
+    async def current_daily_budget(self, object_id: str) -> Decimal | None: ...
     async def launch_campaign(self, ad_account_id: str, spec: MetaLaunchSpec) -> LaunchResult: ...
+
+
+class GoogleAdsMutationProvider(Protocol):
+    """Mutatiile Google Ads (``providers.live.google_ads.LiveGoogleAdsMutations``)."""
+
+    async def current_daily_budget(self, campaign_id: str) -> Decimal | None: ...
+    async def update_campaign_budget(self, campaign_id: str, new_daily_budget: Decimal) -> None: ...
+    async def pause_campaign(self, campaign_id: str) -> None: ...
+    async def add_negative_keyword(self, text: str, match_type: str) -> None: ...
+
+
+class TikTokMutationProvider(Protocol):
+    """Mutatiile TikTok (``providers.live.tiktok.LiveTikTokMutations``)."""
+
+    async def current_daily_budget(self, adgroup_id: str) -> Decimal | None: ...
+    async def update_adgroup_budget(self, adgroup_id: str, new_daily_budget: Decimal) -> None: ...
+    async def pause_adgroup(self, adgroup_id: str) -> None: ...
+    async def pause_ad(self, ad_id: str) -> None: ...
+
+
+class ChatGptMutationProvider(Protocol):
+    """Mutatiile OpenAI Ads (``providers.live.chatgpt_ads.LiveChatGptAdsMutations``)."""
+
+    async def current_daily_budget(self, campaign_id: str) -> Decimal | None: ...
+    async def update_campaign_budget(self, campaign_id: str, new_daily_budget: Decimal) -> None: ...
+    async def pause_campaign(self, campaign_id: str) -> None: ...
+
+
+#: Providerul unei platforme, ales de apelant dupa :func:`resolve_target`.
+MutationProvider = (
+    MetaMutationProvider
+    | GoogleAdsMutationProvider
+    | TikTokMutationProvider
+    | ChatGptMutationProvider
+)
 
 
 class ExecutableProposal(Protocol):
@@ -134,6 +172,8 @@ _RESOURCE_PREFIXES: dict[str, tuple[str, str]] = {
     "meta_ad/": (PLATFORM_META, "ad"),
     "campaign/": (PLATFORM_GOOGLE_ADS, "campaign"),
     "tiktok_ad_group/": (PLATFORM_TIKTOK, "ad_group"),
+    "tiktok_ad/": (PLATFORM_TIKTOK, "ad"),
+    "chatgpt_campaign/": (PLATFORM_CHATGPT, "campaign"),
     "negative_keyword/": (PLATFORM_GOOGLE_ADS, "negative_keyword"),
     # Tinta unei lansari (CREATE_CAMPAIGN) e contul de reclame - campania nu
     # exista inca, deci n-are id.
@@ -202,9 +242,10 @@ def resolve_target(proposal: ExecutableProposal) -> ResourceTarget:
 #: Cum se aplica o pereche (platforma, tip de obiect). Primeste providerul,
 #: propunerea si tinta rezolvata; intoarce ce s-a intamplat.
 #: ``Coroutine``, nu ``Awaitable``: ``asyncio.run`` primeste strict corutine, iar
-#: fiecare executor e o functie ``async def``.
+#: fiecare executor e o functie ``async def``. Providerul e ``Any`` aici fiindca
+#: fiecare executor cere protocolul platformei lui (registrul le tine pe toate).
 Executor = Callable[
-    [MetaMutationProvider, ExecutableProposal, ResourceTarget],
+    [Any, ExecutableProposal, ResourceTarget],
     Coroutine[Any, Any, ExecutionResult],
 ]
 
@@ -301,19 +342,105 @@ async def _execute_meta_ad_account(
     )
 
 
+async def _execute_google_campaign(
+    provider: GoogleAdsMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> ExecutionResult:
+    if proposal.op == "PAUSE":
+        await provider.pause_campaign(target.object_id)
+        return ExecutionResult(
+            executed=True, detail=f"campanie Google Ads {target.object_id} pusa pe pauza"
+        )
+    if proposal.op == "UPDATE":
+        await provider.update_campaign_budget(target.object_id, proposal.projected_daily_spend)
+        return ExecutionResult(
+            executed=True,
+            detail=(
+                f"buget zilnic actualizat pe campania Google Ads {target.object_id} la "
+                f"{proposal.projected_daily_spend}"
+            ),
+        )
+    raise _unsupported_op(proposal, target)
+
+
+async def _execute_google_negative(
+    provider: GoogleAdsMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> ExecutionResult:
+    if proposal.op != "CREATE":
+        raise _unsupported_op(proposal, target)
+    term = str(proposal.after.get("term") or target.object_id)
+    match_type = str(proposal.after.get("match_type") or "phrase")
+    await provider.add_negative_keyword(term, match_type)
+    return ExecutionResult(
+        executed=True,
+        detail=f"cuvantul negativ '{term}' ({match_type}) e in lista de negative a contului",
+    )
+
+
+async def _execute_tiktok_ad_group(
+    provider: TikTokMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> ExecutionResult:
+    if proposal.op == "PAUSE":
+        await provider.pause_adgroup(target.object_id)
+        return ExecutionResult(
+            executed=True, detail=f"grup de anunturi TikTok {target.object_id} pus pe pauza"
+        )
+    if proposal.op == "UPDATE":
+        await provider.update_adgroup_budget(target.object_id, proposal.projected_daily_spend)
+        return ExecutionResult(
+            executed=True,
+            detail=(
+                f"buget zilnic actualizat pe grupul TikTok {target.object_id} la "
+                f"{proposal.projected_daily_spend}"
+            ),
+        )
+    raise _unsupported_op(proposal, target)
+
+
+async def _execute_tiktok_ad(
+    provider: TikTokMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> ExecutionResult:
+    if proposal.op == "PAUSE":
+        await provider.pause_ad(target.object_id)
+        return ExecutionResult(
+            executed=True, detail=f"anunt TikTok {target.object_id} pus pe pauza"
+        )
+    raise _unsupported_op(proposal, target)
+
+
+async def _execute_chatgpt_campaign(
+    provider: ChatGptMutationProvider, proposal: ExecutableProposal, target: ResourceTarget
+) -> ExecutionResult:
+    if proposal.op == "PAUSE":
+        await provider.pause_campaign(target.object_id)
+        return ExecutionResult(
+            executed=True, detail=f"campanie ChatGPT {target.object_id} pusa pe pauza"
+        )
+    if proposal.op == "UPDATE":
+        await provider.update_campaign_budget(target.object_id, proposal.projected_daily_spend)
+        return ExecutionResult(
+            executed=True,
+            detail=(
+                f"buget zilnic actualizat pe campania ChatGPT {target.object_id} la "
+                f"{proposal.projected_daily_spend}"
+            ),
+        )
+    raise _unsupported_op(proposal, target)
+
+
 #: Registrul de executori, pe (platforma, tip de obiect). O pereche care nu e
-#: aici NU se aplica - pica explicit cu :class:`NoExecutorError`.
-#:
-#: Google Ads si TikTok lipsesc DELIBERAT: ``GoogleAdsProvider`` si
-#: ``TikTokAdsProvider`` sunt contracte de citire, fara nicio metoda de mutatie
-#: si fara implementare in spate. Pana cand capata una, propunerile lor raman
-#: in asteptare cu un mesaj care spune exact asta, in loc sa fie trimise la
-#: Graph API-ul Meta doar fiindca ala e singurul provider care stie sa scrie.
+#: aici NU se aplica - pica explicit cu :class:`NoExecutorError`. Lipsesc deliberat
+#: termenii motorului hibrid (``keyword`` pe Google: buget pe cuvant nu exista in
+#: Google Ads) si anunturile Google (oprirea cere si grupul lor, pe care nu-l avem).
 EXECUTORS: dict[tuple[str, str], Executor] = {
     (PLATFORM_META, "campaign"): _execute_meta_campaign,
     (PLATFORM_META, "ad_set"): _execute_meta_ad_set,
     (PLATFORM_META, "ad"): _execute_meta_ad,
     (PLATFORM_META, "ad_account"): _execute_meta_ad_account,
+    (PLATFORM_GOOGLE_ADS, "campaign"): _execute_google_campaign,
+    (PLATFORM_GOOGLE_ADS, "negative_keyword"): _execute_google_negative,
+    (PLATFORM_TIKTOK, "ad_group"): _execute_tiktok_ad_group,
+    (PLATFORM_TIKTOK, "ad"): _execute_tiktok_ad,
+    (PLATFORM_CHATGPT, "campaign"): _execute_chatgpt_campaign,
 }
 
 
@@ -332,8 +459,27 @@ def _leftovers(exc: Exception) -> dict[str, str]:
 _SPENDING_OPS = frozenset({"UPDATE", "CREATE", "CREATE_CAMPAIGN"})
 
 
+def _verified_reduction(
+    provider: MutationProvider, target: ResourceTarget, amount: Decimal
+) -> bool:
+    """Adevarat daca ``amount`` e sub bugetul de ACUM al obiectului, citit din platforma.
+
+    Nu bugetul din propunere: acela e citit noaptea, iar intre timp cineva poate cobori
+    setul din Ads Manager - "reducerea" ar fi o crestere peste plafon. Orice esec de
+    citire inseamna nu (plafonul se aplica).
+    """
+    try:
+        current = asyncio.run(provider.current_daily_budget(target.object_id))
+    except PpcAgentError:
+        return False
+    return current is not None and amount <= current
+
+
 def _enforce_spend_cap(
-    proposal: ExecutableProposal, target: ResourceTarget, max_daily_spend: Decimal
+    proposal: ExecutableProposal,
+    target: ResourceTarget,
+    max_daily_spend: Decimal,
+    provider: MutationProvider,
 ) -> None:
     """Hard-stop inainte de platforma: schimbarea, singura, nu trece de plafon.
 
@@ -354,6 +500,8 @@ def _enforce_spend_cap(
             )
         amount = max(amount, spec_budget)
     if not reason and amount > max_daily_spend:
+        if proposal.op == "UPDATE" and _verified_reduction(provider, target, amount):
+            return
         reason = f"bugetul zilnic {amount} depaseste plafonul {max_daily_spend}"
     if reason:
         logger.critical(
@@ -374,7 +522,7 @@ def _enforce_spend_cap(
 
 def execute_proposal(
     proposal: ExecutableProposal,
-    provider: MetaMutationProvider,
+    provider: MutationProvider,
     *,
     current_status: str,
     max_daily_spend: Decimal,
@@ -424,7 +572,7 @@ def execute_proposal(
             f"'{target.kind}' pe {target.platform}. Propunerea ramane in "
             "asteptare - aplic-o manual in platforma."
         )
-    _enforce_spend_cap(proposal, target, max_daily_spend)
+    _enforce_spend_cap(proposal, target, max_daily_spend, provider)
 
     try:
         result = asyncio.run(executor(provider, proposal, target))

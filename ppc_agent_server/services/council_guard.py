@@ -148,15 +148,21 @@ def _profitable_again(finances: FinancialSnapshot) -> str:
     if cpa is not None and target is not None and cpa <= target:
         return f"CPA-ul contului a coborât la {_ron(cpa)} RON, sub ținta de {_ron(target)} RON"
     if finances.roas is not None:
-        return f"venitul atribuit acoperă acum cheltuiala cu reclamele (ROAS {_ron(finances.roas)})"
+        return (
+            f"ROAS-ul contului a urcat la {_ron(finances.roas)}, peste pragul de "
+            f"rentabilitate de {_ron(finances.break_even_roas)}"
+        )
     return "contul e din nou rentabil"
 
 
 def _losing(finances: FinancialSnapshot) -> str:
     """De ce nu mai e rentabil contul - cu cifrele, pentru memorie si pentru client."""
     cpa, target, roas = finances.cpa, finances.target_cpa, finances.roas
-    if roas is not None and roas < 1:
-        return f"venitul atribuit nu acoperă cheltuiala cu reclamele (ROAS {_ron(roas)})"
+    if roas is not None and roas < finances.break_even_roas:
+        return (
+            f"ROAS-ul contului e {_ron(roas)}, sub pragul de rentabilitate de "
+            f"{_ron(finances.break_even_roas)}"
+        )
     if cpa is not None and target is not None and cpa > target:
         return f"CPA-ul contului e {_ron(cpa)} RON, peste ținta de {_ron(target)} RON"
     return "contul nu e rentabil"

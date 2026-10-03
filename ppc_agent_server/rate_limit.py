@@ -1,7 +1,9 @@
 """Limitarea frecventei cererilor, in memoria procesului.
 
-Doua rute au nevoie de ea acum:
+Rutele care au nevoie de ea:
 
+- ``POST /api/v1/signup`` - un robot ar crea mii de conturi, fiecare cu acces la
+  chatul Reginei si la CCO (modele platite sau GPU-ul partajat). Limita e pe IP.
 - ``POST /api/v1/login`` - forta bruta pe parole. Doua limite: una larga pe IP
   (impotriva cuiva care incearca multe conturi) si una stricta pe email, care
   numara doar ESECURILE (impotriva cuiva care incearca multe parole pe acelasi
@@ -103,10 +105,21 @@ CHAT_BURST = RateLimiter(limit=6, window_seconds=60)
 #: ...si plafonul pe ora (modelul local e partajat, Jev se plateste pe token).
 CHAT_HOURLY = RateLimiter(limit=60, window_seconds=60 * 60)
 
+#: Conturi noi de pe acelasi IP. Agentia isi creeaza clientii prin API (cheia de
+#: agentie), nu prin formular: 3 pe ora ajung pentru oamenii reali.
+SIGNUP_BY_IP = RateLimiter(limit=3, window_seconds=60 * 60)
+
 #: Creative evaluate de CCO: un model cu vision pe CPU tine minute intregi o imagine.
 CREATIVE_HOURLY = RateLimiter(limit=20, window_seconds=60 * 60)
 
-ALL_LIMITERS = (LOGIN_BY_IP, LOGIN_FAILURES_BY_EMAIL, CHAT_BURST, CHAT_HOURLY, CREATIVE_HOURLY)
+ALL_LIMITERS = (
+    LOGIN_BY_IP,
+    LOGIN_FAILURES_BY_EMAIL,
+    SIGNUP_BY_IP,
+    CHAT_BURST,
+    CHAT_HOURLY,
+    CREATIVE_HOURLY,
+)
 
 
 def reset_rate_limits() -> None:

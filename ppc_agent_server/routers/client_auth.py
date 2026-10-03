@@ -13,13 +13,14 @@ from typing import Annotated
 
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from ppc_agent_server.db import get_session
 from ppc_agent_server.models import ClientAccount, ClientUser, Tenant
 from ppc_agent_server.rate_limit import (
     LOGIN_BY_IP,
     LOGIN_FAILURES_BY_EMAIL,
+    SIGNUP_BY_IP,
     client_ip,
     too_many_requests,
 )
@@ -86,13 +87,19 @@ def get_current_client_user(
 
 @router.post("/signup", response_model=ClientTokenResponse, status_code=201)
 def signup(
-    payload: ClientSignupRequest, session: Annotated[Session, Depends(get_session)]
+    payload: ClientSignupRequest,
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
 ) -> ClientTokenResponse:
     """Creeaza un cont de client nou (``ClientAccount`` + ``ClientUser``).
 
     Contul e atasat tenant-ului configurat in ``AGENCY_TENANT_ID`` - produsul
     e single-agentie azi (vezi ``settings.py``), nu exista alegere de agentie
     la semnare.
+
+    Limitat pe IP (``rate_limit.SIGNUP_BY_IP``), numarand orice incercare - si
+    pe cele cu email deja folosit, ca 409-ul sa nu poata fi folosit la ghicit
+    in masa ce adrese au cont.
     """
     _require_jwt_configured()
     settings = get_server_settings()
@@ -106,8 +113,13 @@ def signup(
             status_code=503, detail="tenant-ul configurat (AGENCY_TENANT_ID) nu exista"
         )
 
+    wait = SIGNUP_BY_IP.hit(client_ip(request))
+    if wait is not None:
+        raise too_many_requests(wait, "Prea multe conturi noi de la aceeași adresă.")
+
+    # lower(): conturile create inainte ca emailul sa fie salvat cu litere mici.
     existing = session.exec(
-        select(ClientUser).where(ClientUser.email == payload.email)
+        select(ClientUser).where(func.lower(ClientUser.email) == payload.email)
     ).first()
     if existing is not None:
         raise HTTPException(status_code=409, detail="exista deja un cont cu acest email")
@@ -146,12 +158,14 @@ def login(
     Argon2, ca forta bruta sa nu consume nici CPU.
     """
     _require_jwt_configured()
-    email_key = payload.email.strip().lower()
+    email_key = payload.email  # deja cu litere mici (ClientLoginRequest)
     wait = LOGIN_BY_IP.hit(client_ip(request)) or LOGIN_FAILURES_BY_EMAIL.retry_after(email_key)
     if wait is not None:
         raise too_many_requests(wait, "Prea multe încercări de autentificare.")
 
-    user = session.exec(select(ClientUser).where(ClientUser.email == payload.email)).first()
+    user = session.exec(
+        select(ClientUser).where(func.lower(ClientUser.email) == email_key)
+    ).first()
     if user is None or not verify_password(payload.password, user.password_hash):
         LOGIN_FAILURES_BY_EMAIL.hit(email_key)
         raise HTTPException(status_code=401, detail="email sau parola incorecte")

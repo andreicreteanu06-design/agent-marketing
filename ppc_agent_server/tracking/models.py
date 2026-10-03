@@ -60,6 +60,21 @@ class StandardizedConversion(BaseModel):
     fbp: str | None = None
     fbc: str | None = None
 
+    # ID-urile de click pe care site-ul le prinde din URL la intrare (si le pastreaza
+    # in cookie pana la comanda): ``gclid``/``gbraid``/``wbraid`` de la Google,
+    # ``ttclid`` si cookie-ul ``_ttp`` de la TikTok, ``oppref`` de la ChatGPT. Ca
+    # semnalele de mai sus: trimise mai departe, nesalvate.
+    gclid: str | None = None
+    gbraid: str | None = None
+    wbraid: str | None = None
+    ttclid: str | None = None
+    ttp: str | None = None
+    oppref: str | None = None
+    # Consimtamantul de marketing din bannerul de cookie-uri al site-ului. ``False`` =
+    # conversia nu pleaca la nicio platforma (ramane doar la noi); ``None`` = site-ul
+    # nu-l transmite - pleaca fara semnal de consimtamant, ca pana acum.
+    marketing_consent: bool | None = None
+
 
 def _normalize_email(email: str) -> str:
     """Normalizare Meta CAPI / Google Enhanced Conversions: lowercase + trim.
@@ -87,6 +102,36 @@ def _normalize_phone(phone: str) -> str:
     if len(digits) == 10 and digits.startswith("0"):
         return "40" + digits[1:]
     return digits
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def hash_email_google(email: str | None) -> str | None:
+    """Emailul in forma ceruta de Google Enhanced Conversions.
+
+    Ca la Meta (litere mici, fara spatii), plus: la ``gmail.com``/``googlemail.com``
+    punctele din partea dinaintea ``@`` nu conteaza, deci Google le scoate inainte de hash.
+    """
+    if not email:
+        return None
+    normalized = _normalize_email(email)
+    local, _, domain = normalized.partition("@")
+    if domain in ("gmail.com", "googlemail.com"):
+        normalized = f"{local.replace('.', '')}@{domain}"
+    return _sha256(normalized) if normalized else None
+
+
+def hash_phone_e164(phone: str | None) -> str | None:
+    """Telefonul in E.164 *cu* ``+`` (``+40712345678``), cum il cer Google si TikTok.
+
+    Meta si OpenAI vor aceleasi cifre fara ``+`` - hash-ul salvat la noi
+    (:func:`hash_pii`) e in forma lor, deci pentru Google si TikTok se calculeaza din
+    numarul in clar, cat conversia e inca in memorie.
+    """
+    digits = _normalize_phone(phone) if phone else ""
+    return _sha256(f"+{digits}") if digits else None
 
 
 def hash_pii(value: str | None, *, is_phone: bool = False) -> str | None:

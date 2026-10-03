@@ -8,10 +8,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import pandas as pd
 import pytest
 from sqlmodel import Session, select
 
 import ppc_agent_server.jobs.tasks as tasks_module
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.providers.live.meta import AdInsight, LiveMetaMarketingProvider
 from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
@@ -410,3 +412,41 @@ def test_an_ad_spending_without_sales_now_reaches_the_kill_switch(
     ).all()
     session.refresh(record)
     assert record.status is AdLifecycleStatus.PAUSED
+
+
+def test_a_shop_ad_without_sales_is_stopped_at_twice_the_real_target_cpa(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cos mediu real 150 (din Meta), marja 40% (ROAS minim 2,5): tinta 60 de lei pe
+    vanzare. Oprire la 120 de lei fara nicio vanzare - nu la 600 (de doua ori valoarea
+    implicita a unui lead, folosita pana acum si pentru magazine)."""
+    account = _client_account(session)
+    account.meta_ad_account_id = "act_1"
+    account.objective = CampaignObjective.SALES
+    account.min_roas = Decimal("2.5")
+    session.add(account)
+    session.commit()
+    account_id = account.id or 0
+    monkeypatch.setenv("PPC_PROVIDER_MODE", "live")
+    monkeypatch.setenv("PPC_META_ACCESS_TOKEN", "token-de-test")
+    month = pd.DataFrame(
+        [{"arm_id": "as_1", "name": "Set", "clicks": 900, "conversions": 24,
+          "cost": 2000.0, "revenue": 3600.0, "active": True}]
+    )
+    monkeypatch.setattr(
+        LiveMetaMarketingProvider, "campaign_performance", lambda self, ad_account_id: month
+    )
+    new_ad = AdInsight(
+        ad_id="ad_new", name="Noua", created_time=datetime.now(tz=UTC) - timedelta(days=4),
+        active=True, spend=130.0, impressions=2000, clicks=25,
+    )
+    monkeypatch.setattr(
+        LiveMetaMarketingProvider, "ad_insights", lambda self, ad_account_id: [new_ad]
+    )
+
+    run_metrics_sync_job(client_account_id=account_id)
+    [record] = session.exec(
+        select(AdPerformanceRecord).where(AdPerformanceRecord.client_account_id == account_id)
+    ).all()
+    assert record.target_cpa == Decimal("60.00")
+    assert run_fatigue_check_job(client_account_id=account_id)["created"] == 1

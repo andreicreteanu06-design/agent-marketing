@@ -25,6 +25,8 @@ env/
 proposed_changes*.json
 proposed_ads_queue.json
 creative_output/
+# Backup-urile bazei (serviciul "backup"): datele clientilor, niciodata in git.
+backups/
 
 # Biblioteca TikTok acumulata din 'ingest-tiktok' — generata, nu sursa
 # (diferita de cheia tiktok_swipe_library din swipe_file.json, care e comisa)

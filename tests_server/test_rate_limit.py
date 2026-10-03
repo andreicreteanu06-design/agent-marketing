@@ -14,6 +14,7 @@ from ppc_agent_server.rate_limit import (
     CHAT_BURST,
     LOGIN_BY_IP,
     LOGIN_FAILURES_BY_EMAIL,
+    SIGNUP_BY_IP,
     RateLimiter,
 )
 from tests_server.test_client_auth import _signup
@@ -110,6 +111,33 @@ def test_one_ip_cannot_spray_many_accounts(client: TestClient, agency_settings: 
     for index in range(LOGIN_BY_IP.limit):
         assert _login(client, "x", email=f"cont{index}@exemplu.ro") == 401
     assert _login(client, "x", email="inca-unul@exemplu.ro") == 429
+
+
+# --- signup: conturi in masa -------------------------------------------------------
+
+
+def test_one_ip_cannot_create_accounts_in_bulk(client: TestClient, agency_settings: Tenant) -> None:
+    for index in range(SIGNUP_BY_IP.limit):
+        _signup(client, email=f"cont{index}@exemplu.ro")
+    blocked = client.post(
+        "/api/v1/signup",
+        json={"name": "Robot", "email": "robot@exemplu.ro", "password": "parola-robot-123"},
+    )
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+
+
+def test_signups_with_a_taken_email_count_too(client: TestClient, agency_settings: Tenant) -> None:
+    """Altfel 409-ul ar spune nelimitat ce adrese au cont."""
+    _signup(client)
+
+    def attempt(email: str) -> int:
+        payload = {"name": "X", "email": email, "password": "parola-12345"}
+        return client.post("/api/v1/signup", json=payload).status_code
+
+    for _ in range(SIGNUP_BY_IP.limit - 1):
+        assert attempt(_EMAIL) == 409
+    assert attempt("alt@exemplu.ro") == 429
 
 
 # --- chatul Reginei: costul modelelor (Ollama local, Jev) ----------------------------

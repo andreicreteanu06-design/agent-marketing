@@ -14,8 +14,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, func, select
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.decision.fatigue_models import AdPerformanceState
 from ppc_agent.providers.live.meta import AdDay, AdInsight
 from ppc_agent_server.models import (
@@ -187,7 +188,7 @@ def _get_or_create_ad_record(
         platform=AdFatiguePlatform(conversion.ad_platform),
         status=AdLifecycleStatus.NEW,
         launch_time=datetime.now(tz=UTC),
-        target_cpa=client_account.default_lead_value,
+        target_cpa=client_account.target_cpa(),
     )
     session.add(record)
     return record
@@ -271,3 +272,42 @@ def record_conversion(
     return ConversionOutcome(
         event_id=qualified_conversion.event_id, qualified=result.qualified, reason=result.reason
     )
+
+
+#: Fereastra platformelor (ultimele 30 de zile), ca venitul magazinului sa fie comparabil.
+SHOP_WINDOW_DAYS = 30
+
+
+def shop_revenue(
+    session: Session,
+    account: ClientAccount,
+    *,
+    days: int = SHOP_WINDOW_DAYS,
+    now: datetime | None = None,
+) -> Decimal | None:
+    """Valoarea conversiilor calificate primite de la client in ultimele ``days`` zile.
+
+    E venitul real, numarat o singura data - spre deosebire de suma platformelor, unde
+    fiecare isi atribuie vanzarile ei. La un magazin, doar comenzile; la lead-uri, toate
+    conversiile calificate (cu valoarea lor proxy). Include si vanzarile organice, deci
+    e un plafon, nu venitul reclamelor.
+
+    ``None`` cand webhook-ul nu acopera toata fereastra (prima conversie e mai noua decat
+    inceputul ei): o suma partiala ar parea o prabusire a vanzarilor si ar taia bugetul.
+    """
+    start = (now or datetime.now(tz=UTC)) - timedelta(days=days)
+    conditions = [ConversionEvent.client_account_id == account.id]
+    if account.objective is CampaignObjective.SALES:
+        conditions.append(ConversionEvent.event_type == ConversionEventType.PURCHASE)
+    first = session.exec(select(func.min(ConversionEvent.created_at)).where(*conditions)).one()
+    # SQLite pierde fusul orar la stocare: un ``created_at`` scris in UTC revine naiv.
+    if first is None or (first if first.tzinfo else first.replace(tzinfo=UTC)) > start:
+        return None
+    total = session.exec(
+        select(func.sum(ConversionEvent.value)).where(
+            *conditions,
+            col(ConversionEvent.qualified).is_(True),
+            ConversionEvent.created_at >= start,
+        )
+    ).one()
+    return Decimal(str(total or 0)).quantize(Decimal("0.01"))

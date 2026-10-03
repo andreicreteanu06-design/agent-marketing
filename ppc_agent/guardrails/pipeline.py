@@ -14,7 +14,7 @@ from rich.table import Table
 from ppc_agent.alignment.models import AdSet, LiquidityPlan
 from ppc_agent.decision.fatigue_models import AdPerformanceState, FatigueVerdict
 from ppc_agent.decision.fatigue_monitor import evaluate_ad, explain_verdict
-from ppc_agent.decision.models import BudgetPlan, KellySizing
+from ppc_agent.decision.models import ArmStats, BudgetPlan, KellySizing
 from ppc_agent.guardrails.models import ChangeSet, ProposedChange
 from ppc_agent.ingestion.models import NegativeKeywordSet
 
@@ -27,6 +27,18 @@ _CENT = Decimal("0.01")
 _PAUSE_VERDICTS: frozenset[FatigueVerdict] = frozenset(
     {"PAUSE_HARD", "PAUSE_PROVISIONAL", "PAUSE_REPLACE"}
 )
+#: Resursa si tipul obiectului pe care sta bugetul, pe platforma (in afara de Meta).
+_BUDGET_RESOURCES = {
+    "google_ads": ("campaign/", "campaign"),
+    "tiktok_ads": ("tiktok_ad_group/", "ad_group"),
+    "chatgpt_ads": ("chatgpt_campaign/", "campaign"),
+}
+
+
+def _step(now: Decimal, target: Decimal) -> Decimal:
+    """``target``, dar cel mult ``MAX_BUDGET_STEP`` fata de bugetul de acum."""
+    step = (now * MAX_BUDGET_STEP).quantize(_CENT)
+    return min(now + step, max(now - step, target))
 
 
 def build_proposed_changes(
@@ -36,6 +48,7 @@ def build_proposed_changes(
     liquidity: LiquidityPlan,
     kelly: KellySizing | None = None,
     ad_sets: Sequence[AdSet] | None = None,
+    arms: Sequence[ArmStats] | None = None,
 ) -> list[ProposedChange]:
     """Traduce planurile Modulelor 1-3 in modificari propuse, inca neaplicate.
 
@@ -63,6 +76,11 @@ def build_proposed_changes(
             (``LEARNING``) sau cu bugetul pe campanie, iar un set "dus la 0" coboara
             treptat, nu se opreste. Un set cu invatarea limitata primeste pasi: lui
             bugetul ii poate aduce conversiile care ii lipsesc.
+        arms: Bratele planului (``PlanResult.arms``). Pe Google, TikTok si ChatGPT,
+            bugetul pleaca de la cel raportat de platforma, in aceiasi pasi ca la Meta
+            (si acolo un salt mare reporneste invatarea algoritmului); un brat cu
+            bugetul blocat (``ArmStats.budget_locked``: partajat, pe campanie, pe viata,
+            in invatare) nu se atinge. Fara bugetul de acum, tinta Thompson ramane.
 
     Returns:
         Lista de :class:`ProposedChange`.
@@ -70,6 +88,7 @@ def build_proposed_changes(
     changes: list[ProposedChange] = []
     kelly_note = f" {kelly.rationale}" if kelly is not None else ""
     current = {ad_set.ad_set_id: ad_set for ad_set in ad_sets or ()}
+    by_arm = {(arm.platform, arm.arm_id): arm for arm in arms or ()}
 
     for allocation in budget_plan.allocations:
         target = allocation.daily_budget
@@ -78,10 +97,7 @@ def build_proposed_changes(
             allocation.note
             or f"Thompson Sampling: P(cel mai bun)={allocation.win_probability:.3f}"
         )
-        if allocation.platform == "tiktok_ads":
-            resource = f"tiktok_ad_group/{allocation.arm_id}"
-            resource_type = "ad_group"
-        elif allocation.platform == "meta_ads":
+        if allocation.platform == "meta_ads":
             resource = f"meta_ad_set/{allocation.arm_id}"
             resource_type = "ad_set"
             if ad_sets is not None:
@@ -93,15 +109,32 @@ def build_proposed_changes(
                 ):
                     continue  # necunoscut, in invatare sau buget pe campanie: nu se atinge
                 now = ad_set.daily_budget
-                step = (now * MAX_BUDGET_STEP).quantize(_CENT)
-                target = min(now + step, max(now - step, target))
+                target = _step(now, target)
                 if target == now:
                     continue
                 before = {"daily_budget": str(now)}
-                thompson += f" (tinta {allocation.daily_budget}, pas maxim {step}/noapte)"
+                thompson += (
+                    f" (tinta {allocation.daily_budget}, pas maxim "
+                    f"{(now * MAX_BUDGET_STEP).quantize(_CENT)}/noapte)"
+                )
         else:
-            resource = f"campaign/{allocation.arm_id}"
-            resource_type = "campaign"
+            prefix, resource_type = _BUDGET_RESOURCES.get(
+                allocation.platform, ("campaign/", "campaign")
+            )
+            resource = f"{prefix}{allocation.arm_id}"
+            arm = by_arm.get((allocation.platform, allocation.arm_id))
+            if arm is not None and arm.budget_locked:
+                continue
+            if arm is not None and arm.daily_budget is not None:
+                now = arm.daily_budget
+                target = _step(now, target)
+                if target == now:
+                    continue
+                before = {"daily_budget": str(now)}
+                thompson += (
+                    f" (tinta {allocation.daily_budget}, pas maxim "
+                    f"{(now * MAX_BUDGET_STEP).quantize(_CENT)}/noapte)"
+                )
         changes.append(
             ProposedChange(
                 op="PAUSE" if target == 0 else "UPDATE",
@@ -153,6 +186,10 @@ def build_proposed_changes(
     return changes
 
 
+#: Resursa unui anunt de oprit, pe platforma (monitorul de oboseala).
+_AD_RESOURCES = {"meta": "meta_ad/", "tiktok": "tiktok_ad/"}
+
+
 def build_fatigue_changes(
     ads: list[AdPerformanceState], current_time: datetime
 ) -> list[ProposedChange]:
@@ -184,8 +221,8 @@ def build_fatigue_changes(
             ProposedChange(
                 op="PAUSE",
                 # ``meta_ad/`` e numele pe care motorul de executie il aplica in Meta;
-                # celelalte platforme n-au inca executor - raman de oprit manual.
-                resource=f"meta_ad/{ad.ad_id}" if ad.platform == "meta" else f"ad/{ad.ad_id}",
+                # Google n-are executor pentru anunturi (cere si grupul) - de oprit manual.
+                resource=_AD_RESOURCES.get(ad.platform, "ad/") + ad.ad_id,
                 resource_type="ad",
                 before={"status": ad.status},
                 after={"status": "paused", "verdict": verdict, "platform": ad.platform},

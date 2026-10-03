@@ -17,6 +17,7 @@ tests
 tests_server
 tests_seo_geo
 creative_output
+backups
 proposed_ads_queue.json
 config.yaml
 .mypy_cache

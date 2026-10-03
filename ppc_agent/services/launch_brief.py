@@ -44,7 +44,7 @@ from ppc_agent.config import AppConfig, ProviderMode
 from ppc_agent.decision.budget import ThompsonBudgetAllocator
 from ppc_agent.decision.budget_strategy import recommend_arm_capacity
 from ppc_agent.decision.kelly_sizing import size_daily_budget
-from ppc_agent.decision.pipeline import arms_from_performance
+from ppc_agent.decision.pipeline import arms_from_performance, value_unreported_conversions
 from ppc_agent.errors import CrawlBlockedError, CrawlTargetBlockedError, CrawlTimeoutError
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.ingestion.organic import to_local_signals
@@ -417,8 +417,9 @@ def _budget_position(
 
     arms = [
         arm
-        for arm in arms_from_performance(
-            frame, platform="meta_ads", lead_value=config.budget.lead_value
+        for arm in value_unreported_conversions(
+            arms_from_performance(frame, platform="meta_ads", lead_value=config.budget.lead_value),
+            fallback=config.budget.order_value,
         )
         if arm.clicks > 0 and arm.active
     ]
@@ -428,7 +429,10 @@ def _budget_position(
 
     try:
         kelly = size_daily_budget(
-            arms, baseline_cap=config.budget.max_daily_spend, hard_ceiling=HARD_CEILING
+            arms,
+            baseline_cap=config.budget.max_daily_spend,
+            hard_ceiling=HARD_CEILING,
+            break_even_roas=config.budget.min_roas,
         )
     except Exception as exc:
         section.update(_unavailable(exc))

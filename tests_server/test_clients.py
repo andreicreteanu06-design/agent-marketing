@@ -150,3 +150,18 @@ def test_update_client_not_owned_returns_404(
         "/api/v1/clients/999999", headers=auth_headers, json={"name": "x"}
     )
     assert response.status_code == 404
+
+
+def test_update_client_break_even_roas_and_back_to_the_default(
+    client: TestClient, auth_headers: dict[str, str]
+) -> None:
+    """Magazin cu marja de 40%: ROAS minim 2,5. ``null`` revine la implicitul obiectivului."""
+    client_id = _create_client(client, auth_headers)
+    url = f"/api/v1/clients/{client_id}"
+
+    set_margin = client.patch(url, headers=auth_headers, json={"min_roas": "2.5"})
+    assert set_margin.status_code == 200
+    assert set_margin.json()["min_roas"] == "2.50"
+    cleared = client.patch(url, headers=auth_headers, json={"min_roas": None})
+    assert cleared.json()["min_roas"] is None
+    assert client.patch(url, headers=auth_headers, json={"min_roas": "0"}).status_code == 422

@@ -242,6 +242,84 @@ def _image_hash(response: dict[str, Any]) -> str:
 _NOTHING_CREATED = "Nimic nu a fost creat in contul Meta."
 
 
+async def download_image(
+    image_url: str,
+    *,
+    max_bytes: int = _MAX_IMAGE_BYTES,
+    transport: httpx.AsyncBaseTransport | None = None,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> bytes:
+    """Imaginea anuntului, descarcata de noi si verificata.
+
+    URL-ul vine din datele clientului, deci se valideaza ca orice tinta
+    nesigura: fara adrese interne, nici directe, nici prin DNS (acelasi
+    filtru ca la crawler-ul de audit). Redirecturile NU se urmaresc - un
+    salt ar putea duce exact unde validarea n-a verificat.
+
+    Limita cunoscuta, aceeasi ca la crawler: DNS-ul se rezolva o data la
+    validare si inca o data la cerere, deci un DNS ostil ar putea raspunde
+    diferit intre ele.
+
+    Raises:
+        ProviderError: URL refuzat, raspuns ne-200, continut care nu e
+            imagine, sau peste plafon.
+    """
+    try:
+        # Rezultatul (URL-ul normalizat) se arunca DELIBERAT: normalizarea
+        # sorteaza parametrii din query, ceea ce strica URL-urile semnate
+        # ale CDN-urilor. Validam gazda, dar cerem URL-ul exact.
+        await url_policy.normalize_and_validate_start_url(image_url)
+    except (ValueError, url_policy.CrawlTargetBlockedError) as exc:
+        raise ProviderError(
+            f"imaginea nu se poate descarca de la '{image_url}': adresa refuzata ({exc})"
+        ) from exc
+
+    chunks: list[bytes] = []
+    try:
+        async with (
+            httpx.AsyncClient(
+                transport=transport,
+                timeout=timeout,
+                follow_redirects=False,
+            ) as client,
+            client.stream(
+                "GET", image_url, headers={"User-Agent": CRAWL_USER_AGENT}
+            ) as response,
+        ):
+            if 300 <= response.status_code < 400:
+                raise ProviderError(
+                    f"URL-ul imaginii redirectioneaza ({response.status_code}) - "
+                    "foloseste adresa finala a imaginii"
+                )
+            if response.status_code != 200:
+                raise ProviderError(
+                    f"imaginea de la '{image_url}' a raspuns {response.status_code}"
+                )
+            content_type = response.headers.get("content-type", "").lower()
+            if not content_type.startswith("image/"):
+                raise ProviderError(
+                    f"'{image_url}' nu e o imagine "
+                    f"(content-type '{content_type or 'lipsa'}')"
+                )
+            total = 0
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ProviderError(
+                        f"imaginea depaseste {max_bytes // (1024 * 1024)} MB"
+                    )
+                chunks.append(chunk)
+    except httpx.HTTPError as exc:
+        raise ProviderError(
+            f"imaginea de la '{image_url}' nu a putut fi descarcata: {exc}"
+        ) from exc
+
+    image = b"".join(chunks)
+    if not image:
+        raise ProviderError(f"imaginea de la '{image_url}' e goala")
+    return image
+
+
 class LiveMetaMarketingProvider(MetaMarketingProvider):
     """Client real pentru seturile de reclame Meta: citire sincrona, scriere async.
 
@@ -715,6 +793,32 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         """
         await self._mutate(ad_id, {"status": "PAUSED"})
 
+    async def current_daily_budget(self, object_id: str) -> Decimal | None:
+        """Bugetul zilnic de acum al unei campanii sau al unui set, in moneda contului.
+
+        Citit chiar inainte de o schimbare de buget: motorul de executie lasa peste
+        plafon doar o reducere fata de el. ``None`` cand obiectul n-are buget zilnic
+        (buget pe viata, sau set dintr-o campanie cu buget pe campanie).
+        """
+        headers = self._headers()
+        try:
+            async with httpx.AsyncClient(
+                transport=self._async_transport, timeout=self._timeout
+            ) as client:
+                response = await client.get(
+                    f"{_BASE_URL}/{object_id}", params={"fields": "daily_budget"}, headers=headers
+                )
+        except httpx.ConnectError as exc:
+            raise SetupRequiredError(f"Meta Graph API nu raspunde la {_BASE_URL}.") from exc
+        except httpx.TimeoutException as exc:
+            raise SetupRequiredError(
+                f"Meta Graph API nu a raspuns in {self._timeout:.0f}s."
+            ) from exc
+        raw = self._checked(response).get("daily_budget")
+        if raw in (None, "", "0"):
+            return None
+        return Decimal(str(raw)) / minor_units_factor(self._currency)
+
     async def update_budget(self, object_id: str, new_daily_budget: Decimal) -> None:
         """Schimba bugetul zilnic al unei campanii sau al unui set de reclame.
 
@@ -746,75 +850,10 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
     # conversia bugetului si rollback-ul.
 
     async def _download_image(self, image_url: str) -> bytes:
-        """Imaginea anuntului, descarcata de noi si verificata.
-
-        URL-ul vine din datele clientului, deci se valideaza ca orice tinta
-        nesigura: fara adrese interne, nici directe, nici prin DNS (acelasi
-        filtru ca la crawler-ul de audit). Redirecturile NU se urmaresc - un
-        salt ar putea duce exact unde validarea n-a verificat.
-
-        Limita cunoscuta, aceeasi ca la crawler: DNS-ul se rezolva o data la
-        validare si inca o data la cerere, deci un DNS ostil ar putea raspunde
-        diferit intre ele.
-
-        Raises:
-            ProviderError: URL refuzat, raspuns ne-200, continut care nu e
-                imagine, sau peste plafon.
-        """
-        try:
-            # Rezultatul (URL-ul normalizat) se arunca DELIBERAT: normalizarea
-            # sorteaza parametrii din query, ceea ce strica URL-urile semnate
-            # ale CDN-urilor. Validam gazda, dar cerem URL-ul exact.
-            await url_policy.normalize_and_validate_start_url(image_url)
-        except (ValueError, url_policy.CrawlTargetBlockedError) as exc:
-            raise ProviderError(
-                f"imaginea nu se poate descarca de la '{image_url}': adresa refuzata ({exc})"
-            ) from exc
-
-        chunks: list[bytes] = []
-        try:
-            async with (
-                httpx.AsyncClient(
-                    transport=self._async_transport,
-                    timeout=self._timeout,
-                    follow_redirects=False,
-                ) as client,
-                client.stream(
-                    "GET", image_url, headers={"User-Agent": CRAWL_USER_AGENT}
-                ) as response,
-            ):
-                if 300 <= response.status_code < 400:
-                    raise ProviderError(
-                        f"URL-ul imaginii redirectioneaza ({response.status_code}) - "
-                        "foloseste adresa finala a imaginii"
-                    )
-                if response.status_code != 200:
-                    raise ProviderError(
-                        f"imaginea de la '{image_url}' a raspuns {response.status_code}"
-                    )
-                content_type = response.headers.get("content-type", "").lower()
-                if not content_type.startswith("image/"):
-                    raise ProviderError(
-                        f"'{image_url}' nu e o imagine "
-                        f"(content-type '{content_type or 'lipsa'}')"
-                    )
-                total = 0
-                async for chunk in response.aiter_bytes():
-                    total += len(chunk)
-                    if total > _MAX_IMAGE_BYTES:
-                        raise ProviderError(
-                            f"imaginea depaseste {_MAX_IMAGE_BYTES // (1024 * 1024)} MB"
-                        )
-                    chunks.append(chunk)
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"imaginea de la '{image_url}' nu a putut fi descarcata: {exc}"
-            ) from exc
-
-        image = b"".join(chunks)
-        if not image:
-            raise ProviderError(f"imaginea de la '{image_url}' e goala")
-        return image
+        """Imaginea anuntului - vezi :func:`download_image`."""
+        return await download_image(
+            image_url, transport=self._async_transport, timeout=self._timeout
+        )
 
     async def _rollback(self, campaign_id: str) -> tuple[bool, str]:
         """Sterge campania creata in aceasta lansare.

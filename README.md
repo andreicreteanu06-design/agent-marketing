@@ -10,14 +10,14 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 
 > Implicit (`mock`), niciun apel real nu paraseste procesul — fiecare integrare
 > externa sta in spatele unui adaptor cu implementare `mock`, deci intreaga
-> logica e testabila offline. **Google Ads / Meta Ads / TikTok Ads au acum si
-> clienti `live` reali** (doar citire — vezi [Integrare live](#integrare-live-googlemetatiktok-ads)
-> mai jos), la fel ca [clientul LLM (Ollama local)](#client-llm-live-ollama-local).
-> `execute` ramane **intotdeauna simulat** (`applied=False`), indiferent de
-> `--confirm` — scrierea reala pe conturi ramane un pas viitor, deliberat
-> separat. Modulul 1 e complet `live` — crawler (peste motorul de audit din
-> `seo_geo_agent`), Search Console, Keyword Planner si Business Profile. Fish
-> Speech/Flick (Modulul 5) si OpenAI Ads raman stub-uri.
+> logica e testabila offline. **Google Ads, Meta Ads, TikTok Ads si OpenAI Ads
+> (ChatGPT) au clienti `live` reali** - citire, iar prin server si schimbarile
+> aprobate de om (vezi [Integrare live](#integrare-live-googlemetatiktok-ads)),
+> la fel ca [clientul LLM (Ollama local)](#client-llm-live-ollama-local).
+> `execute` din CLI ramane **intotdeauna simulat** (`applied=False`); scrierea
+> reala trece doar prin poarta de aprobare a serverului. Modulul 1 e complet `live`
+> — crawler (peste motorul de audit din `seo_geo_agent`), Search Console, Keyword
+> Planner si Business Profile. Fish Speech/Flick (Modulul 5) raman stub-uri.
 
 ## Stare
 
@@ -70,7 +70,7 @@ Pe macOS / Linux, calea este `.venv/bin/python`.
 | Valoare | Efect |
 |---------|-------|
 | `mock` (implicit) | Foloseste date de test deterministice. Niciun apel de retea. |
-| `live` | Clientul LLM (Ollama) si Google/Meta/TikTok **Ads** (citire) sunt functionale — vezi [Integrare live](#integrare-live-googlemetatiktok-ads). GSC/GBP/Keyword Planner/Fish Speech/Flick raman stub-uri care ridica `SetupRequiredError`. |
+| `live` | Clientul LLM (Ollama) si Google/Meta/TikTok/ChatGPT **Ads** sunt functionale — vezi [Integrare live](#integrare-live-googlemetatiktok-ads). GSC/GBP/Keyword Planner/Fish Speech/Flick raman stub-uri care ridica `SetupRequiredError`. |
 
 ## Utilizare
 
@@ -165,7 +165,9 @@ contului:
 - **`calculate_kelly_fraction(win_prob, roas_odds, fraction=0.5)`** — Half-Kelly:
   `f = fraction * (p*b - q) / b`, taiat la `[-1, 1]`.
 - **`size_daily_budget(arms, baseline_cap, hard_ceiling, ...)`** — foloseste ROAS-ul
-  contului: `win_prob = ROAS/(ROAS+1)`, `roas_odds = ROAS - 1`. Multiplicatorul
+  contului fata de pragul de rentabilitate: `win_prob = r/(r+1)`, `roas_odds = r - 1`.
+  Venitul nu trece de comenzile reale ale magazinului (`revenue_cap`), iar fara ele,
+  cu vanzari pe mai multe platforme, plafonul nu creste (`allow_growth=False`). Multiplicatorul
   `clamp(1 + f, 0.5, 2.0)` se aplica pe `baseline_cap`, apoi se taie la `HARD_CEILING`.
   - ROAS > 1 (EV pozitiv) → plafon **peste** `max_daily_spend`, catre `HARD_CEILING`
   - ROAS ≈ 1 → plafon **mentinut** la `max_daily_spend`
@@ -262,7 +264,7 @@ Fiecare furnizor extern are trei parti in `ppc_agent/providers/`:
 |-------|--------|-------|
 | interfata (ABC) | `base.py` | completa |
 | implementare `mock` | `mock/*.py` | completa, deterministica, fara retea |
-| implementare `live` | `live/*.py` | Toate reale. Google/Meta/TikTok **Ads** (citire + scriere pe Meta), crawler (peste `seo_geo_agent.audit`), Search Console, Keyword Planner, Business Profile. Singurul stub ramas: OpenAI Ads |
+| implementare `live` | `live/*.py` | Toate reale. Google/Meta/TikTok/ChatGPT **Ads** (citire + scriere prin server), crawler (peste `seo_geo_agent.audit`), Search Console, Keyword Planner, Business Profile. |
 
 Guardrails-urile din Modulul 4 raman active identic in modul `live`. `execute`
 din **CLI** ramane **intotdeauna simulat** (`applied=False`), indiferent de mod
@@ -324,9 +326,9 @@ doua lucruri foarte diferite pentru Quality Score.
 
 ## Integrare live: Google/Meta/TikTok Ads
 
-`LiveGoogleAdsProvider`/`LiveMetaMarketingProvider`/`LiveTikTokAdsProvider`
-(`ppc_agent/providers/live/{google_ads,meta,tiktok}.py`) citesc date reale de
-performanta direct prin REST (`httpx`), acelasi pattern ca `LiveLLMClient` mai
+`LiveGoogleAdsProvider`/`LiveMetaMarketingProvider`/`LiveTikTokAdsProvider`/
+`LiveChatGptAdsProvider` (`ppc_agent/providers/live/{google_ads,meta,tiktok,chatgpt_ads}.py`)
+citesc date reale de performanta si aplica schimbarile aprobate direct prin REST (`httpx`), acelasi pattern ca `LiveLLMClient` mai
 jos — fara SDK-uri oficiale (`google-ads` gRPC, `facebook-business`, SDK
 TikTok): dependinte grele, inconsistente cu restul codebase-ului (100%
 httpx), greu de instalat pe Windows. Testabile determinist cu
@@ -351,10 +353,27 @@ PPC_GOOGLE_ADS_LOGIN_CUSTOMER_ID=   # doar daca accesezi contul de mai sus print
 PPC_META_ACCESS_TOKEN=
 PPC_META_AD_ACCOUNT_ID=
 
-# TikTok - token din TikTok for Business developer portal
+# TikTok - token din TikTok for Business developer portal (cu drept si pe Events API)
 PPC_TIKTOK_ACCESS_TOKEN=
 PPC_TIKTOK_ADVERTISER_ID=
+
+# ChatGPT - cheia Ads API a unui cont OpenAI Ads (acces de partener)
+PPC_CHATGPT_ADS_API_KEY=
 ```
+
+Per client, din setari (agentia, `PATCH /api/v1/clients/{id}`): `google_ads_customer_id`,
+`google_ads_conversion_action_id` (o actiune de tip "import din click-uri"),
+`tiktok_advertiser_id`, `tiktok_pixel_code`, `chatgpt_pixel_id`. Cheile, criptate, din
+contul clientului (`PATCH /api/v1/me/credentials`).
+
+**Ce trebuie sa trimita site-ul cu fiecare comanda** (webhook-ul `custom_web`, sau
+campuri personalizate in comanda Gomag): id-urile de click prinse din URL la intrare
+si pastrate in cookie - `gclid`/`gbraid`/`wbraid` (Google), `ttclid` si cookie-ul
+`_ttp` (TikTok), `oppref` (ChatGPT), `fbc`/`fbp` (Meta) - si `marketing_consent`
+din bannerul de cookie-uri (`false` = conversia nu pleaca nicaieri). Pixelii din
+browser trimit acelasi id de eveniment ca serverul (`event_id`), ca platformele sa nu
+numere comanda de doua ori. Testare: `TIKTOK_EVENTS_TEST_CODE` (Events Manager),
+`CHATGPT_CONVERSIONS_VALIDATE_ONLY=true` (OpenAI verifica, nu salveaza).
 
 Obtinerea fiecarui credential e un proces extern la platforma respectiva, in
 afara scopului acestui README — vezi documentatia oficiala: [Google Ads API —
@@ -362,65 +381,62 @@ get started](https://developers.google.com/google-ads/api/docs/get-started/intro
 [Meta Marketing API — access tokens](https://developers.facebook.com/docs/marketing-apis/overview/authentication),
 [TikTok for Business — authentication](https://business-api.tiktok.com/portal/docs).
 
-### Gap-uri oneste — citeste inainte sa te bazezi pe date live
+### Ce citeste si ce aplica fiecare platforma
 
-- **Parcursuri de conversie (`conversion_paths`)**: niciuna dintre cele trei
-  API-uri nu mai expune simplu parcursuri multi-touch (Google a depreciat
-  Multi-Channel Funnels; Meta le tine intr-un produs Attribution separat;
-  TikTok nu le expune in raportarea de baza). Fallback documentat in cod: un
-  singur touchpoint (numele campaniei/grupului/setului) per conversie si per
-  non-conversie, plafonat la 500/brat — pastreaza atribuirea Markov matematic
-  valida, dar **fara semnal multi-touch real**.
-- **Venitul TikTok**: raportul de baza nu are un camp de valoare/venit per
-  conversie confirmat (depinde de evenimentul de pixel configurat de agentie)
-  — `LiveTikTokAdsProvider.campaign_performance()` intoarce `revenue=0.0`, cu
-  comentariu explicit in cod. Pana la verificare manuala, bratele TikTok vor
-  arata ROAS 0 in Kelly/bandit.
-- **Venitul Google fara value tracking**: daca contul Google Ads nu are
-  urmarirea valorii conversiilor activata, `metrics.conversions_value` e 0 —
-  acelasi simptom (ROAS 0). Solutie: activeaza value tracking pe cont, sau
-  foloseste `target_cpa`/`budget-advice` (deja existent), care nu depinde de
-  venit.
-- **Netestat impotriva unui API real**: fara credentiale reale, verificarea
-  ramane `httpx.MockTransport` (deterministic, ca la `LiveLLMClient`) —
-  acelasi statut epistemic ca `ArqJobQueue` (netestat impotriva unui Redis
-  real). Testeaza cu credentialele tale inainte sa te bazezi pe rezultate.
+| platforma | citeste noaptea | aplica la `/approve` | conversii de pe server |
+| --- | --- | --- | --- |
+| Meta | seturi, bugete, invatare, anunturi | buget, pauza, lansare | Conversions API (`meta_pixel_id`) |
+| Google Ads | campanii, bugetul campaniei, invatare | buget, pauza, cuvinte negative | import din click-uri (`google_ads_conversion_action_id`) |
+| TikTok | grupuri, bugetul grupului, valoarea comenzilor | buget, pauza grup, pauza anunt | Events API (`tiktok_pixel_code`) |
+| ChatGPT (OpenAI Ads) | campanii, bugetul campaniei, vanzari atribuite | buget, pauza | Conversions API (`chatgpt_pixel_id` + cheia de conversii) |
 
-## Generative Engine Ads (ChatGPT) — fundatie, inca stub
+- **Pasii de buget** sunt aceiasi peste tot: cel mult 20% pe noapte de la bugetul
+  de acum (un salt mare reporneste invatarea algoritmului). Nu se ating: un buget
+  Google **partajat** cu alte campanii, unul pe o perioada, o campanie Google in
+  invatare, un grup TikTok cu buget pe campanie sau pe viata, o campanie ChatGPT cu
+  buget pe viata. Daca TikTok nu da bugetele, nimic din TikTok nu se muta in noaptea
+  aceea.
+- **Cuvintele negative** Google merg intr-o lista a contului (`AC Media - cuvinte
+  negative`), atasata tuturor campaniilor de cautare active - o data, fara dubluri.
+- **Moneda**: inainte de orice schimbare pe Google, TikTok sau ChatGPT, moneda
+  contului se citeste din platforma; alta decat leul = 409, nimic nu pleaca.
+- **Venitul lipsa**: TikTok da valoarea comenzilor dintr-un raport separat
+  (`complete_payment` x `value_per_complete_payment`); daca il refuza, ca si la
+  Google fara urmarirea valorii, vanzarile valoreaza cosul mediu al comenzilor
+  raportate cu valoare (de la 5 comenzi), altfel `default_lead_value` - nu 0. Cu
+  venit 0, Kelly ar fi taiat bugetul intregului cont.
+- **Vanzari numarate de doua ori**: fiecare platforma isi atribuie vanzarile ei.
+  Cand webhook-ul magazinului acopera ultimele 30 de zile, venitul platformelor e
+  plafonat la comenzile reale (si la Kelly, si la CFO). Fara el, cand mai multe
+  platforme raporteaza vanzari, Kelly poate taia, dar nu creste plafonul, iar CFO-ul
+  o spune in nota lui.
+- **Parcursuri de conversie (`conversion_paths`)**: niciuna dintre platforme nu
+  expune simplu parcursuri multi-touch. Fallback: un singur touchpoint per conversie,
+  plafonat la 500/brat - atribuirea Markov ramane valida, dar fara semnal multi-touch.
+- **Netestat pe conturi reale**: Google, TikTok si ChatGPT sunt verificate pe
+  raspunsuri simulate (`httpx.MockTransport`), scrise dupa documentatia oficiala.
+  Prima rulare cu chei reale: doar citire, ca la pilotul Meta.
 
-Cercetat explicit (nu presupus) inainte de a scrie cod — vezi si
-[developers.openai.com/ads](https://developers.openai.com/ads):
+## ChatGPT (OpenAI Ads)
 
-- **OpenAI Ads e real**: self-serve din mai 2026 (`ads.openai.com`), campanii
-  cu buget minim 25 USD/zi, targetare **contextuala pe conversatie** (nu pe
-  cuvinte cheie, spre deosebire de Google). Exista si un API programatic real
-  (`api.ads.openai.com/v1`, obiecte `Campaign`/`AdGroup`), dar **accesul e
-  limitat la parteneri aprobati de OpenAI** — fara cont de agentie aprobat,
-  nu exista nimic de conectat azi.
-- **Perplexity NU are niciun produs de reclame** — a testat "sponsored
-  questions" in 2024-2025, dar a abandonat reclamele in februarie 2026
-  (subscription-only). Nu exista niciun provider/stub Perplexity in cod, ca sa
-  nu sugereze o integrare posibila care pur si simplu nu exista azi.
+`ppc_agent/providers/live/chatgpt_ads.py`, scris dupa documentatia publica
+([developers.openai.com/ads](https://developers.openai.com/ads)). Accesul la API il
+dau partenerii aprobati de OpenAI; o cheie Ads API e legata de **un** cont de reclame
+(`chatgpt_ads_api_key` in setarile clientului, sau `PPC_CHATGPT_ADS_API_KEY`).
 
-**Ce exista in cod:**
-
-- `providers/base.py::BaseMarketingProvider` — contract generic
-  (`get_campaign_metrics`/`scale_budget`/`pause_ad`) pentru platforme NOI care
-  nu au inca un loc in Modulul 2. Google/Meta/TikTok **nu** mostenesc aceasta
-  clasa — au deja un contract stabilit si cablat (`campaign_performance`/
-  `conversion_paths`), schimbarea lui ar fi invaziva pentru zero beneficiu.
-- `providers.live.LiveGenerativeEngineProvider` — stub (ca celelalte 4
-  furnizori live neconectati inca): fiecare metoda ridica
-  `SetupRequiredError` cu detalii reale (API-ul exista, accesul cere
-  aprobare de partener), niciun apel de retea.
-- `ClientAccount.chatgpt_ads_account_id`/`chatgpt_ads_api_key_enc` (server) —
-  campurile de conectare exista din azi (aceeasi forma ca Google/Meta/TikTok),
-  dar neexpuse inca in nicio ruta — nimic nu le citeste/scrie pana la
-  implementarea reala a providerului.
-- `AdPlatform` (server, `models.py`) — al treilea enum de platforma
-  (`META`/`CHATGPT`/`PERPLEXITY`), scopat la `BaseMarketingProvider` — distinct
-  de `Platform` (creatie de copy) si `AdFatiguePlatform` (monitorul de
-  oboseala), acelasi principiu ca de ce exista deja doua enum-uri separate.
+- Bratele planului sunt **campaniile** (bugetul sta pe campanie,
+  `daily_spend_limit_micros`). Cheltuiala si click-urile vin din
+  `/ad_account/insights`, conversiile si vanzarile atribuite din
+  `/conversions/insights`.
+- Conversiile pleaca prin Conversions API (`bzr.openai.com/v1/events`) cu o cheie
+  **separata** (`chatgpt_conversions_key`, criptata), pixelul `chatgpt_pixel_id` si
+  `oppref`-ul de pe site. Doar comenzi (`order_created`) si lead-uri
+  (`lead_created`): OpenAI nu are evenimente pentru apeluri.
+- In modul `mock` ChatGPT nu exista (n-are date simulate): planul de test ramane pe
+  Google, TikTok si Meta.
+- De verificat pe primul cont: documentatia nu spune in ce unitate e `spend` din
+  insights - aici e citit in moneda contului.
+- Perplexity nu are reclame (a renuntat in februarie 2026).
 
 ## Client LLM live: Ollama local
 
@@ -1059,22 +1075,26 @@ ARQ `weekly_reports`, pentru clientii agentiilor active.
 
 #### Ce se aplica efectiv la `/approve`
 
-Doar **Meta**, si doar pe obiecte cu id real: `meta_campaign/{id}`,
-`meta_ad_set/{id}`, `meta_ad/{id}` (`PAUSE`, plus `UPDATE` de buget pe campanie
-si set). Se traduc in `POST https://graph.facebook.com/v25.0/{id}` cu
-`status=PAUSED`, respectiv `daily_budget` in unitatea minima a monedei
-(`PPC_META_CURRENCY`).
+Obiectele cu id real, pe fiecare platforma:
+
+- **Meta**: `meta_campaign/{id}`, `meta_ad_set/{id}`, `meta_ad/{id}` (`PAUSE`, plus
+  `UPDATE` de buget pe campanie si set) - `POST graph.facebook.com/v25.0/{id}`, cu
+  `daily_budget` in unitatea minima a monedei (`PPC_META_CURRENCY`).
+- **Google Ads**: `campaign/{id}` (buget zilnic al campaniei, pauza) si
+  `negative_keyword/{termen}` (lista de negative a contului).
+- **TikTok**: `tiktok_ad_group/{id}` (buget zilnic, pauza), `tiktok_ad/{id}` (pauza).
+- **ChatGPT**: `chatgpt_campaign/{id}` (buget zilnic, pauza).
 
 Restul primeste **409 si ramane `pending`**, fiecare cu motivul lui:
 
-- **Google Ads / TikTok** — `GoogleAdsProvider` si `TikTokAdsProvider` sunt
-  contracte de CITIRE, fara nicio metoda de mutatie. Aici cad si propunerile
-  evaluatorului autonom (`ppc_keyword`) si cele din unealta MCP
-  (`keyword_budget`): resursa lor e un **termen de cautare**, nu un id de
-  obiect, si nu are ce cauta la Graph API.
+- **Termenii motorului hibrid** (`ppc_keyword`, `keyword_budget` din unealta MCP):
+  resursa lor e un **termen de cautare**, iar buget pe un cuvant nu exista in
+  Google Ads. Si anunturile Google (`ad/{id}`): oprirea cere si grupul lor.
+- **Moneda contului alta decat leul** (citita din platforma la Google, TikTok si
+  ChatGPT) - plafonul de siguranta e in lei.
 - **`ad_set_group/...`** (consolidarile de lichiditate) — id sintetizat de noi,
   nu exista in contul Meta.
-- **mod `mock`, sau cont Meta neconectat** — nu aplicam nimic si nu ne prefacem
+- **mod `mock`, sau cont neconectat** — nu aplicam nimic si nu ne prefacem
   ca am aplicat.
 
 Cand platforma e intrebata si refuza (token expirat, obiect sters, buget sub
@@ -1114,12 +1134,13 @@ dubleaza nimic. Un client lent nu-i mai intarzie pe ceilalti.
 
 `docker-compose.yml` porneste toata stiva: `site` (Next.js standalone), `api`
 (ppc_agent_server), `worker` (ARQ), `seo-geo`, `postgres`, `redis`, plus `migrate`
-(`alembic upgrade head`, o data per pornire). Imaginile: `Dockerfile.backend`
+(`alembic upgrade head` si rolul limitat al bazei, o data per pornire) si `backup`
+(un `pg_dump` pe zi). Imaginile: `Dockerfile.backend`
 (una singura pentru api/worker/seo-geo; Python slim, torch doar CPU, fara
 Playwright) si `Dockerfile.frontend` (build `output: "standalone"`).
 
 ```bash
-cp .env.example .env      # JWT_SECRET_KEY, SECRETS_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD
+cp .env.example .env      # JWT_SECRET_KEY, SECRETS_KEY, POSTGRES_PASSWORD, POSTGRES_APP_PASSWORD, REDIS_PASSWORD
 docker compose up -d --build
 # o singura data: agentia (tenant-ul), apoi AGENCY_TENANT_ID=<id> in .env si
 # docker compose up -d api
@@ -1131,6 +1152,14 @@ Securitate:
 - Postgres si Redis **nu au porturi publicate**; traiesc pe reteaua `data`
   (`internal: true`, fara iesire in internet), impreuna doar cu `api` si `worker`.
   Redis cere parola. Parolele lipsa opresc pornirea (`${VAR:?}`).
+- API-ul si worker-ul se conecteaza cu **rolul limitat `ppc_app`**
+  (`ppc_agent_server/app_role.py`): citesc si scriu randuri, atat - nu pot crea,
+  sterge sau modifica tabele, nu pot citi fisiere sau rula comenzi pe server, nu pot
+  crea utilizatori. Proprietarul bazei (`ppc_agent`) il folosesc doar `migrate`
+  (care, dupa migratii, aduce rolul la drepturile lui, si pe tabelele noi) si
+  `backup`; parola lui nu ajunge in containerele care primesc cereri din internet.
+- Corpul unei cereri: maximum 2 MB (60 MB la uploadul de creative), refuzat cu 413
+  inainte sa ajunga in memorie - si cand e trimis in bucati, fara `Content-Length`.
 - Containerele aplicatiei ruleaza ca utilizator fara privilegii, cu radacina
   read-only, fara capabilitati Linux si `no-new-privileges`.
 - Porturile 3000/8000/8001 asculta implicit doar pe `127.0.0.1` (`BIND_ADDRESS`):
@@ -1156,7 +1185,9 @@ Securitate:
   aflate in curs de aplicare (`approved`).
 - **Limitari** (`ppc_agent_server/rate_limit.py`, in memorie): login - 30 de
   incercari/minut pe IP si 5 parole gresite/15 minute pe email (numarate inainte
-  de Argon2); chatul Reginei - 6 mesaje/minut si 60/ora per client. Peste: 429 cu
+  de Argon2); conturi noi - 3/ora pe IP, numarate si cele cu email deja folosit
+  (409-ul nu poate fi folosit la ghicit in masa ce adrese au cont), emailul validat
+  si salvat cu litere mici, lungimi maxime pe nume, email si parola; chatul Reginei - 6 mesaje/minut si 60/ora per client. Peste: 429 cu
   `Retry-After`. Memoria e per proces: cu mai multi workeri uvicorn, limita se
   inmulteste cu numarul lor.
 
@@ -1296,7 +1327,11 @@ consiliul pe lansare, cu toate datele clientului, si ataseaza avizul in
 `before.council_review`; fara consiliu (sursele pica) - 503, nu se depune nimic. Un veto al
 Tehnicianului sau CFO-ul pe un cont care pierde bani dovedit scriu lansarea `blocked`;
 rezerva CFO-ului pe un cont fara date ramane doar in aviz (un prim test, in plafon, e
-felul in care se strang datele). La aprobare se verifica din nou.
+felul in care se strang datele). La aprobare se verifica din nou. Tot atunci CCO-ul
+evalueaza imaginea reclamei (`before.creative_review`): "de revizuit" scrie lansarea
+`blocked`, cu reparatiile lui; "verificare umana" ramane de aprobat, cu avertisment (aprobarea
+e acea verificare); un CCO care nu poate rula (Ollama oprit) lasa doar o nota in aviz.
+Pe procesor, evaluarea tine 1-4 minute.
 
 **Oprirea de urgenta (admin, din chat).** Emailurile din `ADMIN_EMAILS` pot scrie in
 chatul consiliului, exact: «oprește campaniile» / «oprește tot» / «stop campanii».
@@ -1342,11 +1377,36 @@ se executa in Meta la aprobare.
    `/api/v1/tracking/conversion/{id}` (cu `Authorization: Bearer <cheia agentiei>` -
    verifica daca Gomag permite antete pe webhook). Si imaginea reclamei: un URL
    public, direct (fara redirect), altfel lansarea pica la primul pas.
-5. **Obiectivul si valoarea unui lead, pe client** (`PATCH /clients/{id}`). Magazin:
-   `objective=sales` - Kelly si CFO-ul judeca dupa venit. Lead-uri:
-   `objective=lead_generation` si `default_lead_value` = cat valoreaza REAL un lead
-   (implicit 300 lei): Kelly creste bugetul cand CPA-ul e sub ea, CFO-ul taie cand e
-   peste. O valoare umflata face orice cont sa para rentabil.
+5. **Obiectivul, valoarea unei conversii si pragul de rentabilitate, pe client**
+   (`PATCH /clients/{id}`). Magazin: `objective=sales`, `default_lead_value` = cosul
+   mediu asteptat (pana sunt destule vanzari, apoi se ia cel real din Meta) si
+   `min_roas` = 1 / marja (marja 40% -> 2.5; nesetat: 2, adica marja 50%). Kelly
+   creste bugetul doar peste prag, CFO-ul judeca fata de el, iar monitorul opreste o
+   reclama fara vanzari la de 2 ori cosul / prag (150 / 2,5 = 60 -> 120 de lei). Lead-uri:
+   `objective=lead_generation`, `default_lead_value` = cat valoreaza REAL un lead
+   (implicit 300 lei), prag 1. O valoare umflata face orice cont sa para rentabil.
+
+### Backup-uri
+
+Serviciul `backup` scrie un `pg_dump` pe zi in `BACKUP_DIR` (implicit `./backups`,
+ignorat de git): `ppc_agent-AAAA-LL-ZZ.dump`, format custom (comprimat), pastrat 14
+zile. Il face la prima ora in care stiva e pornita in ziua respectiva, deci si dupa
+o noapte cu calculatorul oprit. Backup-urile de pe acelasi disc nu te apara de
+discul care cedeaza: pune `BACKUP_DIR` pe un folder sincronizat (OneDrive, Google
+Drive) sau copiaza-le periodic in alta parte. Contin datele clientilor (tokenurile
+lor raman criptate cu `SECRETS_KEY`, care nu e in backup) - tine-le private.
+
+Restaurarea (opreste intai procesele care scriu in baza):
+
+```bash
+docker compose stop api worker
+docker compose exec -T postgres pg_restore -U ppc_agent -d ppc_agent --clean --if-exists --no-owner < backups/ppc_agent-2026-10-03.dump
+docker compose up -d
+```
+
+`up -d` reporneste `migrate`: aduce schema la zi si da din nou drepturile rolului
+`ppc_app`. Verificat pe backup-ul real, restaurat intr-un Postgres separat: aceleasi
+20 de tabele cu acelasi numar de randuri, migratiile si rolul limitat dupa el.
 
 ### Mutarea pe alt calculator
 
@@ -1354,18 +1414,14 @@ Doua lucruri nu sunt in git si se muta separat (stick, manager de parole - nu Gi
 
 - **`.env`, acelasi fisier.** `JWT_SECRET_KEY` tine login-urile valide, `SECRETS_KEY`
   descifreaza tokenurile clientilor, `AGENCY_TENANT_ID` e agentia din baza mutata.
-- **Baza de date**, exportata pe calculatorul vechi:
-
-```bash
-docker compose exec -T postgres pg_dump -U ppc_agent -d ppc_agent --clean --if-exists --no-owner --no-privileges > ac-media.sql
-```
+- **Baza de date**: cel mai nou fisier din `backups/` (vezi mai sus).
 
 Pe calculatorul nou (Git Bash, Docker Desktop pornit): cloneaza, pune `.env` in folderul
-proiectului si `ac-media.sql` langa el (in afara lui, ca sa nu ajunga in git), apoi:
+proiectului si backup-ul in `backups/`, apoi:
 
 ```bash
 docker compose up -d --wait postgres
-docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U ppc_agent -d ppc_agent < ../ac-media.sql
+docker compose exec -T postgres pg_restore -U ppc_agent -d ppc_agent --clean --if-exists --no-owner < backups/ppc_agent-2026-10-03.dump
 docker compose up -d --build
 ```
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -269,8 +270,9 @@ def test_sales_accounts_are_judged_by_roas() -> None:
 
     assert snapshot.status == "profitable"
     assert snapshot.roas == Decimal("3.00")
-    assert snapshot.verdict.startswith("Contul își acoperă cheltuiala: ROAS 3")
-    assert "Marja nu o cunosc" in snapshot.verdict
+    assert snapshot.verdict.startswith("Contul e rentabil: ROAS 3")
+    # Fara prag setat (``FinancialSignals`` implicit): doar costul reclamelor, spus ca atare.
+    assert "pragul de acoperire a cheltuielii cu reclamele" in snapshot.verdict
 
 
 def test_without_a_target_or_values_the_cfo_says_so() -> None:
@@ -588,3 +590,39 @@ def test_the_llm_never_changes_the_directive() -> None:
 def test_blank_or_huge_questions_are_rejected(query: str) -> None:
     with pytest.raises(ValueError):
         _council().evaluate_client_query(query, _directive())
+
+
+def test_the_cfo_judges_on_shop_orders_when_the_platforms_claim_more() -> None:
+    """Meta si TikTok isi atribuie fiecare vanzarea: 3000 RON pe hartie, 1200 in magazin."""
+    signals = replace(
+        _finances(
+            ads=(
+                _ad(spend="500", conversions=10, revenue="1500"),
+                _ad("tt", platform="tiktok_ads", spend="300", conversions=8, revenue="1500"),
+            ),
+            terms=(),
+            objective="sales",
+        ),
+        break_even_roas=Decimal("2"),
+        shop_revenue=Decimal("1200"),
+    )
+    snapshot = build_financial_snapshot(signals)
+
+    assert snapshot.revenue == Decimal("1200")
+    assert snapshot.status == "unprofitable"  # 1200 / 800 = 1,5, sub pragul de 2
+    assert any("judec pe comenzile reale" in note for note in snapshot.notes)
+
+
+def test_without_shop_orders_the_cfo_warns_that_sales_may_be_counted_twice() -> None:
+    signals = _finances(
+        ads=(
+            _ad(spend="500", conversions=10, revenue="1500"),
+            _ad("tt", platform="tiktok_ads", spend="300", conversions=8, revenue="1500"),
+        ),
+        terms=(),
+        objective="sales",
+    )
+
+    notes = build_financial_snapshot(signals).notes
+
+    assert any("aceeași vânzare poate fi numărată de două ori" in note for note in notes)

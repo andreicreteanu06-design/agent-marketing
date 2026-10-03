@@ -167,6 +167,10 @@ class ServerSettings(BaseSettings):
     # Conversions API apar doar in tab-ul de test si NU antreneaza optimizarea Meta.
     # Completat la inceputul pilotului, golit dupa ce evenimentele arata corect.
     meta_capi_test_event_code: str = ""
+    # La fel pentru TikTok Events API (codul din Events Manager > Test Events) si
+    # OpenAI Ads (``validate_only``: evenimentele se verifica, dar nu se salveaza).
+    tiktok_events_test_code: str = ""
+    chatgpt_conversions_validate_only: bool = False
 
     @field_validator(
         "jev_api_key", "jev_model", "ollama_model", "ollama_keep_alive", "ollama_vision_model",

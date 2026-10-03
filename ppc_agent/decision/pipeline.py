@@ -10,6 +10,7 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
+from ppc_agent.campaign_objective import MIN_ORDERS_FOR_AOV
 from ppc_agent.config import AppConfig
 from ppc_agent.decision.attribution import Journey, attribute
 from ppc_agent.decision.budget import ThompsonBudgetAllocator
@@ -20,14 +21,21 @@ from ppc_agent.decision.models import ArmCapacityAdvice, ArmStats, DailyArmMetri
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers import base
 from ppc_agent.providers.factory import ProviderFactory
+from ppc_agent.providers.live.chatgpt_ads import LiveChatGptAdsProvider
 
-_AdsReader = base.GoogleAdsProvider | base.TikTokAdsProvider | base.MetaMarketingProvider
+_AdsReader = (
+    base.GoogleAdsProvider
+    | base.TikTokAdsProvider
+    | base.MetaMarketingProvider
+    | LiveChatGptAdsProvider
+)
 _CUSTOMER_PLACEHOLDER = "mock-customer"
 _ADVERTISER_PLACEHOLDER = "mock-advertiser"
 _META_ACCOUNT_PLACEHOLDER = "mock-account"
 _DEFAULT_SEED = 20260101
 _DEFAULT_SAMPLES = 20_000
 _DEFAULT_HISTORY_DAYS = 30
+_CENT = Decimal("0.01")
 
 
 def resolve_account_ids(config: AppConfig) -> tuple[str, str, str]:
@@ -117,6 +125,7 @@ def arms_from_performance(
         revenue = Decimal(str(record.get("revenue", 0)))
         if lead_value is not None and revenue == 0:
             revenue = lead_value * conversions
+        locked = record.get("budget_locked")
         arms.append(
             ArmStats(
                 arm_id=str(record["arm_id"]),
@@ -127,9 +136,45 @@ def arms_from_performance(
                 revenue=revenue,
                 platform=platform,
                 active=bool(record.get("active", True)),
+                daily_budget=_optional_money(record.get("daily_budget")),
+                budget_locked=locked if isinstance(locked, str) else "",
             )
         )
     return arms
+
+
+def _optional_money(value: object) -> Decimal | None:
+    """Bugetul dintr-o coloana optionala: lipsa (``None``/``NaN`` in pandas) = necunoscut."""
+    if value is None or value != value:  # NaN e singura valoare diferita de ea insasi
+        return None
+    return Decimal(str(value)).quantize(_CENT)
+
+
+def value_unreported_conversions(
+    arms: list[ArmStats], *, fallback: Decimal | None
+) -> list[ArmStats]:
+    """Conversiile raportate fara valoare, la valoarea medie a celor raportate cu valoare.
+
+    TikTok nu raporteaza valoarea comenzilor, iar Google o raporteaza doar cu urmarirea
+    valorii activata. Cu venit 0, vanzarile reale ar da ROAS 0: Kelly ar taia bugetul
+    intregului cont, iar Thompson ar infometa platforma. Valoarea unei conversii vine din
+    bratele care o raporteaza (cosul mediu real, de la ``MIN_ORDERS_FOR_AOV`` comenzi),
+    altfel e ``fallback`` (``BudgetConfig.order_value``); fara niciuna, nimic nu se schimba.
+    """
+    reported = [arm for arm in arms if arm.revenue > 0]
+    orders = sum(arm.conversions for arm in reported)
+    if orders >= MIN_ORDERS_FOR_AOV:
+        value = sum((arm.revenue for arm in reported), Decimal("0")) / Decimal(orders)
+    elif fallback is not None:
+        value = fallback
+    else:
+        return arms
+    return [
+        arm.model_copy(update={"revenue": (value * arm.conversions).quantize(_CENT)})
+        if arm.conversions > 0 and arm.revenue == 0
+        else arm
+        for arm in arms
+    ]
 
 
 def run_plan(
@@ -197,6 +242,8 @@ def run_plan(
             ("google_ads", factory.google_ads, customer_id),
             ("tiktok_ads", factory.tiktok_ads, advertiser_id),
             ("meta_ads", factory.meta, ad_account_id),
+            # Contul OpenAI Ads il da cheia, nu un id.
+            ("chatgpt_ads", factory.chatgpt_ads, ""),
         )
         if factory.configured(platform)
     ]
@@ -209,17 +256,26 @@ def run_plan(
             lead_value=config.budget.lead_value,
         )
     ]
+    arms = value_unreported_conversions(arms, fallback=config.budget.order_value)
     # Doar seturile care ruleaza acum: unul oprit de om a cheltuit luna asta, dar un
     # buget propus pentru el nu se cheltuie - iar seturile active ar primi mai putin.
     arms = [arm for arm in arms if arm.active]
     if forecaster is not None and histories:
         arms = apply_forecast(arms, histories, forecaster, horizon_days=forecast_horizon_days)
 
+    # Fiecare platforma isi atribuie vanzarile ei: un client care a vazut reclama si pe
+    # Meta, si pe Google apare de doua ori. Comenzile magazinului plafoneaza venitul;
+    # fara ele, cu vanzari raportate de mai multe platforme, Kelly nu creste plafonul.
+    selling = {arm.platform for arm in arms if arm.conversions > 0}
+    shop_revenue = config.budget.shop_revenue
     kelly = size_daily_budget(
         arms,
         baseline_cap=config.budget.max_daily_spend,
         hard_ceiling=HARD_CEILING,
         kelly_fraction=kelly_fraction,
+        break_even_roas=config.budget.min_roas,
+        revenue_cap=shop_revenue,
+        allow_growth=shop_revenue is not None or len(selling) < 2,
     )
 
     min_arm_daily_spend = config.budget.min_arm_daily_spend
@@ -244,7 +300,11 @@ def run_plan(
     attribution = attribute(journeys)
 
     return PlanResult(
-        kelly=kelly, budget_plan=budget_plan, attribution=attribution, arm_capacity=arm_capacity
+        kelly=kelly,
+        budget_plan=budget_plan,
+        attribution=attribution,
+        arm_capacity=arm_capacity,
+        arms=arms,
     )
 
 

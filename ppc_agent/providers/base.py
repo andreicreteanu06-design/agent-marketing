@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from decimal import Decimal
-
     import pandas as pd
 
 
@@ -229,55 +227,4 @@ class TikTokAdsProvider(ABC):
         Returns:
             Lista de parcursuri; fiecare este ``[canal1, canal2, ...,
             "conversion" | "null"]``.
-        """
-
-
-class BaseMarketingProvider(ABC):
-    """Contract generic, platform-agnostic pentru "cumparare de media" algoritmica.
-
-    Distinct, deliberat, de :class:`GoogleAdsProvider`/:class:`MetaMarketingProvider`/
-    :class:`TikTokAdsProvider` de mai sus - acelea au un contract STABILIT,
-    deja cablat in tot Modulul 2 (``decision/pipeline.py::run_plan`` ->
-    ``arms_from_performance`` -> Kelly/Thompson/Markov) si testat pe date
-    reale. Nu le fac sa mosteneasca aceasta clasa: ar insemna fie sa le adaug
-    metode noi (``scale_budget``/``pause_ad``) fara nicio implementare reala in
-    spate (azi, scalarea bugetului/pauza se fac prin fluxul
-    ``ApprovalGate``/``guardrails``, nu direct pe obiectul provider), fie sa
-    schimb un contract deja testat pentru zero beneficiu concret. Aceasta clasa
-    e pentru platforme NOI care nu au inca un loc in Modulul 2 (Generative
-    Engine Ads azi - :class:`~ppc_agent.providers.live.LiveGenerativeEngineProvider`).
-
-    ``get_campaign_metrics`` intoarce aceeasi forma ca ``campaign_performance()``
-    (``arm_id``, ``name``, ``clicks``, ``conversions``, ``cost``, ``revenue``) -
-    daca o platforma noua ajunge sa fie cablata in ``run_plan``, bridge-ul
-    existent (``arms_from_performance``) o poate consuma neschimbat.
-    """
-
-    @abstractmethod
-    def get_campaign_metrics(self, account_id: str) -> pd.DataFrame:
-        """Performanta pe campanii, in aceeasi forma ca ``campaign_performance()``.
-
-        Args:
-            account_id: Identificatorul contului pe platforma respectiva.
-
-        Returns:
-            ``DataFrame`` cu coloanele ``arm_id``, ``name``, ``clicks``,
-            ``conversions``, ``cost``, ``revenue``.
-        """
-
-    @abstractmethod
-    def scale_budget(self, campaign_id: str, new_daily_budget: Decimal) -> None:
-        """Actualizeaza bugetul zilnic al unei campanii pe platforma reala.
-
-        Args:
-            campaign_id: Identificatorul campaniei pe platforma respectiva.
-            new_daily_budget: Noul buget zilnic.
-        """
-
-    @abstractmethod
-    def pause_ad(self, ad_id: str) -> None:
-        """Pune pauza unui anunt/campanii pe platforma reala.
-
-        Args:
-            ad_id: Identificatorul anuntului/campaniei pe platforma respectiva.
         """

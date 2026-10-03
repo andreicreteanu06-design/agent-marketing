@@ -144,10 +144,13 @@ def forward_conversion(
 
     Returns:
         ``"sent"`` / ``"failed"`` cand s-a incercat; ``None`` cand nu e cazul:
-        conversie necalificata, deja trimisa, client fara pixel, server in mod mock.
+        conversie necalificata, deja trimisa, fara consimtamant de marketing, client
+        fara pixel, server in mod mock.
     """
     event = find_event(session, account.id or 0, conversion.event_id)
     if event is None or not event.qualified or event.meta_capi_sent_at is not None:
+        return None
+    if conversion.marketing_consent is False:  # refuzat in bannerul de cookie-uri
         return None
     if not account.meta_pixel_id:
         return None

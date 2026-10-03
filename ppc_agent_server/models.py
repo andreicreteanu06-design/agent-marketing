@@ -22,7 +22,7 @@ from typing import Any, Optional
 from sqlalchemy import JSON, Column, Numeric, UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
-from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent.campaign_objective import CampaignObjective, break_even_roas, target_cpa
 
 
 def _money_column() -> Column[Decimal]:
@@ -149,28 +149,6 @@ class AdLifecycleStatus(enum.StrEnum):
     PAUSED = "paused"
 
 
-class AdPlatform(enum.StrEnum):
-    """Platformele pe care ``BaseMarketingProvider`` (ppc_agent/providers/base.py)
-    le poate targeta - un al treilea enum de platforma, distinct de
-    :class:`Platform` (creatie de copy, doar Google/TikTok azi) si de
-    :class:`AdFatiguePlatform` (monitorul de oboseala, Google/Meta/TikTok) -
-    acelasi principiu ca de ce exista deja doua: fiecare enum e scopat la
-    subsistemul lui, nu exista un enum universal "toate platformele".
-
-    ``CHATGPT`` are un provider real, dar stub (acces API limitat la
-    parteneri OpenAI aprobati - vezi
-    ``providers.live.LiveGenerativeEngineProvider``). ``PERPLEXITY`` e inclus
-    pentru completitudine viitoare, dar NU are azi niciun produs de reclame de
-    integrat - Perplexity a abandonat reclamele in februarie 2026
-    (subscription-only). Niciun cont/camp de conectare Perplexity nu exista pe
-    ``ClientAccount`` - ar fi o optiune UI care nu ar putea face nimic.
-    """
-
-    META = "meta"
-    CHATGPT = "chatgpt"
-    PERPLEXITY = "perplexity"
-
-
 def _now() -> datetime:
     return datetime.now(tz=UTC)
 
@@ -200,12 +178,8 @@ class ClientAccount(SQLModel, table=True):
     google_ads_customer_id: str = ""
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
-    # OpenAI Ads (ChatGPT) - vezi AdPlatform.CHATGPT si
-    # providers.live.LiveGenerativeEngineProvider (stub: acces API limitat la
-    # parteneri aprobati de OpenAI). Campul exista din azi ca sa nu ceara o a
-    # doua migratie cand providerul devine real - neexpus inca in nicio ruta a
-    # serverului (nimic nu-l citeste/scrie azi, la fel ca celelalte 3 pana la
-    # implementarea lor).
+    # OpenAI Ads (ChatGPT): contul il da cheia (``chatgpt_ads_api_key_enc``, una per
+    # cont de reclame - vezi providers/live/chatgpt_ads.py); id-ul e doar informativ.
     chatgpt_ads_account_id: str = ""
 
     # Secrete per-client, criptate (Fernet - vezi security.py), NICIODATA in
@@ -244,6 +218,14 @@ class ClientAccount(SQLModel, table=True):
     # Pixelul Meta (dataset) in care trimit conversiile prin Conversions API
     # (tracking/meta_capi.py). Gol = conversiile se inregistreaza doar la noi.
     meta_pixel_id: str = ""
+    # Aceleasi conversii, si spre celelalte platforme (gol = nu se trimit acolo):
+    # actiunea de conversie Google Ads de tip "import din click-uri"
+    # (tracking/google_conversions.py), pixelul TikTok (tracking/tiktok_events.py) si
+    # pixelul + cheia Conversions API din OpenAI Ads (tracking/chatgpt_conversions.py).
+    google_ads_conversion_action_id: str = ""
+    tiktok_pixel_code: str = ""
+    chatgpt_pixel_id: str = ""
+    chatgpt_conversions_key_enc: str = ""
 
     max_daily_spend: Decimal = Field(default=Decimal("50.00"), sa_column=_money_column())
     # Valoare proxy pentru conversii "lead"/"phone_call" fara valoare explicita
@@ -254,6 +236,11 @@ class ClientAccount(SQLModel, table=True):
     # comportamentul deja existent al randurilor vechi de ConversionEvent (fallback
     # pe default_lead_value pentru orice conversie fara valoare explicita).
     objective: CampaignObjective = CampaignObjective.LEAD_GEN
+    #: Pragul de rentabilitate (ROAS minim): la un magazin 1 / marja, ex. 2,5 la o
+    #: marja de 40%. Gol = implicitul obiectivului (``campaign_objective.break_even_roas``).
+    min_roas: Decimal | None = Field(
+        default=None, sa_column=Column(Numeric(10, 2), nullable=True)
+    )
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")
@@ -277,6 +264,22 @@ class ClientAccount(SQLModel, table=True):
     client_user: Optional["ClientUser"] = Relationship(
         back_populates="client_account", sa_relationship_kwargs={"uselist": False}
     )
+
+    @property
+    def break_even_roas(self) -> Decimal:
+        """ROAS-ul de la care contul castiga bani - Kelly, CFO-ul si monitorul il folosesc."""
+        return break_even_roas(self.objective, self.min_roas)
+
+    def target_cpa(
+        self, *, revenue: Decimal = Decimal("0"), conversions: float = 0.0
+    ) -> Decimal:
+        """CPA-ul maxim rentabil; cu destule vanzari, din cosul mediu real."""
+        return target_cpa(
+            self.default_lead_value,
+            self.break_even_roas,
+            revenue=revenue,
+            conversions=conversions,
+        )
 
 
 class ClientUser(SQLModel, table=True):
@@ -448,6 +451,14 @@ class ConversionEvent(SQLModel, table=True):
     # si ultimul motiv de esec. Un webhook retrimis reincearca doar ce n-a plecat.
     meta_capi_sent_at: datetime | None = None
     meta_capi_error: str | None = None
+    # La fel pentru celelalte platforme: Google Ads (conversii din click-uri), TikTok
+    # Events API si Conversions API din OpenAI Ads (ChatGPT).
+    google_ads_sent_at: datetime | None = None
+    google_ads_error: str | None = None
+    tiktok_events_sent_at: datetime | None = None
+    tiktok_events_error: str | None = None
+    chatgpt_events_sent_at: datetime | None = None
+    chatgpt_events_error: str | None = None
 
     client_account: ClientAccount = Relationship(back_populates="conversion_events")
 

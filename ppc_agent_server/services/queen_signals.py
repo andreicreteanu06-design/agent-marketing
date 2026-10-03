@@ -40,12 +40,14 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from functools import partial
 from typing import Any, Protocol
 
 import httpx
 from sqlmodel import Session, col, select
 
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.errors import PpcAgentError
 from ppc_agent_server.hybrid_queries import DEFAULT_WINDOW_DAYS, load_paid_terms, window_start
 from ppc_agent_server.models import (
@@ -107,6 +109,7 @@ from ppc_agent_server.services.technician import (
 )
 from ppc_agent_server.skills import SkillRegistry, skill_registry
 from ppc_agent_server.skills.web_search import WebFinding
+from ppc_agent_server.tracking.pipeline import shop_revenue
 from seo_geo_agent.audit.geo_reporters import brand_token_from_url
 from seo_geo_agent.services.intelligence import DailySearch, Window
 
@@ -525,6 +528,12 @@ class DbFinancialSignals:
                 PlatformArmSnapshot.client_account_id == client_account_id
             )
         ).all()
+        # Tinta CPA: valoarea unei conversii / pragul de rentabilitate - la un magazin cu
+        # destule vanzari, din cosul mediu real al aceleiasi ferestre.
+        target = account.target_cpa(
+            revenue=sum((arm.revenue for arm in arms), Decimal("0")),
+            conversions=sum(arm.conversions for arm in arms),
+        )
         ads = [
             AdSpend(
                 ad_id=arm.arm_id,
@@ -533,7 +542,7 @@ class DbFinancialSignals:
                 spend=arm.cost,
                 conversions=arm.conversions,
                 revenue=arm.revenue,
-                target_cpa=account.default_lead_value,
+                target_cpa=target,
             )
             for arm in arms
             if arm.platform != "google_ads" or not terms
@@ -587,6 +596,11 @@ class DbFinancialSignals:
             pending_proposals=len(pending),
             window_days=self._days,
             notes=notes,
+            break_even_roas=account.break_even_roas,
+            shop_revenue=shop_revenue(self._session, account, days=self._days),
+            break_even_is_default=(
+                account.min_roas is None and account.objective is CampaignObjective.SALES
+            ),
         )
 
 

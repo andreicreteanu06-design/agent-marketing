@@ -118,7 +118,7 @@ def test_lansarea_trece_prin_consiliu_si_poarta_avizul(
     question = council.questions[0]
     assert "«Service Auto - Vanzari»" in question and "25.00 RON" in question
     assert body["before"]["council_review"]["decision"] == "Testul merge, în plafon."
-    assert body["rationale"].endswith("Consiliul: Testul merge, în plafon.")
+    assert "Consiliul: Testul merge, în plafon. CCO:" in body["rationale"]
 
 
 def test_fara_consiliu_nu_se_lanseaza_nimic(

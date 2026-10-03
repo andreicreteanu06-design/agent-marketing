@@ -18,8 +18,10 @@ separat inclus dupa - o dependenta de ordine intre fisiere e o capcana.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,11 +29,15 @@ from sqlalchemy import update
 from sqlmodel import Session, col, select
 
 from ppc_agent.config import ProviderMode
-from ppc_agent.errors import ApprovalRequiredError, SpendLimitExceeded
+from ppc_agent.errors import ApprovalRequiredError, PpcAgentError, SpendLimitExceeded
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.services.execution_engine import (
+    EXECUTORS,
+    PLATFORM_CHATGPT,
+    PLATFORM_GOOGLE_ADS,
     PLATFORM_META,
-    MetaMutationProvider,
+    PLATFORM_TIKTOK,
+    MutationProvider,
     NoExecutorError,
     ProposalNotExecutableError,
     ResourceTarget,
@@ -69,34 +75,41 @@ logger = logging.getLogger("ppc_agent_server.routers.proposals")
 _GUARD_CURRENCY = "RON"
 
 
+#: Numele platformelor, cum le vede omul in mesajele de mai jos.
+_PLATFORM_NAMES = {
+    PLATFORM_META: "Meta",
+    PLATFORM_GOOGLE_ADS: "Google Ads",
+    PLATFORM_TIKTOK: "TikTok",
+    PLATFORM_CHATGPT: "ChatGPT (OpenAI Ads)",
+}
+
+
 def _require_mutation_provider(
     account: ClientAccount, target: ResourceTarget
-) -> MetaMutationProvider:
+) -> MutationProvider:
     """Providerul prin care se aplica schimbarea, sau 409 cu motivul exact.
 
-    Trei motive pentru care nu se poate aplica, si fiecare spune omului altceva
+    Patru motive pentru care nu se poate aplica, si fiecare spune omului altceva
     de facut - de-asta nu au acelasi mesaj:
 
-    1. **Alta platforma decat Meta.** ``GoogleAdsProvider`` si
-       ``TikTokAdsProvider`` sunt contracte de CITIRE: n-au nicio metoda de
-       mutatie si nicio implementare in spate. Propunerile motorului hibrid
-       (termeni de cautare Google Ads) cad aici.
+    1. **Nu stim sa aplicam tipul asta** (ex. termenii motorului hibrid: buget pe un
+       cuvant cheie nu exista in Google Ads).
     2. **Mod ``mock``.** Nu aplicam nimic si nu ne prefacem ca am aplicat.
-    3. **Cont Meta neconectat.** Lipseste token-ul.
+    3. **Moneda contului nu e leul** in care e plafonul de siguranta.
+    4. **Cont neconectat.** Lipsesc cheile platformei.
 
-    In toate trei propunerea ramane ``pending``, ca sa poata fi aplicata manual
-    sau automat mai tarziu.
+    In toate propunerea ramane ``pending``, ca sa poata fi aplicata manual sau
+    automat mai tarziu.
 
     Raises:
         HTTPException: 409, cu motivul de mai sus.
     """
-    if target.platform != PLATFORM_META:
+    if (target.platform, target.kind) not in EXECUTORS:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"schimbarile pe {target.platform} nu se pot aplica automat inca - "
-                "doar Meta are provider de scriere. Propunerea ramane in asteptare; "
-                "aplic-o manual in platforma."
+                f"schimbarile de tip '{target.kind}' pe {target.platform} nu se aplica "
+                "automat. Propunerea ramane in asteptare; aplic-o manual in platforma."
             ),
         )
     config = _app_config_for(account)
@@ -108,23 +121,59 @@ def _require_mutation_provider(
                 "schimbari reale. Propunerea ramane in asteptare."
             ),
         )
-    currency = config.settings.meta_currency.strip().upper()
-    if currency != _GUARD_CURRENCY:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"contul Meta e in {currency}, iar plafonul de siguranta e in "
-                f"{_GUARD_CURRENCY} - nu aplic schimbari reale pana nu coincid "
-                "(PPC_META_CURRENCY)."
-            ),
-        )
-    provider = ProviderFactory(config).meta_mutations()
+    factory = ProviderFactory(config)
+    name = _PLATFORM_NAMES.get(target.platform, target.platform)
+    if target.platform == PLATFORM_META:
+        currency = config.settings.meta_currency.strip().upper()
+        if currency != _GUARD_CURRENCY:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"contul Meta e in {currency}, iar plafonul de siguranta e in "
+                    f"{_GUARD_CURRENCY} - nu aplic schimbari reale pana nu coincid "
+                    "(PPC_META_CURRENCY)."
+                ),
+            )
+        meta = factory.meta_mutations()
+        if meta is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "contul Meta nu e conectat (lipseste token-ul de acces). "
+                    "Conecteaza-l din setarile contului si reincearca."
+                ),
+            )
+        return meta
+
+    builders = {
+        PLATFORM_GOOGLE_ADS: factory.google_ads_mutations,
+        PLATFORM_TIKTOK: factory.tiktok_mutations,
+        PLATFORM_CHATGPT: factory.chatgpt_mutations,
+    }
+    provider = builders[target.platform]()
     if provider is None:
         raise HTTPException(
             status_code=409,
             detail=(
-                "contul Meta nu e conectat (lipseste token-ul de acces). "
+                f"contul {name} nu e conectat (lipsesc cheile sau id-ul contului). "
                 "Conecteaza-l din setarile contului si reincearca."
+            ),
+        )
+    # Moneda o spune platforma, nu o setare: un buget de 50 intr-un cont in euro
+    # inseamna de cinci ori plafonul in lei.
+    try:
+        currency = asyncio.run(provider.account_currency()).strip().upper()
+    except PpcAgentError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"nu am putut verifica moneda contului {name}: {exc}",
+        ) from exc
+    if currency != _GUARD_CURRENCY:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"contul {name} e in {currency or 'moneda necunoscuta'}, iar plafonul de "
+                f"siguranta e in {_GUARD_CURRENCY} - nu aplic schimbari reale pana nu coincid."
             ),
         )
     return provider
@@ -135,13 +184,26 @@ def _check_spend_limit(
 ) -> None:
     """Angajamentul TOTAL al clientului plus aceasta propunere - vezi ``spend_guard``."""
     check_spend_limit(
-        session, account, proposal.projected_daily_spend, replaces=_replaces(proposal)
+        session,
+        account,
+        proposal.projected_daily_spend,
+        replaces=_replaces(proposal),
+        current=_current_budget(proposal),
     )
 
 
 def _replaces(proposal: ProposedChange) -> str | None:
     """Obiectul al carui buget il inlocuieste propunerea; o lansare nu inlocuieste nimic."""
     return None if proposal.op is ChangeOp.CREATE_CAMPAIGN else proposal.resource
+
+
+def _current_budget(proposal: ProposedChange) -> Decimal | None:
+    """Bugetul obiectului citit din platforma la propunere (pasii de noapte il au)."""
+    raw = (proposal.before or {}).get("daily_budget")
+    try:
+        return Decimal(str(raw)) if raw is not None else None
+    except InvalidOperation:
+        return None
 
 
 def _transition(
@@ -294,6 +356,7 @@ def approve_proposal(
             proposal.projected_daily_spend,
             exclude_id=proposal.id,
             replaces=_replaces(proposal),
+            current=_current_budget(proposal),
         )
         result = run_execution(
             proposal,
@@ -462,6 +525,7 @@ def execute_proposal(
             proposal.projected_daily_spend,
             exclude_id=proposal.id,
             replaces=_replaces(proposal),
+            current=_current_budget(proposal),
         )
     except SpendLimitExceeded:
         _transition(session, proposal, frm=ChangeStatus.APPROVED, to=ChangeStatus.PENDING)

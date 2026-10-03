@@ -31,6 +31,12 @@ class ArmStats(BaseModel):
     #: Ruleaza acum (Meta: setul are ``effective_status`` ``ACTIVE``). Unul oprit isi
     #: pastreaza istoricul pentru CFO, dar nu mai primeste buget de la Thompson.
     active: bool = True
+    #: Bugetul zilnic de acum, cand platforma il raporteaza (Google: bugetul campaniei,
+    #: TikTok: al grupului de anunturi). Propunerile de noapte pleaca de la el in pasi.
+    daily_budget: Decimal | None = None
+    #: De ce bugetul acestui brat nu se poate muta aici (buget partajat intre campanii,
+    #: buget pe campanie, buget pe viata, faza de invatare). Gol = se poate muta.
+    budget_locked: str = ""
 
     @property
     def observed_cvr(self) -> float:
@@ -130,6 +136,9 @@ class PlanResult(BaseModel):
     budget_plan: BudgetPlan
     attribution: AttributionResult
     arm_capacity: ArmCapacityAdvice | None = None
+    #: Bratele care au intrat in plan (active, cu venitul estimat unde lipsea) - cu
+    #: bugetul de acum, din care propunerile pleaca in pasi.
+    arms: list[ArmStats] = Field(default_factory=list)
 
 
 class DailyArmMetric(BaseModel):

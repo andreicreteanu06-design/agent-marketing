@@ -45,7 +45,8 @@ def committed_daily_spend(
     prima, iar o pauza il aduce la 0. Altfel ajustarile de buget din fiecare noapte
     ar umfla angajamentul pana cand orice crestere e refuzata. Lansarile sunt
     fiecare o campanie noua, deci se aduna toate - inclusiv cele create OPRITE:
-    activarea lor din Ads Manager nu mai trece prin noi.
+    activarea lor din Ads Manager nu mai trece prin noi. Bugetul unei lansari
+    executate sta pe setul de reclame creat: ajustarea lui de noapte il inlocuieste.
 
     Insumarea se face in Python, pe ``Decimal`` - nu cu ``SUM()`` in SQL, care
     pe SQLite ar trece prin float. ``exclude_id``: propunerea care se verifica
@@ -58,7 +59,11 @@ def committed_daily_spend(
 def _budgets(
     session: Session, client_account_id: int | None, exclude_id: int | None
 ) -> dict[tuple[int, str], Decimal]:
-    """Bugetul de acum, pe (client, obiect); o lansare e cheia ei proprie."""
+    """Bugetul de acum, pe (client, obiect).
+
+    O lansare executata e setul ei de reclame (``meta_ad_set/<id>`` din rezultat); una
+    inca in zbor, fara rezultat, e cheia ei proprie.
+    """
     query = select(ProposedChange).where(col(ProposedChange.status).in_(_COMMITTED))
     if client_account_id is not None:
         query = query.where(ProposedChange.client_account_id == client_account_id)
@@ -68,7 +73,8 @@ def _budgets(
     for change in sorted(session.exec(query).all(), key=lambda row: row.id or 0):
         key = change.resource
         if change.op is ChangeOp.CREATE_CAMPAIGN:
-            key = f"{key}#{change.id}"
+            adset_id = (change.execution_result or {}).get("adset_id")
+            key = f"meta_ad_set/{adset_id}" if adset_id else f"{key}#{change.id}"
         budgets[(change.client_account_id, key)] = change.projected_daily_spend
     return budgets
 
@@ -80,6 +86,7 @@ def check_spend_limit(
     *,
     exclude_id: int | None = None,
     replaces: str | None = None,
+    current: Decimal | None = None,
 ) -> None:
     """Refuza orice ar duce angajamentul total peste plafonul clientului sau al platformei.
 
@@ -87,9 +94,11 @@ def check_spend_limit(
     sub plafon, l-ar putea depasi impreuna.
 
     ``replaces``: obiectul al carui buget il inlocuieste ``additional`` (un set de
-    reclame ajustat); bugetul lui de acum iese din total. O schimbare care nu
-    creste cheltuiala (o pauza, o reducere) trece mereu: oprirea cheltuielii nu
-    trebuie blocata tocmai cand angajamentul e deja peste plafon.
+    reclame ajustat); bugetul lui de acum iese din total. ``current``: bugetul lui
+    citit din platforma la propunere (``before.daily_budget``) - si pentru un set pe
+    care platforma nu l-a atins niciodata. O schimbare care nu creste cheltuiala (o
+    pauza, o reducere) trece mereu: oprirea cheltuielii nu trebuie blocata tocmai
+    cand angajamentul e deja peste plafon.
 
     Raises:
         SpendLimitExceeded: un plafon ar fi depasit (-> 409), cu alerta CRITICAL.
@@ -98,7 +107,7 @@ def check_spend_limit(
     if replaces is not None:
         budgets = _budgets(session, account.id or 0, exclude_id)
         replaced = budgets.get((account.id or 0, replaces), Decimal("0"))
-    if additional <= replaced:
+    if additional <= max(replaced, current or Decimal("0")):
         return
     global_cap = get_server_settings().max_daily_spend_ron
     checks = (

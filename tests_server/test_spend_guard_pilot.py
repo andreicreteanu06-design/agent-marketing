@@ -259,3 +259,57 @@ def test_un_buget_nou_pe_acelasi_set_il_inlocuieste_pe_cel_vechi(
     # Acum sunt angajati 48: inca 5 pe alt set ar insemna 53 > 50.
     refused = client.post(f"/api/v1/proposals/{other_set}/approve", headers=headers)
     assert refused.status_code == 409
+
+
+def test_a_launched_ad_set_steps_down_and_up_inside_its_launch_budget(
+    hitl: tuple[TestClient, dict[str, str], int],
+    session: Session,
+    meta_live: None,
+    graph_api: _GraphApiStub,
+) -> None:
+    """Doua lansari de 20/zi (40 din 50). Bugetul lansarii era tinut pe contul de reclame,
+    nu pe setul creat: coborarea unui set la 16 se aduna peste el (56 > 50) - refuzata."""
+    client, headers, account_id = hitl
+    for adset in ("111", "222"):
+        session.add(
+            ProposedChange(
+                client_account_id=account_id,
+                op=ChangeOp.CREATE_CAMPAIGN,
+                resource="meta_ad_account/act_1",
+                resource_type="ad_account",
+                projected_daily_spend=Decimal("20"),
+                rationale="lansare",
+                source_module="launch",
+                status=ChangeStatus.EXECUTED,
+                execution_result={"campaign_id": f"c{adset}", "adset_id": adset},
+            )
+        )
+    session.commit()
+
+    def approve(resource: str, spend: str) -> int:
+        change = _proposal(account_id, op=ChangeOp.UPDATE, resource=resource, spend=spend)
+        session.add(change)
+        session.commit()
+        session.refresh(change)
+        return client.post(f"/api/v1/proposals/{change.id}/approve", headers=headers).status_code
+
+    assert approve("meta_ad_set/111", "16") == 200  # 20 -> 16: o reducere
+    assert approve("meta_ad_set/222", "24") == 200  # 16 + 24 = 40, sub 50
+
+
+def test_a_manual_ad_set_above_the_cap_can_only_go_down_from_its_budget_right_now() -> None:
+    """Un set creat manual la 100/zi (plafon 50): 80 e o reducere - dar doar fata de
+    bugetul citit acum, nu fata de cel din propunere (cineva l-a putut cobori intre timp)."""
+    step_down = _proposal(op=ChangeOp.UPDATE, resource="meta_ad_set/999", spend="80")
+    still_100 = _FakeMetaProvider(current_budget=Decimal("100"))
+    result = execute_proposal(
+        step_down, still_100, current_status="pending", max_daily_spend=_CAP
+    )
+    assert result.executed and still_100.budgets == [("999", Decimal("80"))]
+
+    lowered_to_30 = _FakeMetaProvider(current_budget=Decimal("30"))
+    with pytest.raises(SpendLimitExceeded):
+        execute_proposal(
+            step_down, lowered_to_30, current_status="pending", max_daily_spend=_CAP
+        )
+    assert not lowered_to_30.touched

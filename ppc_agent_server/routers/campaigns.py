@@ -6,19 +6,24 @@ cu specificatia completa in ``after`` - exact ce va vedea omul care aproba.
 Campania apare in contul Meta abia dupa ``POST /api/v1/proposals/{id}/approve``,
 si si atunci totul se creeaza OPRIT: activarea ramane un pas manual.
 
-Deci intre cererea de lansare si primul leu cheltuit stau consiliul si doua decizii
-umane: avizul consiliului (``services/launch_council.py``), aprobarea in ``/cont`` si
+Deci intre cererea de lansare si primul leu cheltuit stau consiliul, CCO-ul si doua
+decizii umane: avizul consiliului (``services/launch_council.py``), verdictul CCO-ului pe
+imaginea reclamei (``services/creative_evaluator.py``), aprobarea in ``/cont`` si
 activarea in Ads Manager. Cu oprirea de urgenta activa, nu se depune nimic (423).
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+import asyncio
+from collections.abc import Callable
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
+from ppc_agent.errors import PpcAgentError
 from ppc_agent.providers.factory import ProviderFactory
+from ppc_agent.providers.live.meta import download_image
 from ppc_agent.providers.meta_campaign import (
     DEFAULT_CALL_TO_ACTION,
     MetaLaunchSpec,
@@ -40,6 +45,12 @@ from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
 from ppc_agent_server.services.council import CouncilReply
 from ppc_agent_server.services.council_guard import DECIDED_BY
+from ppc_agent_server.services.creative_evaluator import (
+    MAX_IMAGE_BYTES,
+    evaluate_creative,
+    text_judge_from_settings,
+    vision_model_from_settings,
+)
 from ppc_agent_server.services.emergency_stop import require_running
 from ppc_agent_server.services.launch_council import (
     REVIEW_KEY,
@@ -49,6 +60,7 @@ from ppc_agent_server.services.launch_council import (
     launch_question,
     review,
 )
+from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.spend_guard import check_spend_limit, committed_daily_spend
 
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
@@ -72,6 +84,56 @@ def get_launch_council() -> Council:
         )
 
     return consult
+
+
+#: CCO-ul pe imaginea unei lansari: verdictul (``CreativeEvaluation``) sau, cand nu poate
+#: rula, ``{"unavailable": motiv}``.
+CreativeReview = Callable[[str], dict[str, Any]]
+CREATIVE_KEY = "creative_review"
+#: Verdictul care opreste lansarea: o creativa slaba se repara inainte sa cheltuie bani.
+#: "HUMAN_REVIEW_REQUIRED" nu opreste - aprobarea e chiar acea verificare umana.
+CREATIVE_BLOCKS = "REVISE_BEFORE_TEST"
+CREATIVE_DECIDED_BY = "cco"
+
+
+def get_creative_review() -> CreativeReview:
+    """Dependinta: CCO-ul pe imaginea lansarii (injectabil in teste).
+
+    Un CCO care nu poate rula (Ollama oprit, modelul lipsa, imaginea nedescarcabila) nu
+    opreste lansarea: avizul spune ca evaluarea lipseste, iar omul decide la aprobare.
+    """
+
+    def evaluate(image_url: str) -> dict[str, Any]:
+        settings = get_server_settings()
+        try:
+            image = asyncio.run(download_image(image_url, max_bytes=MAX_IMAGE_BYTES))
+            return evaluate_creative(
+                image,
+                model=vision_model_from_settings(settings),
+                judge=text_judge_from_settings(settings),
+                whisper_model=settings.whisper_model,
+                elevenlabs_api_key=settings.elevenlabs_api_key,
+            )
+        except (PpcAgentError, ValueError) as exc:
+            return {"unavailable": str(exc)[:300]}
+
+    return evaluate
+
+
+def _creative_note(creative: dict[str, Any]) -> str:
+    """Ce adauga verdictul CCO-ului la motivul propunerii."""
+    decision = creative.get("decision")
+    risks = "; ".join(creative.get("detected_risks", [])[:3])
+    if decision is None:
+        return (
+            f"CCO: evaluarea creativei n-a putut rula ({creative.get('unavailable', '')}) - "
+            "verific-o tu inainte de aprobare."
+        )
+    if decision == "HUMAN_REVIEW_REQUIRED":
+        return f"CCO: creativa cere verificare umana - {risks}."
+    if decision == CREATIVE_BLOCKS:
+        return f"CCO: creativa trebuie revizuita inainte de test - {risks}."
+    return "CCO: creativa e eligibila pentru test."
 
 
 def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaLaunchSpec:
@@ -122,6 +184,7 @@ def propose_launch(
     client_user: Annotated[ClientUser, Depends(get_current_client_user)],
     session: Annotated[Session, Depends(get_session)],
     council: Annotated[Council, Depends(get_launch_council)],
+    creative_review: Annotated[CreativeReview, Depends(get_creative_review)],
 ) -> ProposedChange:
     """Depune o propunere de lansare, cu avizul consiliului. Nu creeaza nimic in Meta.
 
@@ -198,6 +261,7 @@ def propose_launch(
         ) from exc
     # Dupa deliberare: o taietura a CFO-ului de acum e deja in memorie, deci conteaza.
     block = growth_block(session, client_id)
+    creative = creative_review(spec.image_url)
 
     proposal = ProposedChange(
         client_account_id=client_id,
@@ -207,12 +271,12 @@ def propose_launch(
         # scria cand omul a aprobat, chiar daca setarea clientului se schimba.
         resource=f"meta_ad_account/{ad_account}",
         resource_type="campaign",
-        before={**brief.to_payload(), REVIEW_KEY: review(reply)},
+        before={**brief.to_payload(), REVIEW_KEY: review(reply), CREATIVE_KEY: creative},
         after=spec.to_payload(),
         projected_daily_spend=spec.daily_budget,
         rationale=(
             f"{_rationale(spec, ad_account)} {brief.summary()} "
-            f"Consiliul: {reply.ruling.decision}"
+            f"Consiliul: {reply.ruling.decision} {_creative_note(creative)}"
         ),
         source_module=SOURCE_MODULE,
         status=ChangeStatus.PENDING,
@@ -224,6 +288,15 @@ def propose_launch(
         proposal.decided_by = DECIDED_BY
         proposal.error_message = stopped["message"]
         proposal.before = {**proposal.before, "council": stopped["context"]}
+    elif creative.get("decision") == CREATIVE_BLOCKS:
+        fixes = "; ".join(creative.get("priority_fixes", []))
+        proposal.status = ChangeStatus.BLOCKED
+        proposal.decided_at = reply.generated_at
+        proposal.decided_by = CREATIVE_DECIDED_BY
+        proposal.error_message = (
+            f"Oprită de evaluarea creativă: {_creative_note(creative)} Repară: {fixes}. "
+            "Apoi propune lansarea din nou, cu imaginea nouă."
+        )
     session.add(proposal)
     session.commit()
     session.refresh(proposal)

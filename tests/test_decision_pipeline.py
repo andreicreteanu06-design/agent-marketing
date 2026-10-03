@@ -13,11 +13,13 @@ import pytest
 
 from ppc_agent.config import AppConfig, ProviderMode, Settings
 from ppc_agent.decision.kelly_sizing import size_daily_budget
+from ppc_agent.decision.models import ArmStats
 from ppc_agent.decision.pipeline import (
     SupportsDailyPerformance,
     arms_from_performance,
     collect_daily_histories,
     run_plan,
+    value_unreported_conversions,
 )
 from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.providers.mock.ads import MockGoogleAdsProvider
@@ -130,3 +132,45 @@ def test_paused_ad_sets_get_no_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     plan = run_plan(factory, config, n_samples=200)
     funded = {item.arm_id for item in plan.budget_plan.allocations}
     assert funded and "as_brand" not in funded
+
+
+# --- vanzarile raportate fara valoare (TikTok, Google fara urmarirea valorii) ----------
+
+
+def _arm(arm_id: str, platform: str, conversions: int, revenue: str) -> ArmStats:
+    return ArmStats(
+        arm_id=arm_id,
+        name=arm_id,
+        clicks=200,
+        conversions=conversions,
+        cost=Decimal("100"),
+        revenue=Decimal(revenue),
+        platform=platform,
+    )
+
+
+def test_sales_reported_without_value_are_worth_the_real_average_order() -> None:
+    meta = _arm("meta", "meta_ads", 5, "750")  # cos mediu real: 150
+    tiktok = _arm("tiktok", "tiktok_ads", 4, "0")
+
+    valued = value_unreported_conversions([meta, tiktok], fallback=Decimal("300"))
+
+    assert valued[0] is meta
+    assert valued[1].revenue == Decimal("600.00")
+
+
+def test_before_five_valued_orders_the_expected_basket_is_used() -> None:
+    valued = value_unreported_conversions(
+        [_arm("meta", "meta_ads", 2, "300"), _arm("google", "google_ads", 3, "0")],
+        fallback=Decimal("250"),
+    )
+
+    assert valued[1].revenue == Decimal("750.00")
+
+
+def test_without_any_value_nothing_is_invented() -> None:
+    arms = [_arm("tiktok", "tiktok_ads", 4, "0"), _arm("idle", "tiktok_ads", 0, "0")]
+
+    assert value_unreported_conversions(arms, fallback=None) == arms
+    # Un brat fara conversii ramane fara venit si cand exista o valoare.
+    assert value_unreported_conversions(arms, fallback=Decimal("100"))[1].revenue == 0

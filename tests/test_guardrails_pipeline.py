@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from ppc_agent.alignment.models import AdSet, LiquidityPlan
 from ppc_agent.decision.fatigue_models import AdPerformanceState
-from ppc_agent.decision.models import BudgetAllocation, BudgetPlan
+from ppc_agent.decision.models import ArmStats, BudgetAllocation, BudgetPlan
 from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
 from ppc_agent.ingestion.models import NegativeKeywordSet
 
@@ -272,3 +272,81 @@ def test_build_fatigue_changes_handles_mixed_ad_list() -> None:
     healthy = _ad(ad_id="ad_healthy")
     changes = build_fatigue_changes([dying, healthy], _NOW)
     assert [c.resource for c in changes] == ["ad/ad_dying"]
+
+
+# --- Google, TikTok si ChatGPT: pasi de la bugetul de acum -----------------------------
+
+
+def _allocation(arm_id: str, platform: str, budget: str) -> BudgetAllocation:
+    return BudgetAllocation(
+        arm_id=arm_id,
+        name=arm_id,
+        platform=platform,
+        win_probability=0.5,
+        final_share=0.5,
+        daily_budget=Decimal(budget),
+    )
+
+
+def _arm(arm_id: str, platform: str, *, budget: str | None, locked: str = "") -> ArmStats:
+    return ArmStats(
+        arm_id=arm_id,
+        name=arm_id,
+        clicks=100,
+        conversions=5,
+        platform=platform,
+        daily_budget=Decimal(budget) if budget is not None else None,
+        budget_locked=locked,
+    )
+
+
+def test_google_tiktok_and_chatgpt_budgets_move_at_most_twenty_percent_a_night() -> None:
+    plan = _plan(
+        _allocation("g", "google_ads", "100"),
+        _allocation("t", "tiktok_ads", "10"),
+        _allocation("c", "chatgpt_ads", "45"),
+    )
+    arms = [
+        _arm("g", "google_ads", budget="50"),
+        _arm("t", "tiktok_ads", budget="40"),
+        _arm("c", "chatgpt_ads", budget="40"),
+    ]
+
+    changes = build_proposed_changes(
+        budget_plan=plan, negatives=_EMPTY_NEGATIVES, liquidity=_EMPTY_LIQUIDITY, arms=arms
+    )
+
+    by_resource = {change.resource: change for change in changes}
+    assert by_resource["campaign/g"].projected_daily_spend == Decimal("60.00")
+    assert by_resource["campaign/g"].before == {"daily_budget": "50"}
+    assert by_resource["tiktok_ad_group/t"].projected_daily_spend == Decimal("32.00")
+    assert by_resource["chatgpt_campaign/c"].projected_daily_spend == Decimal("45")
+    assert by_resource["chatgpt_campaign/c"].resource_type == "campaign"
+
+
+def test_a_locked_budget_is_left_alone_and_an_unchanged_one_is_not_proposed() -> None:
+    plan = _plan(_allocation("shared", "google_ads", "80"), _allocation("same", "tiktok_ads", "40"))
+    arms = [
+        _arm("shared", "google_ads", budget="50", locked="buget partajat cu alte campanii"),
+        _arm("same", "tiktok_ads", budget="40"),
+    ]
+
+    changes = build_proposed_changes(
+        budget_plan=plan, negatives=_EMPTY_NEGATIVES, liquidity=_EMPTY_LIQUIDITY, arms=arms
+    )
+
+    assert changes == []
+
+
+def test_a_tiktok_ad_that_burns_money_gets_a_pause_tiktok_can_apply() -> None:
+    dying = _ad(
+        ad_id="tt_dying",
+        platform="tiktok",
+        launch_time=_NOW - timedelta(hours=72),
+        spend=20.0,
+        conversions=0,
+        impressions=1500,
+    )
+    assert [change.resource for change in build_fatigue_changes([dying], _NOW)] == [
+        "tiktok_ad/tt_dying"
+    ]

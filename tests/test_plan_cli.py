@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ppc_agent.cli import app
-from ppc_agent.config import AppConfig, Settings
+from ppc_agent.config import AppConfig, BudgetConfig, Settings
 from ppc_agent.decision.pipeline import run_plan
 from ppc_agent.guardrails.spend_limiter import HARD_CEILING
 from ppc_agent.providers.factory import ProviderFactory
@@ -78,8 +78,12 @@ def test_kelly_disabled_keeps_baseline_cap() -> None:
 
 
 def test_positive_edge_scales_cap_above_baseline() -> None:
-    # Datele mock au ROAS de cont > 1 -> Half-Kelly ridica plafonul peste baseline.
-    config = AppConfig(settings=Settings(_env_file=None))
+    # Datele mock au ROAS de cont > 1 -> Half-Kelly ridica plafonul peste baseline. Cu
+    # vanzari pe trei platforme, doar cand comenzile magazinului confirma venitul.
+    config = AppConfig(
+        settings=Settings(_env_file=None),
+        budget=BudgetConfig(shop_revenue=Decimal("1000000")),
+    )
     factory = ProviderFactory(config)
     plan = run_plan(factory, config, n_samples=4000)
 
@@ -87,6 +91,33 @@ def test_positive_edge_scales_cap_above_baseline() -> None:
     assert plan.kelly.account_roas > 1.0
     assert plan.kelly.sized_daily_cap > plan.kelly.baseline_cap
     assert plan.kelly.sized_daily_cap <= HARD_CEILING
+
+
+def test_sales_on_several_platforms_without_shop_orders_do_not_raise_the_cap() -> None:
+    """Google, TikTok si Meta raporteaza fiecare vanzarile ei: suma poate numara aceeasi
+    vanzare de doua ori. Fara comenzile magazinului, Kelly poate taia, dar nu creste."""
+    config = AppConfig(settings=Settings(_env_file=None))
+    plan = run_plan(ProviderFactory(config), config, n_samples=4000)
+
+    assert plan.kelly.edge == "pozitiv"
+    assert plan.kelly.sized_daily_cap == plan.kelly.baseline_cap
+    assert "aceeasi vanzare poate fi numarata de doua ori" in plan.kelly.rationale
+
+
+def test_shop_orders_cap_the_revenue_the_platforms_claim() -> None:
+    """Platformele isi atribuie mai mult decat a vandut magazinul: ROAS-ul e pe comenzi."""
+    claimed = run_plan(
+        ProviderFactory(AppConfig(settings=Settings(_env_file=None))),
+        AppConfig(settings=Settings(_env_file=None)),
+        n_samples=2000,
+    ).kelly.account_roas
+    config = AppConfig(
+        settings=Settings(_env_file=None), budget=BudgetConfig(shop_revenue=Decimal("100"))
+    )
+    plan = run_plan(ProviderFactory(config), config, n_samples=2000)
+
+    assert plan.kelly.account_roas < claimed
+    assert "plafonat la comenzile reale ale magazinului" in plan.kelly.rationale
 
 
 def test_plan_is_reproducible() -> None:

@@ -205,6 +205,13 @@ class FinancialSignals:
     pending_proposals: int
     window_days: int
     notes: Sequence[str] = ()
+    #: ROAS-ul de la care contul castiga bani (``ClientAccount.break_even_roas``) si
+    #: daca e implicitul unui magazin, nu marja lui reala.
+    break_even_roas: Decimal = Decimal("1")
+    break_even_is_default: bool = False
+    #: Comenzile reale ale clientului pe fereastra (``tracking.pipeline.shop_revenue``),
+    #: cand webhook-ul o acopera. Plafoneaza venitul atribuit de platforme.
+    shop_revenue: Decimal | None = None
 
 
 class FinancialSignalsSource(Protocol):
@@ -256,6 +263,8 @@ class FinancialSnapshot(BaseModel):
     #: Venitul atribuit (reclame + Google) si obiectivul contului: ancora de valoare a pretului.
     revenue: Decimal = Decimal("0")
     objective: str = ""
+    #: Pragul fata de care s-a judecat ROAS-ul (vezi ``FinancialSignals.break_even_roas``).
+    break_even_roas: Decimal = Decimal("1")
 
 
 def _ad_economics(ad: AdSpend) -> AdEconomics:
@@ -341,6 +350,15 @@ def _conversions_phrase(conversions: float) -> str:
     return "nicio conversie" if conversions <= 0 else _count(conversions, "conversii", "conversie")
 
 
+def _selling_platforms(signals: FinancialSignals, search: SearchEconomics | None) -> set[str]:
+    """Platformele care raporteaza conversii in fereastra (Google si din termeni)."""
+    # "meta" (monitorul de oboseala) si "meta_ads" (planul de noapte) sunt aceeasi platforma.
+    platforms = {ad.platform.removesuffix("_ads") for ad in signals.ads if ad.conversions > 0}
+    if search is not None and search.conversions > 0:
+        platforms.add("google")
+    return platforms
+
+
 def build_financial_snapshot(signals: FinancialSignals) -> FinancialSnapshot:
     """Verdictul CFO-ului din date - functie pura, determinista."""
     ads = sorted((_ad_economics(ad) for ad in signals.ads), key=lambda ad: (-ad.spend, ad.ad_id))
@@ -354,6 +372,21 @@ def build_financial_snapshot(signals: FinancialSignals) -> FinancialSnapshot:
     revenue = sum((ad.revenue for ad in signals.ads), Decimal("0")) + (
         search.value if search else Decimal("0")
     )
+    notes = list(signals.notes)
+    # Fiecare platforma isi atribuie vanzarile ei: o vanzare vazuta si de Meta, si de
+    # Google apare de doua ori in suma. Comenzile magazinului sunt plafonul.
+    if signals.shop_revenue is not None and revenue > signals.shop_revenue:
+        notes.append(
+            f"Platformele își atribuie {_ron(revenue)} RON, dar magazinul a primit comenzi de "
+            f"{_ron(signals.shop_revenue)} RON în aceeași perioadă: judec pe comenzile reale "
+            "(o vânzare văzută de mai multe platforme se numără o dată)."
+        )
+        revenue = signals.shop_revenue
+    elif signals.shop_revenue is None and len(_selling_platforms(signals, search)) >= 2:
+        notes.append(
+            "Mai multe platforme raportează vânzări, iar fără comenzile magazinului aceeași "
+            "vânzare poate fi numărată de două ori: ROAS-ul real poate fi mai mic decât pare."
+        )
     target, averaged = _target_cpa(signals.ads)
     cpa = (spend / Decimal(str(conversions))).quantize(_CENT) if conversions > 0 else None
     roas = (revenue / spend).quantize(_CENT) if revenue > 0 and spend > 0 else None
@@ -372,19 +405,27 @@ def build_financial_snapshot(signals: FinancialSignals) -> FinancialSnapshot:
             "poate judeca. Nu extrapolez din atât de puțin."
         )
     elif roas is not None and (signals.objective == "sales" or target is None):
-        if roas >= BREAK_EVEN_ROAS:
+        threshold = signals.break_even_roas
+        if signals.break_even_is_default:
+            source = (
+                f"pragul implicit al unui magazin ({_ron(threshold)}, adică o marjă de "
+                f"{_ron(100 / threshold)}%) - marja reală nu e setată"
+            )
+        elif threshold == BREAK_EVEN_ROAS:
+            source = "pragul de acoperire a cheltuielii cu reclamele"
+        else:
+            source = f"pragul de rentabilitate al clientului ({_ron(threshold)})"
+        if roas >= threshold:
             status = "profitable"
             verdict = (
-                f"Contul își acoperă cheltuiala: ROAS {_ron(roas)}, adică venitul atribuit "
-                f"({_ron(revenue)} RON) acoperă cheltuiala ({_ron(spend)} RON). Marja nu o "
-                "cunosc, deci pragul folosit e doar acoperirea costului reclamelor."
+                f"Contul e rentabil: ROAS {_ron(roas)} - venitul atribuit {_ron(revenue)} RON "
+                f"din {_ron(spend)} RON cheltuiți - peste {source}."
             )
         else:
             status = "unprofitable"
             verdict = (
-                f"Contul nu e rentabil: ROAS {_ron(roas)}, adică venitul atribuit "
-                f"({_ron(revenue)} RON) nu acoperă nici cheltuiala cu reclamele "
-                f"({_ron(spend)} RON)."
+                f"Contul nu e rentabil: ROAS {_ron(roas)} - venitul atribuit {_ron(revenue)} "
+                f"RON din {_ron(spend)} RON cheltuiți - sub {source}."
             )
     elif target is not None and cpa is not None:
         if cpa <= target:
@@ -419,9 +460,10 @@ def build_financial_snapshot(signals: FinancialSignals) -> FinancialSnapshot:
         search=search,
         daily_spend_cap=signals.daily_spend_cap,
         pending_proposals=signals.pending_proposals,
-        notes=list(signals.notes),
+        notes=notes,
         revenue=revenue,
         objective=signals.objective,
+        break_even_roas=signals.break_even_roas,
     )
 
 
@@ -817,8 +859,11 @@ def _money_reopen(finances: FinancialSnapshot) -> str:
         return (
             "stabilești cu agenția o țintă CPA (sau valoarea unei conversii), iar contul o atinge"
         )
-    if finances.roas is not None and finances.roas < BREAK_EVEN_ROAS:
-        return "venitul atribuit acoperă cheltuiala cu reclamele (ROAS peste 1)"
+    if finances.roas is not None and finances.roas < finances.break_even_roas:
+        return (
+            "venitul atribuit trece de pragul de rentabilitate "
+            f"(ROAS peste {_ron(finances.break_even_roas)})"
+        )
     if finances.target_cpa is not None:
         return f"CPA-ul contului coboară sub ținta de {_ron(finances.target_cpa)} RON"
     return "contul devine rentabil"

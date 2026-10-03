@@ -62,18 +62,23 @@ def size_daily_budget(
     kelly_fraction: float = 0.5,
     prior_conversions: float = 1.0,
     prior_non_conversions: float = 1.0,
+    break_even_roas: Decimal = Decimal("1"),
+    revenue_cap: Decimal | None = None,
+    allow_growth: bool = True,
 ) -> KellySizing:
     """Dimensioneaza plafonul zilnic absolut prin Half-Kelly, marginit de ``hard_ceiling``.
 
     Math:
 
     - ``smoothed_cvr = (conversii + a) / (click-uri + a + b)`` cu priori Beta ``a, b``
-    - ``account_roas = venit_total / cost_total``
+    - ``account_roas = venit_total / cost_total``; avantajul se masoara fata de
+      ``break_even_roas`` (pragul de rentabilitate al clientului): ``r = account_roas /
+      break_even_roas``. La un magazin cu marja 40%, ROAS 1,8 e pierdere (prag 2,5).
     - la CPC si valoare/conversie fixe, ROAS scaleaza liniar cu CVR, deci CVR-ul de
       breakeven este ``smoothed_cvr / account_roas`` iar ``win_prob`` normalizat fata
-      de el se reduce la ``account_roas / (account_roas + 1)`` (un CVR brut ar face
-      Kelly permanent negativ pentru conturi reale)
-    - ``roas_odds = account_roas - 1``
+      de el se reduce la ``r / (r + 1)`` (un CVR brut ar face Kelly permanent negativ
+      pentru conturi reale)
+    - ``roas_odds = r - 1``
     - ``f = calculate_kelly_fraction(win_prob, roas_odds, kelly_fraction)``
     - ``multiplier = clamp(1 + f, 0.5, 2.0)`` aplicat pe ``baseline_cap``
     - ``sized_daily_cap = min(hard_ceiling, max(1.00, baseline_cap * multiplier))``
@@ -88,6 +93,15 @@ def size_daily_budget(
         kelly_fraction: Fractia Kelly (``0.5`` = Half-Kelly).
         prior_conversions: Pseudo-conversii pentru netezirea CVR.
         prior_non_conversions: Pseudo-non-conversii pentru netezirea CVR.
+        break_even_roas: ROAS-ul de la care contul castiga bani (implicit 1: valoarea
+            conversiilor e deja castigul, ca la lead-uri).
+        revenue_cap: Venitul real al contului (comenzile magazinului), cand e cunoscut.
+            Venitul bratelor nu trece de el: fiecare platforma isi atribuie vanzarile ei,
+            iar o vanzare vazuta de doua platforme ar intra de doua ori in ROAS.
+        allow_growth: ``False`` tine plafonul cel mult la ``baseline_cap``. Fara
+            comenzile magazinului, cand mai multe platforme raporteaza vanzari, ROAS-ul
+            insumat poate fi umflat de vanzarile numarate de doua ori: Kelly poate taia,
+            dar nu poate creste pe el.
 
     Returns:
         :class:`~ppc_agent.decision.models.KellySizing` cu plafonul si rationamentul.
@@ -99,6 +113,9 @@ def size_daily_budget(
     total_conversions = sum(arm.conversions for arm in arms)
     total_cost = sum((arm.cost for arm in arms), Decimal("0"))
     total_revenue = sum((arm.revenue for arm in arms), Decimal("0"))
+    capped = revenue_cap is not None and total_revenue > revenue_cap
+    if capped:
+        total_revenue = max(Decimal("0"), revenue_cap or Decimal("0"))
 
     if total_clicks == 0 or total_cost <= 0:
         return KellySizing(
@@ -122,11 +139,15 @@ def size_daily_budget(
         total_clicks + prior_conversions + prior_non_conversions
     )
     account_roas = float(total_revenue / total_cost)
-    win_prob = account_roas / (account_roas + 1.0) if account_roas > 0.0 else 0.0
-    roas_odds = account_roas - 1.0
+    relative = account_roas / float(break_even_roas)
+    win_prob = relative / (relative + 1.0) if relative > 0.0 else 0.0
+    roas_odds = relative - 1.0
 
     kelly_f = calculate_kelly_fraction(win_prob, roas_odds, kelly_fraction)
     multiplier = _clamp_multiplier(1.0 + kelly_f)
+    held = not allow_growth and multiplier > 1.0
+    if held:
+        multiplier = 1.0
     sized = min(ceiling, max(_MIN_CAP, _quantise(baseline * Decimal(str(multiplier)))))
 
     edge: EdgeLabel = (
@@ -144,9 +165,21 @@ def size_daily_budget(
         hard_ceiling=ceiling,
         edge=edge,
         rationale=_build_rationale(
-            edge, multiplier, account_roas, baseline, sized, ceiling
-        ),
+            edge, multiplier, account_roas, baseline, sized, ceiling, break_even_roas, held=held
+        )
+        + (_CAPPED_NOTE if capped else "")
+        + (_HELD_NOTE if held else ""),
     )
+
+
+_CAPPED_NOTE = (
+    " Venitul raportat de platforme e plafonat la comenzile reale ale magazinului: o "
+    "vanzare vazuta de mai multe platforme se numara o data."
+)
+_HELD_NOTE = (
+    " Plafonul nu creste: mai multe platforme raporteaza vanzari, iar fara comenzile "
+    "magazinului aceeasi vanzare poate fi numarata de doua ori."
+)
 
 
 def _clamp(value: float) -> float:
@@ -168,21 +201,29 @@ def _build_rationale(
     baseline: Decimal,
     sized: Decimal,
     ceiling: Decimal,
+    break_even_roas: Decimal = Decimal("1"),
+    *,
+    held: bool = False,
 ) -> str:
     pct = round((multiplier - 1.0) * 100.0)
+    roas = f"ROAS {account_roas:.2f}" + (
+        f", prag de rentabilitate {break_even_roas:.2f}" if break_even_roas != 1 else ""
+    )
+    if held:
+        return f"Half-Kelly: EV pozitiv ({roas}), plafon zilnic mentinut la {baseline}."
     if edge == "pozitiv":
         return (
-            f"Half-Kelly: EV pozitiv (ROAS {account_roas:.2f}), plafon zilnic "
+            f"Half-Kelly: EV pozitiv ({roas}), plafon zilnic "
             f"{baseline} -> {sized} (+{pct}%, x{multiplier:.2f}), sub plafonul "
             f"absolut {ceiling}."
         )
     if edge == "negativ":
         return (
-            f"Half-Kelly: EV negativ (ROAS {account_roas:.2f} < 1), plafon zilnic "
+            f"Half-Kelly: EV negativ ({roas}), plafon zilnic "
             f"redus {baseline} -> {sized} ({pct}%, x{multiplier:.2f}) pentru a "
             "pastra capitalul."
         )
     return (
-        f"Half-Kelly: fara avantaj clar (ROAS {account_roas:.2f}), plafon zilnic "
+        f"Half-Kelly: fara avantaj clar ({roas}), plafon zilnic "
         f"mentinut la {baseline}."
     )

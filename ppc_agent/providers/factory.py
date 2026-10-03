@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from ppc_agent.config import AppConfig, ProviderMode
+from ppc_agent.config import AppConfig, ProviderMode, Settings
 from ppc_agent.providers import base, live, mock
+from ppc_agent.providers.live.chatgpt_ads import LiveChatGptAdsMutations
+from ppc_agent.providers.live.google_ads import LiveGoogleAdsMutations
+from ppc_agent.providers.live.tiktok import LiveTikTokMutations
 
 #: Ce trebuie sa existe in setari ca o sursa ``live`` sa poata fi citita. Fara ele,
 #: providerul live ar ridica ``SetupRequiredError`` - si ar opri tot jobul de noapte,
@@ -20,6 +23,7 @@ _REQUIRED_SETTINGS: dict[str, tuple[str, ...]] = {
         "google_ads_customer_id",
     ),
     "tiktok_ads": ("tiktok_access_token", "tiktok_advertiser_id"),
+    "chatgpt_ads": ("chatgpt_ads_api_key",),
     "meta_ads": ("meta_access_token", "meta_ad_account_id"),
     "gsc": ("google_oauth_refresh_token",),
     "gbp": ("google_oauth_refresh_token", "gbp_location_id"),
@@ -29,14 +33,17 @@ _REQUIRED_SETTINGS: dict[str, tuple[str, ...]] = {
 class ProviderFactory:
     """Construieste furnizori concreti pornind de la :class:`AppConfig`.
 
-    Ramura ``mock`` este implementata pentru toti furnizorii: crawler, GSC, GBP,
-    Keyword Planner (Modulul 1), Google Ads + TikTok Ads (Modulul 2) si Meta
-    Marketing (Modulul 3). Ramura ``live`` este momentan formata din stub-uri care
-    ridica :class:`ppc_agent.errors.SetupRequiredError`.
+    Ramura ``mock`` exista pentru toti furnizorii in afara de OpenAI Ads (ChatGPT);
+    ramura ``live`` are clienti reali pentru toti.
     """
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+
+    @property
+    def settings(self) -> Settings:
+        """Setarile din care se construiesc furnizorii (cheile clientului incluse)."""
+        return self._config.settings
 
     @property
     def mode(self) -> ProviderMode:
@@ -51,7 +58,8 @@ class ProviderFactory:
         ar fi mai rau decat lipsa lor.
         """
         if self.mode is not ProviderMode.LIVE:
-            return True
+            # ChatGPT n-are date mock: un brat inventat ar schimba planul tuturor.
+            return source != "chatgpt_ads"
         settings = self._config.settings
         return all(getattr(settings, field) for field in _REQUIRED_SETTINGS[source])
 
@@ -154,6 +162,33 @@ class ProviderFactory:
             access_token=settings.meta_access_token,
             currency=settings.meta_currency,
         )
+
+    def google_ads_mutations(self) -> LiveGoogleAdsMutations | None:
+        """Schimbarile in contul Google Ads, sau ``None`` cand nu se poate scrie: mod
+        ``mock`` sau cont neconfigurat (vezi :meth:`meta_mutations`)."""
+        if self.mode is not ProviderMode.LIVE or not self.configured("google_ads"):
+            return None
+        reader = self.google_ads()
+        assert isinstance(reader, live.LiveGoogleAdsProvider)
+        return LiveGoogleAdsMutations(reader, self._config.settings.google_ads_customer_id)
+
+    def tiktok_mutations(self) -> LiveTikTokMutations | None:
+        """Schimbarile in contul TikTok, sau ``None`` (ca :meth:`google_ads_mutations`)."""
+        if self.mode is not ProviderMode.LIVE or not self.configured("tiktok_ads"):
+            return None
+        reader = self.tiktok_ads()
+        assert isinstance(reader, live.LiveTikTokAdsProvider)
+        return LiveTikTokMutations(reader, self._config.settings.tiktok_advertiser_id)
+
+    def chatgpt_ads(self) -> live.LiveChatGptAdsProvider:
+        """Campaniile OpenAI Ads (ChatGPT). Doar live: nu exista o varianta mock."""
+        return live.LiveChatGptAdsProvider(api_key=self._config.settings.chatgpt_ads_api_key)
+
+    def chatgpt_mutations(self) -> LiveChatGptAdsMutations | None:
+        """Schimbarile in contul OpenAI Ads, sau ``None`` (ca :meth:`google_ads_mutations`)."""
+        if self.mode is not ProviderMode.LIVE or not self.configured("chatgpt_ads"):
+            return None
+        return LiveChatGptAdsMutations(self.chatgpt_ads())
 
     def tiktok_ads(self) -> base.TikTokAdsProvider:
         """Returneaza furnizorul TikTok Ads (performanta + parcursuri) pentru modul activ."""

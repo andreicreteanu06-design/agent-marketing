@@ -10,6 +10,7 @@ Furnizorii sunt cei mock: Kelly urca plafonul de 50 RON la 60,87 RON (x1,217).
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -27,6 +28,8 @@ from ppc_agent_server.models import (
     ChangeOp,
     ChangeStatus,
     ClientAccount,
+    ConversionEvent,
+    ConversionEventType,
     MemoryStream,
     ProposedChange,
     TrackingEvidence,
@@ -105,6 +108,26 @@ def _ads(session: Session, account: ClientAccount, *, spend: str, conversions: i
             conversions=conversions,
         )
     )
+    session.commit()
+
+
+def _shop_orders(session: Session, account: ClientAccount, *, value: str) -> None:
+    """Conversiile primite prin webhook de peste o luna: plafoneaza venitul platformelor.
+
+    Fara ele, cu vanzari pe mai multe platforme (mock-ul are trei), Kelly nu creste.
+    """
+    for event_id, days_ago, amount in (("vechi", 40, "1"), ("recent", 3, value)):
+        session.add(
+            ConversionEvent(
+                client_account_id=account.id or 0,
+                event_id=event_id,
+                event_type=ConversionEventType.LEAD,
+                value=Decimal(amount),
+                source_platform="custom_web",
+                qualified=True,
+                created_at=datetime.now(tz=UTC) - timedelta(days=days_ago),
+            )
+        )
     session.commit()
 
 
@@ -289,6 +312,7 @@ def test_a_cfo_cut_keeps_kelly_from_raising_the_budget(session: Session) -> None
         observation="CPA-ul e 175 RON, peste ținta de 80 RON",
     )
     _ads(session, account, spend="1750", conversions=10)  # cifrele de azi: tot pe pierdere
+    _shop_orders(session, account, value="1000000")
     launch = _launch(session, account)
 
     result = run_propose_job(client_account_id=account.id or 0)
@@ -361,6 +385,7 @@ def test_after_a_lift_a_relapse_is_stopped_by_the_night_cfo_not_by_the_old_cut(
     session: Session,
 ) -> None:
     account = _client_account(session)
+    _shop_orders(session, account, value="1000000")
     _remember(session, account, "cfo", CFO_CUT, "budget", days_ago=2)
     _ads(session, account, spend="620", conversions=9)
     assert run_propose_job(client_account_id=account.id or 0)["council"]["lifted"]
@@ -388,6 +413,7 @@ def test_the_night_cfo_stops_the_growth_of_a_losing_account_and_tells_the_chat(
     session: Session,
 ) -> None:
     account = _client_account(session)
+    _shop_orders(session, account, value="1000000")
     _ads(session, account, spend="1500", conversions=6)  # CPA 250 RON, tinta 80
 
     first = run_propose_job(client_account_id=account.id or 0)
@@ -447,11 +473,32 @@ def test_the_night_cfo_judges_a_sales_account_by_roas() -> None:
 
     [entry] = constraints.imposed
     assert entry.decision == (
-        "a oprit automat creșterea bugetului în tura de noapte: venitul atribuit nu acoperă "
-        "cheltuiala cu reclamele (ROAS 0,60)"
+        "a oprit automat creșterea bugetului în tura de noapte: ROAS-ul contului e 0,60, "
+        "sub pragul de rentabilitate de 1"
     )
     assert constraints.spend_freeze is not None
     assert constraints.spend_freeze.code == CFO_NIGHT_CODE
+
+
+def test_a_shop_covering_its_ad_spend_still_loses_money_below_its_margin() -> None:
+    """ROAS 1,8 acopera reclamele, dar la o marja de 40% (prag 2,5) magazinul pierde.
+
+    Pragul vechi era 1 pentru toti: contul era "rentabil", iar CFO-ul ridica restrictiile.
+    """
+    shop = _finances(
+        ads=(_ad(spend="2000", conversions=24, revenue="3600"),), terms=(), objective="sales"
+    )
+    with_margin = build_financial_snapshot(replace(shop, break_even_roas=Decimal("2.5")))
+    assert with_margin.status == "unprofitable"
+    assert "sub pragul de rentabilitate al clientului (2,50)" in with_margin.verdict
+
+    # Marja nesetata: pragul implicit al unui magazin, spus ca atare in verdict.
+    unset = build_financial_snapshot(
+        replace(shop, break_even_roas=Decimal("2"), break_even_is_default=True)
+    )
+    assert unset.status == "unprofitable"
+    assert "marja reală nu e setată" in unset.verdict
+    assert build_financial_snapshot(shop).status == "profitable"  # prag 1: doar reclamele
 
 
 def test_a_cut_that_costs_no_money_restricts_nothing(session: Session) -> None:

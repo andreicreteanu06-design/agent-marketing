@@ -444,3 +444,18 @@ def test_ad_insights_reads_running_ads_for_the_fatigue_monitor() -> None:
     insights = [params for params in seen if "level" in params]
     assert len(insights) == 3
     assert all("ACTIVE" in params["filtering"] for params in insights)
+
+
+def test_current_daily_budget_is_read_in_lei_or_none_without_a_daily_budget() -> None:
+    budgets = {"as_abo": {"daily_budget": "2550", "id": "as_abo"}, "as_cbo": {"id": "as_cbo"}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert dict(parse_qsl(request.url.query.decode()))["fields"] == "daily_budget"
+        return httpx.Response(200, json=budgets[request.url.path.rsplit("/", 1)[-1]])
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    assert asyncio.run(provider.current_daily_budget("as_abo")) == Decimal("25.50")
+    assert asyncio.run(provider.current_daily_budget("as_cbo")) is None

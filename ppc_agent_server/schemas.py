@@ -28,6 +28,10 @@ JobStatusLabel = Literal["queued", "running", "success", "failed"]
 
 #: ID-ul pixelului Meta ajunge in calea URL-ului catre Graph API: doar cifre.
 _PIXEL_ID = r"^\d{0,32}$"
+#: ID-ul actiunii de conversie Google Ads intra in numele resursei: doar cifre.
+_CONVERSION_ACTION_ID = r"^\d{0,20}$"
+#: Codul pixelului TikTok si ID-ul pixelului OpenAI Ads: litere, cifre, "_" si "-".
+_PIXEL_CODE = r"^[A-Za-z0-9_-]{0,64}$"
 
 
 class ClientAccountCreate(BaseModel):
@@ -41,9 +45,13 @@ class ClientAccountCreate(BaseModel):
     meta_ad_account_id: str = ""
     tiktok_advertiser_id: str = ""
     meta_pixel_id: str = Field(default="", pattern=_PIXEL_ID)
+    google_ads_conversion_action_id: str = Field(default="", pattern=_CONVERSION_ACTION_ID)
+    tiktok_pixel_code: str = Field(default="", pattern=_PIXEL_CODE)
+    chatgpt_pixel_id: str = Field(default="", pattern=_PIXEL_CODE)
     max_daily_spend: Decimal = Decimal("50.00")
     default_lead_value: Decimal = Decimal("300.00")
     objective: CampaignObjective = CampaignObjective.LEAD_GEN
+    min_roas: Decimal | None = Field(default=None, gt=0)
 
 
 class ClientAccountUpdate(BaseModel):
@@ -64,9 +72,16 @@ class ClientAccountUpdate(BaseModel):
     meta_ad_account_id: str | None = None
     tiktok_advertiser_id: str | None = None
     meta_pixel_id: str | None = Field(default=None, pattern=_PIXEL_ID)
+    google_ads_conversion_action_id: str | None = Field(
+        default=None, pattern=_CONVERSION_ACTION_ID
+    )
+    tiktok_pixel_code: str | None = Field(default=None, pattern=_PIXEL_CODE)
+    chatgpt_pixel_id: str | None = Field(default=None, pattern=_PIXEL_CODE)
     max_daily_spend: Decimal | None = Field(default=None, gt=0)
     default_lead_value: Decimal | None = Field(default=None, gt=0)
     objective: CampaignObjective | None = None
+    #: Pragul de rentabilitate (ROAS minim); ``null`` revine la implicitul obiectivului.
+    min_roas: Decimal | None = Field(default=None, gt=0)
 
 
 class ClientAccountRead(BaseModel):
@@ -83,10 +98,14 @@ class ClientAccountRead(BaseModel):
     meta_ad_account_id: str
     tiktok_advertiser_id: str
     meta_pixel_id: str
+    google_ads_conversion_action_id: str
+    tiktok_pixel_code: str
+    chatgpt_pixel_id: str
     brand_name: str
     max_daily_spend: Decimal
     default_lead_value: Decimal
     objective: CampaignObjective
+    min_roas: Decimal | None
     created_at: datetime
 
 
@@ -211,19 +230,46 @@ class ExecuteProposalRequest(BaseModel):
 # --- Autentificare client (self-service, distinct de cheia API de agentie) ---
 
 
-class ClientSignupRequest(BaseModel):
-    """Corpul cererii ``POST /api/v1/signup`` - creeaza ClientAccount + ClientUser."""
+#: Forma minima a unei adrese de email, fara dependinta email-validator: ceva@domeniu.tld.
+_EMAIL_SHAPE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
-    name: str
-    email: str
-    password: str = Field(min_length=8)
+
+def _normalize_email(value: str) -> str:
+    """``Ana@X.ro `` si ``ana@x.ro`` sunt acelasi cont."""
+    return value.strip().lower()
+
+
+class ClientSignupRequest(BaseModel):
+    """Corpul cererii ``POST /api/v1/signup`` - creeaza ClientAccount + ClientUser.
+
+    Lungimi maxime pe toate campurile (un robot nu trimite un nume de 10 MB, iar
+    Argon2 nu primeste o parola de un megabyte). Emailul se salveaza cu litere mici.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    email: str = Field(max_length=254)
+    password: str = Field(min_length=8, max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        email = _normalize_email(value)
+        if not _EMAIL_SHAPE.fullmatch(email):
+            raise ValueError("Adresa de email nu e validă.")
+        return email
 
 
 class ClientLoginRequest(BaseModel):
-    """Corpul cererii ``POST /api/v1/login``."""
+    """Corpul cererii ``POST /api/v1/login``. Emailul nu se valideaza aici: o adresa
+    gresita primeste acelasi 401 ca o parola gresita."""
 
-    email: str
-    password: str
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def _lower_email(cls, value: str) -> str:
+        return _normalize_email(value)
 
 
 class ClientTokenResponse(BaseModel):
@@ -264,16 +310,16 @@ class ClientCredentialsUpdate(BaseModel):
     ``ClientAccountUpdate``) - niciun camp nu e obligatoriu, clientul isi
     conecteaza conturile pe rand, pe masura ce le are.
 
-    ``chatgpt_ads_api_key`` alimenteaza ``ClientAccount.chatgpt_ads_api_key_enc``
-    (vezi models.py) - folosit azi doar de stocare; ``LiveGenerativeEngineProvider``
-    (ppc_agent/providers/live/__init__.py) ramane stub pana la acces de
-    partener OpenAI aprobat, deci cheia nu declanseaza inca niciun apel real.
+    ``chatgpt_ads_api_key`` e cheia Ads API din OpenAI Ads (un cont de reclame per
+    cheie): citirea campaniilor si mutatiile. ``chatgpt_conversions_key`` e cheia
+    separata a Conversions API, cu care pleaca conversiile spre OpenAI.
     """
 
     google_ads_refresh_token: str | None = None
     meta_access_token: str | None = None
     tiktok_access_token: str | None = None
     chatgpt_ads_api_key: str | None = None
+    chatgpt_conversions_key: str | None = None
 
 
 class ClientCredentialsUpdateResponse(BaseModel):
@@ -446,6 +492,10 @@ class ConversionOutcome(BaseModel):
     #: Meta Conversions API: ``sent``/``failed`` cand s-a incercat acum, ``None``
     #: cand nu era cazul (necalificata, deja trimisa, fara pixel, mod mock).
     meta_capi: Literal["sent", "failed"] | None = None
+    #: La fel, pentru Google Ads, TikTok Events API si OpenAI Ads (ChatGPT).
+    google_ads: Literal["sent", "failed"] | None = None
+    tiktok: Literal["sent", "failed"] | None = None
+    chatgpt: Literal["sent", "failed"] | None = None
 
 
 class McConnectRequest(BaseModel):

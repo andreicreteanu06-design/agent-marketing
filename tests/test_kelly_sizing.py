@@ -116,3 +116,19 @@ def test_half_kelly_less_aggressive_than_full() -> None:
     )
     assert half.multiplier < full.multiplier
     assert half.sized_daily_cap < full.sized_daily_cap
+
+
+def test_a_shop_covering_its_ads_but_below_its_margin_gets_less_not_more() -> None:
+    """ROAS 1,8: fata de pragul 1 pare castig (+buget), fata de marja de 40% (prag 2,5)
+    e pierdere (-buget)."""
+    arms = [_arm(cost="2000", revenue="3600")]
+    naive = size_daily_budget(arms, baseline_cap=Decimal("50"), hard_ceiling=Decimal("500"))
+    shop = size_daily_budget(
+        arms,
+        baseline_cap=Decimal("50"),
+        hard_ceiling=Decimal("500"),
+        break_even_roas=Decimal("2.5"),
+    )
+    assert naive.edge == "pozitiv" and naive.sized_daily_cap > Decimal("50")
+    assert shop.edge == "negativ" and shop.sized_daily_cap < Decimal("50")
+    assert "prag de rentabilitate 2.50" in shop.rationale

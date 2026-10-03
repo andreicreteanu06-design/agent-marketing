@@ -38,6 +38,15 @@ class BaseSourceAdapter(ABC):
         """
 
 
+#: ID-urile de click si cookie-urile platformelor, cand sursa le trimite (un camp
+#: personalizat al comenzii, un call tracker care pastreaza ``gclid``-ul apelantului).
+_CLICK_IDS = ("gclid", "gbraid", "wbraid", "ttclid", "ttp", "oppref", "fbc", "fbp")
+
+
+def _click_ids(raw_payload: dict[str, Any]) -> dict[str, str]:
+    return {key: str(raw_payload[key]) for key in _CLICK_IDS if raw_payload.get(key)}
+
+
 def _parse_float(raw: Any) -> float | None:
     if raw is None or raw == "":
         return None
@@ -91,7 +100,7 @@ class GomagAdapter(BaseSourceAdapter):
                 source_platform="gomag",
                 ad_id=raw_payload.get("ad_id"),
                 ad_platform=raw_payload.get("ad_platform"),
-            )
+            ).model_copy(update=_click_ids(raw_payload))
         except ValidationError as exc:
             raise TrackingError(f"payload Gomag invalid: {exc}") from exc
 
@@ -128,7 +137,7 @@ class CallTrackingAdapter(BaseSourceAdapter):
                 ),
                 ad_id=raw_payload.get("ad_id"),
                 ad_platform=raw_payload.get("ad_platform"),
-            )
+            ).model_copy(update=_click_ids(raw_payload))
         except ValidationError as exc:
             raise TrackingError(f"payload call tracking invalid: {exc}") from exc
 

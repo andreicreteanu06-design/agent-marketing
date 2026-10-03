@@ -44,7 +44,10 @@ _CAP = Decimal("500")
 class _FakeMetaProvider:
     """Provider dublu: retine ce i s-a cerut, sau pica la comanda."""
 
-    def __init__(self, *, fail: Exception | None = None) -> None:
+    def __init__(
+        self, *, fail: Exception | None = None, current_budget: Decimal | None = None
+    ) -> None:
+        self.current_budget = current_budget
         self.paused_campaigns: list[str] = []
         self.paused_adsets: list[str] = []
         self.paused_ads: list[str] = []
@@ -70,6 +73,9 @@ class _FakeMetaProvider:
     async def update_budget(self, object_id: str, new_daily_budget: Decimal) -> None:
         self._maybe_fail()
         self.budgets.append((object_id, new_daily_budget))
+
+    async def current_daily_budget(self, object_id: str) -> Decimal | None:
+        return self.current_budget
 
     @property
     def touched(self) -> bool:

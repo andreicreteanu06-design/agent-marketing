@@ -2,7 +2,7 @@
 # agentul SEO/GEO, PostgreSQL si Redis.
 #
 #   cp .env.example .env     # completeaza cel putin: JWT_SECRET_KEY, SECRETS_KEY,
-#                            # POSTGRES_PASSWORD, REDIS_PASSWORD (vezi .env.example)
+#                            # POSTGRES_PASSWORD, POSTGRES_APP_PASSWORD, REDIS_PASSWORD
 #   docker compose up -d --build
 #
 # Prima pornire: agentia (tenant-ul) se creeaza o singura data, apoi id-ul ei
@@ -13,6 +13,11 @@
 # - Postgres si Redis NU au porturi publicate. Traiesc doar pe reteaua "data"
 #   (internal: true - fara iesire in internet), impreuna cu API-ul si worker-ul.
 # - Parolele vin din .env; ${VAR:?} opreste pornirea daca lipsesc. Redis cere parola.
+# - API-ul si worker-ul se conecteaza cu rolul limitat ppc_app (doar citire si scriere
+#   de randuri - ppc_agent_server/app_role.py). Proprietarul bazei (ppc_agent) il
+#   folosesc doar "migrate" si "backup", ca parola lui sa nu ajunga in procesele
+#   care primesc cereri din internet.
+# - "backup": un pg_dump pe zi in BACKUP_DIR (implicit ./backups), pastrat 14 zile.
 # - Containerele aplicatiei: utilizator fara privilegii, radacina read-only,
 #   nicio capabilitate Linux, no-new-privileges.
 # - Porturile publicate asculta implicit doar pe 127.0.0.1: in productie, in fata
@@ -52,8 +57,10 @@ x-backend: &backend
 # Legaturile catre Postgres si Redis - suprascriu orice DATABASE_URL/REDIS_URL de
 # dezvoltare din .env (``environment`` are prioritate fata de ``env_file``).
 x-backend-env: &backend-env
-  DATABASE_URL: postgresql+psycopg://ppc_agent:${POSTGRES_PASSWORD:?seteaza POSTGRES_PASSWORD in .env}@postgres:5432/ppc_agent
+  DATABASE_URL: postgresql+psycopg://ppc_app:${POSTGRES_APP_PASSWORD:?seteaza POSTGRES_APP_PASSWORD in .env}@postgres:5432/ppc_agent
   REDIS_URL: redis://:${REDIS_PASSWORD:?seteaza REDIS_PASSWORD in .env}@redis:6379/0
+  # env_file aduce tot .env-ul: parola proprietarului bazei nu are ce cauta aici.
+  POSTGRES_PASSWORD: ""
 
 services:
   postgres:
@@ -94,11 +101,15 @@ services:
       retries: 10
 
   # Migratiile Alembic, o data per pornire; API-ul si worker-ul asteapta sa termine.
+  # Singurul container al aplicatiei cu proprietarul bazei: dupa migratii, aduce
+  # rolul ppc_app la drepturile lui (si pe tabelele noi).
   migrate:
     <<: *backend
-    command: ["alembic", "upgrade", "head"]
+    command: ["sh", "-c", "alembic upgrade head && python -m ppc_agent_server.app_role"]
     environment:
       <<: *backend-env
+      DATABASE_URL: postgresql+psycopg://ppc_agent:${POSTGRES_PASSWORD:?seteaza POSTGRES_PASSWORD in .env}@postgres:5432/ppc_agent
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?seteaza POSTGRES_APP_PASSWORD in .env}
     networks:
       - data
     restart: "no"
@@ -174,11 +185,51 @@ services:
       - --proxy-headers
     environment:
       HEALTH_PORT: "8001"
+      POSTGRES_PASSWORD: ""
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:8001:8001"
     networks:
       - edge
+
+  # Un backup pe zi: la prima ora in care stiva e pornita in ziua respectiva (UTC),
+  # deci si dupa o noapte cu calculatorul oprit. Format custom (comprimat), consistent
+  # chiar daca aplicatia scrie in timpul lui. Restaurarea: README, "Backup-uri".
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: ppc_agent
+      PGDATABASE: ppc_agent
+      PGPASSWORD: ${POSTGRES_PASSWORD:?seteaza POSTGRES_PASSWORD in .env}
+    command:
+      - sh
+      - -c
+      - |
+        while :; do
+          f=/backups/ppc_agent-$$(date +%F).dump
+          if [ ! -s "$$f" ]; then
+            if pg_dump -Fc -f "$$f.partial"; then mv "$$f.partial" "$$f"; echo "backup: $$f"
+            else rm -f "$$f.partial"; echo "backup esuat, reincerc peste o ora"; fi
+          fi
+          find /backups -name 'ppc_agent-*.dump' -mtime +13 -delete
+          sleep 3600
+        done
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   site:
     build:

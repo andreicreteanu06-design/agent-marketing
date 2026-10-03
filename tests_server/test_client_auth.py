@@ -79,6 +79,72 @@ def test_signup_rejects_duplicate_email(client: TestClient, agency_settings: Ten
     assert response.status_code == 409
 
 
+def test_signup_saves_the_email_in_lowercase_and_login_ignores_case(
+    client: TestClient, agency_settings: Tenant, session: Session
+) -> None:
+    _signup(client, email="  Client@Exemplu.RO ")
+    assert session.exec(select(ClientUser)).one().email == "client@exemplu.ro"
+
+    duplicate = client.post(
+        "/api/v1/signup",
+        json={"name": "Alt Client", "email": "CLIENT@exemplu.ro", "password": "altaparola123"},
+    )
+    assert duplicate.status_code == 409
+
+    login = client.post(
+        "/api/v1/login", json={"email": "CLIENT@EXEMPLU.ro", "password": "parola-super-sigura"}
+    )
+    assert login.status_code == 200
+
+
+def test_an_account_saved_before_lowercase_emails_still_logs_in(
+    client: TestClient, agency_settings: Tenant, session: Session
+) -> None:
+    """Conturile vechi au emailul cum l-a scris omul; cautarea ignora literele mari."""
+    account = ClientAccount(tenant_id=agency_settings.id, name="Vechi SRL")
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    session.add(
+        ClientUser(
+            client_account_id=account.id,
+            email="Vechi@Exemplu.ro",
+            password_hash=security_module.hash_password("parola-veche-123"),
+        )
+    )
+    session.commit()
+
+    login = client.post(
+        "/api/v1/login", json={"email": "vechi@exemplu.ro", "password": "parola-veche-123"}
+    )
+    assert login.status_code == 200
+    taken = client.post(
+        "/api/v1/signup",
+        json={"name": "Altul", "email": "VECHI@exemplu.ro", "password": "parola-noua-123"},
+    )
+    assert taken.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"email": "fara-arond"},
+        {"email": "a@b"},
+        {"email": "x" * 250 + "@exemplu.ro"},
+        {"name": ""},
+        {"name": "N" * 201},
+        {"password": "p" * 257},
+    ],
+)
+def test_signup_rejects_malformed_or_oversized_fields(
+    client: TestClient, agency_settings: Tenant, session: Session, overrides: dict[str, str]
+) -> None:
+    payload = {"name": "Client", "email": "client@exemplu.ro", "password": "parola-super-sigura"}
+    payload.update(overrides)
+    assert client.post("/api/v1/signup", json=payload).status_code == 422
+    assert session.exec(select(ClientUser)).first() is None
+
+
 def test_login_succeeds_with_correct_password(
     client: TestClient, agency_settings: Tenant
 ) -> None:

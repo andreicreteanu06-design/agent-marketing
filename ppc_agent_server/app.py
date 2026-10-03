@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ppc_agent.errors import (
     ApprovalRequiredError,
@@ -70,6 +72,51 @@ def _error_handler(
     return handler
 
 
+#: Corpul maxim al unei cereri JSON. Cel mai mare corp legitim e de cativa KB.
+MAX_BODY_BYTES = 2 * 1024 * 1024
+#: Uploadul de creative: video pana la 50 MB (creative_evaluator.MAX_VIDEO_BYTES) plus
+#: ambalajul multipart.
+MAX_UPLOAD_BODY_BYTES = 60 * 1024 * 1024
+_UPLOAD_PATHS = frozenset({"/api/v1/creative/upload"})
+
+
+class BodySizeLimit:
+    """413 pentru o cerere prea mare, inainte sa ajunga in memorie sau in /tmp.
+
+    Doua cai: ``Content-Length`` declarat peste limita e refuzat fara sa citim
+    nimic; un corp trimis in bucati (chunked, fara lungime) e numarat pe masura
+    ce soseste si oprit la depasire. Fara ea, un singur upload de 2 GB umplea
+    /tmp-ul containerului (tmpfs, adica RAM) inainte ca ruta sa-l refuze.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = MAX_UPLOAD_BODY_BYTES if scope["path"] in _UPLOAD_PATHS else MAX_BODY_BYTES
+        detail = f"Cererea e prea mare (maximum {limit // (1024 * 1024)} MB)."
+        declared = dict(scope["headers"]).get(b"content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > limit):
+            await JSONResponse({"detail": detail}, status_code=413)(scope, receive, send)
+            return
+
+        received = 0
+
+        async def counted() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise StarletteHTTPException(status_code=413, detail=detail)
+            return message
+
+        await self.app(scope, counted, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """La pornire: creeaza tabelele lipsa (SQLite dev) — Postgres foloseste Alembic —
@@ -91,6 +138,10 @@ def create_app() -> FastAPI:
 
     for error_type, status_code in _ERROR_STATUS_CODES.items():
         app.add_exception_handler(error_type, _error_handler(status_code))
+
+    # Inaintea CORS-ului (deci in interiorul lui): un 413 are si el antetele CORS,
+    # iar site-ul arata mesajul, nu o eroare de retea.
+    app.add_middleware(BodySizeLimit)
 
     # Site-ul de marketing (site/) e servit separat (Next.js, alt port/domeniu)
     # si cheama acest API direct din browser (fetch) - fara CORS, orice cerere

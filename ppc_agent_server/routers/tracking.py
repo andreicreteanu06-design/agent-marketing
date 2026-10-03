@@ -25,6 +25,7 @@ from ppc_agent_server.tracking.adapters import get_adapter
 from ppc_agent_server.tracking.errors import TrackingError
 from ppc_agent_server.tracking.meta_capi import forward_conversion
 from ppc_agent_server.tracking.pipeline import record_conversion
+from ppc_agent_server.tracking.platform_conversions import forward_to_platforms
 
 router = APIRouter(prefix="/api/v1/tracking", tags=["tracking"])
 
@@ -41,8 +42,9 @@ def ingest_conversion(
 ) -> ConversionOutcome:
     """Normalizeaza, califica si inregistreaza o conversie de la orice sursa.
 
-    Conversiile calificate pleaca apoi si la Meta Conversions API, daca clientul
-    are pixel (vezi ``tracking/meta_capi.py``) - un esec acolo nu strica ingestia.
+    Conversiile calificate pleaca apoi la platformele clientului - Meta
+    (``tracking/meta_capi.py``), Google Ads, TikTok si ChatGPT
+    (``tracking/platform_conversions.py``); un esec acolo nu strica ingestia.
 
     Raises:
         HTTPException: 404 daca ``client_id`` nu apartine agentiei
@@ -59,4 +61,8 @@ def ingest_conversion(
     outcome = record_conversion(session, account, conversion)
     # Si dupa o deduplicare: un webhook retrimis reincearca o trimitere esuata.
     outcome.meta_capi = forward_conversion(session, account, conversion)
+    platforms = forward_to_platforms(session, account, conversion)
+    outcome.google_ads = platforms.get("google_ads")
+    outcome.tiktok = platforms.get("tiktok")
+    outcome.chatgpt = platforms.get("chatgpt")
     return outcome
