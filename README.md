@@ -1338,6 +1338,32 @@ in `live` - in `mock` sunt inventate).
    (implicit 300 lei): Kelly creste bugetul cand CPA-ul e sub ea, CFO-ul taie cand e
    peste. O valoare umflata face orice cont sa para rentabil.
 
+### Mutarea pe alt calculator
+
+Doua lucruri nu sunt in git si se muta separat (stick, manager de parole - nu GitHub):
+
+- **`.env`, acelasi fisier.** `JWT_SECRET_KEY` tine login-urile valide, `SECRETS_KEY`
+  descifreaza tokenurile clientilor, `AGENCY_TENANT_ID` e agentia din baza mutata.
+- **Baza de date**, exportata pe calculatorul vechi:
+
+```bash
+docker compose exec -T postgres pg_dump -U ppc_agent -d ppc_agent --clean --if-exists --no-owner --no-privileges > ac-media.sql
+```
+
+Pe calculatorul nou (Git Bash, Docker Desktop pornit): cloneaza, pune `.env` in folderul
+proiectului si `ac-media.sql` langa el (in afara lui, ca sa nu ajunga in git), apoi:
+
+```bash
+docker compose up -d --wait postgres
+docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U ppc_agent -d ppc_agent < ../ac-media.sql
+docker compose up -d --build
+```
+
+Primul build dureaza (torch, Chromium, site-ul), iar API-ul porneste in 1-3 minute.
+Verificat pe o copie curata, cu terminatii Windows (`core.autocrlf=true`): baza
+restaurata, login-ul pastrat, toate containerele sanatoase, jobul de noapte fara erori.
+Ollama si modelele din `.env` se instaleaza separat, pe calculator.
+
 ## Date de cautare organica (`ppc_agent/search_data/`)
 
 Partea organica a platformei, pe surse gratuite si oficiale. **Niciun API
