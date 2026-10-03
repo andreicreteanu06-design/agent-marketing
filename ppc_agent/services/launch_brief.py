@@ -420,7 +420,7 @@ def _budget_position(
         for arm in arms_from_performance(
             frame, platform="meta_ads", lead_value=config.budget.lead_value
         )
-        if arm.clicks > 0
+        if arm.clicks > 0 and arm.active
     ]
     if not arms:
         section.update(status="no_history", note=_NO_HISTORY_NOTE)

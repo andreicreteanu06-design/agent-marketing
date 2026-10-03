@@ -28,6 +28,9 @@ class ArmStats(BaseModel):
     cost: Decimal = Decimal("0")
     revenue: Decimal = Decimal("0")
     platform: str = "google_ads"
+    #: Ruleaza acum (Meta: setul are ``effective_status`` ``ACTIVE``). Unul oprit isi
+    #: pastreaza istoricul pentru CFO, dar nu mai primeste buget de la Thompson.
+    active: bool = True
 
     @property
     def observed_cvr(self) -> float:

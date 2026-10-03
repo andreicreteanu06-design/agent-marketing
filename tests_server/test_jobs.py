@@ -90,7 +90,9 @@ def test_dispatch_sync_metrics_job_for_client_with_no_records(
     assert dispatch.status_code == 202
     status = client.get(f"/api/v1/jobs/{dispatch.json()['task_id']}", headers=auth_headers)
     # mock: cifrele inventate nu ajung la CFO (rezumatul platformelor ramane gol)
-    assert status.json()["result"] == {"checked": 0, "updated": 0, "platform_arms": 0}
+    assert status.json()["result"] == {
+        "checked": 0, "updated": 0, "platform_arms": 0, "meta_ads": 0
+    }
 
 
 def test_dispatch_copy_job_writes_ad_queue_item(

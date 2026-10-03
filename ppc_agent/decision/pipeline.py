@@ -126,6 +126,7 @@ def arms_from_performance(
                 cost=Decimal(str(record["cost"])),
                 revenue=revenue,
                 platform=platform,
+                active=bool(record.get("active", True)),
             )
         )
     return arms
@@ -208,6 +209,9 @@ def run_plan(
             lead_value=config.budget.lead_value,
         )
     ]
+    # Doar seturile care ruleaza acum: unul oprit de om a cheltuit luna asta, dar un
+    # buget propus pentru el nu se cheltuie - iar seturile active ar primi mai putin.
+    arms = [arm for arm in arms if arm.active]
     if forecaster is not None and histories:
         arms = apply_forecast(arms, histories, forecaster, horizon_days=forecast_horizon_days)
 

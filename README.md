@@ -1315,7 +1315,17 @@ si cele cu bugetul pe campanie (CBO) nu se ating. Planul nou
 inlocuieste propunerile de ieri inca neaprobate, iar plafonul numara bugetul de acum al
 fiecarui set (nu suma tuturor ajustarilor). Platformele fara chei sunt sarite. CFO-ul
 judeca aceleasi cifre: sincronizarea de noapte le scrie in `PlatformArmSnapshot` (doar
-in `live` - in `mock` sunt inventate).
+in `live` - in `mock` sunt inventate). Bugetul se imparte doar intre seturile care ruleaza
+acum; cele oprite raman in cifrele CFO-ului (banii lor s-au cheltuit), dar nu primesc buget.
+
+**Monitorul de oboseala.** Tot in `live`, sincronizarea de noapte citeste din Meta fiecare
+anunt activ - si pe cele fara nicio vanzare, care altfel nu ajungeau niciodata la oprire:
+cheltuiala, afisarile si conversiile de la lansare, frecventa pe 7 zile, CTR/CPA pe 3 zile
+fata de 14 si zilele proaste (CPA-ul zilei peste tinta). Starea se recalculeaza noaptea:
+`profitable` (vanzari la un CPA de cel mult tinta - se judeca pe oboseala), `new` (se
+judeca pe cheltuiala fara vanzari), `paused` (nu ruleaza - nu se judeca). Conversiile vin
+din sursa care a vazut mai multe, webhook sau Meta. Propunerea de oprire e `meta_ad/<id>`:
+se executa in Meta la aprobare.
 
 **2. Cele 5 lucruri din afara codului** (testul nu le poate verifica):
 

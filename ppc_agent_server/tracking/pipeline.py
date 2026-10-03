@@ -11,12 +11,13 @@ motorul deja existent cu date live.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlmodel import Session, select
 
 from ppc_agent.decision.fatigue_models import AdPerformanceState
+from ppc_agent.providers.live.meta import AdDay, AdInsight
 from ppc_agent_server.models import (
     AdFatiguePlatform,
     AdLifecycleStatus,
@@ -57,7 +58,7 @@ def to_ad_performance_state(record: AdPerformanceRecord) -> AdPerformanceState:
         launch_time=launch_time,
         spend=float(record.spend),
         target_cpa=float(record.target_cpa),
-        conversions=record.conversions,
+        conversions=record.counted[0],
         impressions=record.impressions,
         clicks=record.clicks,
         ctr=record.ctr,
@@ -74,6 +75,87 @@ def to_ad_performance_state(record: AdPerformanceRecord) -> AdPerformanceState:
         six_second_view_rate_baseline=record.six_second_view_rate_baseline,
         bad_days_last_3=record.bad_days_last_3,
     )
+
+
+#: Ferestrele portii C pentru Meta (``fatigue_monitor``): CTR/CPA pe ultimele 3 zile
+#: fata de ultimele 14, si zilele proaste din ultimele 5.
+_RECENT_DAYS = 3
+_BASELINE_DAYS = 14
+_BAD_DAYS_WINDOW = 5
+_CENT = Decimal("0.01")
+
+
+def _totals(days: list[AdDay]) -> tuple[float, int, int, float]:
+    """(cheltuiala, afisari, click-uri, conversii) pe zilele date."""
+    return (
+        sum(day.spend for day in days),
+        sum(day.impressions for day in days),
+        sum(day.clicks for day in days),
+        sum(day.conversions for day in days),
+    )
+
+
+def _cpa(spend: float, conversions: float) -> float:
+    """CPA-ul unei ferestre; fara conversii, cel putin cheltuiala ei (nu infinit)."""
+    return spend / conversions if conversions > 0 else spend
+
+
+def _ctr(clicks: int, impressions: int) -> float:
+    return clicks / impressions if impressions else 0.0
+
+
+def apply_platform_insight(
+    record: AdPerformanceRecord,
+    insight: AdInsight,
+    *,
+    target_cpa: Decimal,
+    account_median_ctr: float,
+    now: datetime | None = None,
+) -> None:
+    """Scrie in ``record`` ce a citit agentul din Meta, pentru monitorul de oboseala.
+
+    Nu atinge ``conversions``/``revenue`` (ale webhook-ului). Starea se recalculeaza in
+    fiecare noapte: ``paused`` cand anuntul nu ruleaza; ``profitable`` cand are vanzari
+    la un CPA de cel mult tinta - atunci poarta C il judeca pe oboseala; altfel ``new``
+    - poarta B: cheltuiala fara vanzari. O zi proasta: a cheltuit, iar CPA-ul ei (sau
+    cheltuiala, fara vanzari) e peste tinta.
+    """
+    now = now or datetime.now(tz=UTC)
+    record.target_cpa = target_cpa
+    record.launch_time = insight.created_time.astimezone(UTC)
+    record.updated_at = now
+    if not insight.active:
+        record.status = AdLifecycleStatus.PAUSED
+        return
+    record.spend = Decimal(str(insight.spend)).quantize(_CENT)
+    record.impressions = insight.impressions
+    record.clicks = insight.clicks
+    record.ctr = _ctr(insight.clicks, insight.impressions)
+    record.account_median_ctr = account_median_ctr
+    record.frequency_7d = insight.frequency_7d
+    record.platform_conversions = round(insight.conversions)
+    record.platform_revenue = Decimal(str(insight.revenue)).quantize(_CENT)
+
+    yesterday = now.date() - timedelta(days=1)
+
+    def last(days: int) -> list[AdDay]:
+        return [day for day in insight.days if 0 <= (yesterday - day.day).days < days]
+
+    spend_3d, impressions_3d, clicks_3d, conversions_3d = _totals(last(_RECENT_DAYS))
+    spend_14d, impressions_14d, clicks_14d, conversions_14d = _totals(last(_BASELINE_DAYS))
+    record.ctr_3d = _ctr(clicks_3d, impressions_3d)
+    record.ctr_baseline_14d = _ctr(clicks_14d, impressions_14d)
+    record.cpa_3d = Decimal(str(_cpa(spend_3d, conversions_3d))).quantize(_CENT)
+    record.cpa_baseline_14d = Decimal(str(_cpa(spend_14d, conversions_14d))).quantize(_CENT)
+    record.bad_days_last_5 = sum(
+        1
+        for day in last(_BAD_DAYS_WINDOW)
+        if day.spend > 0 and _cpa(day.spend, day.conversions) > float(target_cpa)
+    )
+
+    conversions, _ = record.counted
+    profitable = conversions > 0 and record.spend / conversions <= target_cpa
+    record.status = AdLifecycleStatus.PROFITABLE if profitable else AdLifecycleStatus.NEW
 
 
 def _get_or_create_ad_record(

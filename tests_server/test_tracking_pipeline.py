@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.decision.fatigue_monitor import evaluate_ad
+from ppc_agent.providers.live.meta import AdDay, AdInsight
 from ppc_agent_server.models import (
     AdFatiguePlatform,
     AdLifecycleStatus,
@@ -18,7 +19,11 @@ from ppc_agent_server.models import (
     Tenant,
 )
 from ppc_agent_server.tracking.models import StandardizedConversion
-from ppc_agent_server.tracking.pipeline import record_conversion, to_ad_performance_state
+from ppc_agent_server.tracking.pipeline import (
+    apply_platform_insight,
+    record_conversion,
+    to_ad_performance_state,
+)
 
 
 def _client_account(
@@ -300,3 +305,63 @@ def test_lead_gen_account_purchase_typed_event_still_gets_proxy_value(
 
     session.refresh(record)
     assert record.revenue == Decimal("220.00")
+
+
+_NOW = datetime(2026, 10, 3, 6, 0, tzinfo=UTC)
+
+
+def _days(*spec: tuple[int, float, int, int, float]) -> tuple[AdDay, ...]:
+    """(acum cate zile, cheltuiala, afisari, click-uri, conversii) -> zile incheiate."""
+    yesterday = _NOW.date() - timedelta(days=1)
+    return tuple(
+        AdDay(day=yesterday - timedelta(days=ago), spend=spend, impressions=shown,
+              clicks=clicks, conversions=sold)
+        for ago, spend, shown, clicks, sold in sorted(spec, reverse=True)
+    )
+
+
+def _meta_record() -> AdPerformanceRecord:
+    return AdPerformanceRecord(
+        client_account_id=1,
+        ad_id="a1",
+        platform=AdFatiguePlatform.META,
+        launch_time=_NOW,
+        target_cpa=Decimal("300"),
+    )
+
+
+def test_a_tired_winner_is_replaced_but_one_still_under_target_is_left_alone() -> None:
+    """Poarta C primea doar zerouri: starea nu trecea niciodata pe "profitable"."""
+    good = [(ago, 50.0, 2000, 40, 1.0) for ago in range(3, 14)]  # CPA 50, CTR 2%
+    tired = [(ago, 80.0, 2000, 20, 1.0) for ago in range(3)]  # CPA 80, CTR 1%
+    insight = AdInsight(
+        ad_id="a1", name="Video", created_time=_NOW - timedelta(days=30), active=True,
+        spend=1200.0, impressions=40000, clicks=700, conversions=30.0, revenue=3000.0,
+        frequency_7d=3.5, days=_days(*good, *tired),
+    )
+
+    record = _meta_record()
+    apply_platform_insight(
+        record, insight, target_cpa=Decimal("60"), account_median_ctr=0.02, now=_NOW
+    )
+    assert record.status is AdLifecycleStatus.PROFITABLE  # CPA 40 de la lansare, tinta 60
+    assert record.bad_days_last_5 == 3  # ultimele 3 zile, peste tinta
+    assert evaluate_ad(to_ad_performance_state(record), _NOW) == "PAUSE_REPLACE"
+
+    # Aceeasi tendinta, dar zilele raman sub tinta (300): reclama inca aduce bani.
+    cheap = _meta_record()
+    apply_platform_insight(
+        cheap, insight, target_cpa=Decimal("300"), account_median_ctr=0.02, now=_NOW
+    )
+    assert cheap.bad_days_last_5 == 0
+    assert evaluate_ad(to_ad_performance_state(cheap), _NOW) == "CONTINUE"
+
+
+def test_an_ad_that_no_longer_runs_is_not_judged() -> None:
+    record = _meta_record()
+    stopped = AdInsight(ad_id="a1", name="Oprit", created_time=_NOW, active=False)
+    apply_platform_insight(
+        record, stopped, target_cpa=Decimal("300"), account_median_ctr=0.0, now=_NOW
+    )
+    assert record.status is AdLifecycleStatus.PAUSED
+    assert evaluate_ad(to_ad_performance_state(record), _NOW + timedelta(days=9)) == "CONTINUE"

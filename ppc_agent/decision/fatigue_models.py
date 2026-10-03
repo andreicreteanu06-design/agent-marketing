@@ -12,7 +12,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 FatiguePlatform = Literal["meta", "tiktok", "google"]
-AdStatus = Literal["new", "profitable", "fatigued"]
+#: ``paused``: anuntul nu ruleaza in platforma - nu mai e nimic de judecat la el.
+AdStatus = Literal["new", "profitable", "fatigued", "paused"]
 FatigueVerdict = Literal[
     "CONTINUE", "PAUSE_HARD", "PAUSE_PROVISIONAL", "HOLD_FOR_LAG", "PAUSE_REPLACE"
 ]

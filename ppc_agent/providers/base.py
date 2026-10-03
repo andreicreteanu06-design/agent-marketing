@@ -182,7 +182,8 @@ class MetaMarketingProvider(ABC):
 
         Returns:
             ``DataFrame`` cu coloanele ``arm_id``, ``name``, ``clicks``,
-            ``conversions``, ``cost``, ``revenue`` (venitul din conversii).
+            ``conversions``, ``cost``, ``revenue`` (venitul din conversii) si,
+            optional, ``active`` (lipsa = setul ruleaza).
         """
 
     @abstractmethod

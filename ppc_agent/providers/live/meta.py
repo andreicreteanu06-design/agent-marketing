@@ -10,7 +10,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -96,11 +97,46 @@ _CONVERSION_FAMILIES: tuple[tuple[str, ...], ...] = (
 # nu le-a adus neaparat.
 _ATTRIBUTION_WINDOW = "7d_click"
 _INSIGHTS_ATTRIBUTION = json.dumps([_ATTRIBUTION_WINDOW])
+#: Monitorul de oboseala judeca doar anunturile care ruleaza acum.
+_ACTIVE_ADS = json.dumps([{"field": "ad.effective_status", "operator": "IN", "value": ["ACTIVE"]}])
 
 # Vezi google_ads.py::_single_touch_paths - acelasi fallback (Meta Insights nu
 # expune parcursuri multi-touch simplu), duplicat aici deliberat ca fiecare
 # Live*Provider sa ramana auditabil de sine statator.
 _MAX_PATHS_PER_ARM = 500
+
+
+@dataclass(frozen=True, slots=True)
+class AdDay:
+    """O zi incheiata a unui anunt. Meta omite zilele fara livrare."""
+
+    day: date
+    spend: float
+    impressions: int
+    clicks: int
+    conversions: float
+
+
+@dataclass(frozen=True, slots=True)
+class AdInsight:
+    """Un anunt din contul Meta, pentru monitorul de oboseala.
+
+    Cheltuiala, afisarile, click-urile, conversiile si venitul sunt de la lansare;
+    ``days`` sunt ultimele zile incheiate. Un anunt care nu ruleaza (``active`` fals)
+    vine fara cifre: nu mai e nimic de judecat la el.
+    """
+
+    ad_id: str
+    name: str
+    created_time: datetime
+    active: bool
+    spend: float = 0.0
+    impressions: int = 0
+    clicks: int = 0
+    conversions: float = 0.0
+    revenue: float = 0.0
+    frequency_7d: float = 0.0
+    days: tuple[AdDay, ...] = ()
 
 
 def _single_touch_paths(name: str, clicks: int, conversions: int) -> list[list[str]]:
@@ -356,7 +392,18 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         return pd.DataFrame(rows, columns=columns)
 
     def campaign_performance(self, ad_account_id: str) -> pd.DataFrame:
-        """Performanta pe seturi de reclame (30 de zile), pentru Modulul 2 (bandit)."""
+        """Performanta pe seturi de reclame (30 de zile), pentru Modulul 2 (bandit).
+
+        ``active``: setul ruleaza acum. Insights intoarce si seturile oprite care au
+        cheltuit in fereastra - istoricul lor conteaza (CFO-ul), bugetul nu.
+        """
+        running = {
+            str(adset.get("id", ""))
+            for adset in self._paginate(
+                f"{ad_account_id}/adsets", {"fields": "id,effective_status", "limit": 200}
+            )
+            if adset.get("effective_status") == "ACTIVE"
+        }
         insights = self._paginate(
             f"{ad_account_id}/insights",
             {
@@ -379,11 +426,12 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                         "conversions": round(conversions),
                         "cost": float(row.get("spend", 0.0)),
                         "revenue": revenue,
+                        "active": str(row["adset_id"]) in running,
                     }
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ProviderError(f"rand Meta Insights cu forma neasteptata: {exc}") from exc
-        columns = ["arm_id", "name", "clicks", "conversions", "cost", "revenue"]
+        columns = ["arm_id", "name", "clicks", "conversions", "cost", "revenue", "active"]
         return pd.DataFrame(out, columns=columns)
 
     def daily_campaign_performance(
@@ -434,6 +482,93 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                     f"rand zilnic Meta Insights cu forma neasteptata: {exc}"
                 ) from exc
         return pd.DataFrame(out, columns=DAILY_COLUMNS)
+
+    def ad_insights(self, ad_account_id: str, *, days: int = 14) -> list[AdInsight]:
+        """Anunturile contului, pentru monitorul de oboseala din jobul de noapte.
+
+        Lista anunturilor (starea, data lansarii), apoi - doar pentru cele active -
+        cifrele de la lansare, frecventa pe 7 zile si ultimele ``days`` zile incheiate.
+        Conversiile se numara ca peste tot: o data, in 7 zile dupa click.
+        """
+        ads = self._paginate(
+            f"{ad_account_id}/ads",
+            {"fields": "id,name,created_time,effective_status", "limit": 200},
+        )
+        insights = f"{ad_account_id}/insights"
+        base = {"level": "ad", "filtering": _ACTIVE_ADS, "limit": 500}
+        counted = {"action_attribution_windows": _INSIGHTS_ATTRIBUTION}
+        lifetime = {
+            str(row["ad_id"]): row
+            for row in self._paginate(
+                insights,
+                {
+                    **base,
+                    **counted,
+                    "date_preset": "maximum",
+                    "fields": "ad_id,spend,impressions,clicks,actions,action_values",
+                },
+            )
+        }
+        week = {
+            str(row["ad_id"]): row
+            for row in self._paginate(
+                insights, {**base, "date_preset": "last_7d", "fields": "ad_id,frequency"}
+            )
+        }
+        start, end = daily_window(days, None)
+        by_day: dict[str, list[AdDay]] = {}
+        try:
+            for row in self._paginate(
+                insights,
+                {
+                    **base,
+                    **counted,
+                    "time_increment": 1,
+                    "time_range": json.dumps(
+                        {"since": start.isoformat(), "until": end.isoformat()}
+                    ),
+                    "fields": "ad_id,date_start,spend,impressions,clicks,actions",
+                },
+            ):
+                by_day.setdefault(str(row["ad_id"]), []).append(
+                    AdDay(
+                        day=date.fromisoformat(str(row["date_start"])),
+                        spend=float(row.get("spend", 0.0)),
+                        impressions=int(row.get("impressions", 0)),
+                        clicks=int(row.get("clicks", 0)),
+                        conversions=_conversion_totals(row)[0],
+                    )
+                )
+            out: list[AdInsight] = []
+            for ad in ads:
+                ad_id = str(ad["id"])
+                name = str(ad.get("name", ad_id))
+                created = datetime.strptime(str(ad["created_time"]), "%Y-%m-%dT%H:%M:%S%z")
+                if ad.get("effective_status") != "ACTIVE":
+                    out.append(
+                        AdInsight(ad_id=ad_id, name=name, created_time=created, active=False)
+                    )
+                    continue
+                row = lifetime.get(ad_id, {})
+                conversions, revenue = _conversion_totals(row)
+                out.append(
+                    AdInsight(
+                        ad_id=ad_id,
+                        name=name,
+                        created_time=created,
+                        active=True,
+                        spend=float(row.get("spend", 0.0)),
+                        impressions=int(row.get("impressions", 0)),
+                        clicks=int(row.get("clicks", 0)),
+                        conversions=conversions,
+                        revenue=revenue,
+                        frequency_7d=float(week.get(ad_id, {}).get("frequency", 0.0)),
+                        days=tuple(sorted(by_day.get(ad_id, []), key=lambda day: day.day)),
+                    )
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError(f"anunt Meta cu forma neasteptata: {exc}") from exc
+        return out
 
     def conversion_paths(self, ad_account_id: str) -> list[list[str]]:
         """Parcursuri single-touch sintetizate din performanta pe seturi de reclame.

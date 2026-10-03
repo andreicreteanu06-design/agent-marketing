@@ -150,7 +150,7 @@ def evaluate_ad(ad: AdPerformanceState, current_time: datetime) -> FatigueVerdic
         return _evaluate_new_ad(ad, age_hours)
     if ad.status == "profitable":
         return _evaluate_profitable_ad(ad)
-    return "CONTINUE"  # status == "fatigued"
+    return "CONTINUE"  # "fatigued" (deja actionat) sau "paused" (nu ruleaza)
 
 
 def explain_verdict(ad: AdPerformanceState, verdict: FatigueVerdict, current_time: datetime) -> str:

@@ -145,6 +145,8 @@ class AdLifecycleStatus(enum.StrEnum):
     NEW = "new"
     PROFITABLE = "profitable"
     FATIGUED = "fatigued"
+    #: Nu ruleaza in platforma (oprit, sters): monitorul de oboseala nu-l mai judeca.
+    PAUSED = "paused"
 
 
 class AdPlatform(enum.StrEnum):
@@ -496,6 +498,10 @@ class AdPerformanceRecord(SQLModel, table=True):
     target_cpa: Decimal = Field(sa_column=_money_column())
     conversions: int = Field(default=0, ge=0)
     revenue: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
+    #: Ce raporteaza platforma (Meta: o data, 7 zile dupa click), scris de sincronizarea
+    #: de noapte. ``conversions``/``revenue`` raman ale webhook-ului - vezi ``counted``.
+    platform_conversions: int = Field(default=0, ge=0)
+    platform_revenue: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
     impressions: int = Field(default=0, ge=0)
     clicks: int = Field(default=0, ge=0)
     ctr: float = 0.0
@@ -515,9 +521,21 @@ class AdPerformanceRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
 
     @property
+    def counted(self) -> tuple[int, Decimal]:
+        """(conversii, venit) din sursa care a vazut mai multe: webhook-ul sau platforma.
+
+        Fiecare numara mai putin decat realitatea (webhook-ul doar comenzile cu anuntul
+        cunoscut, platforma doar 7 zile dupa click) - o reclama care a vandut dupa
+        oricare dintre ele nu se judeca drept una fara vanzari.
+        """
+        if self.platform_conversions > self.conversions:
+            return self.platform_conversions, self.platform_revenue
+        return self.conversions, self.revenue
+
+    @property
     def roas(self) -> float:
         """Return on ad spend (venit / cost); 0 daca nu exista cost (ca ArmStats.roas)."""
-        return float(self.revenue / self.spend) if self.spend > 0 else 0.0
+        return float(self.counted[1] / self.spend) if self.spend > 0 else 0.0
 
     client_account: ClientAccount = Relationship(back_populates="ad_performance_records")
 

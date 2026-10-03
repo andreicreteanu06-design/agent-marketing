@@ -183,7 +183,9 @@ def build_fatigue_changes(
         changes.append(
             ProposedChange(
                 op="PAUSE",
-                resource=f"ad/{ad.ad_id}",
+                # ``meta_ad/`` e numele pe care motorul de executie il aplica in Meta;
+                # celelalte platforme n-au inca executor - raman de oprit manual.
+                resource=f"meta_ad/{ad.ad_id}" if ad.platform == "meta" else f"ad/{ad.ad_id}",
                 resource_type="ad",
                 before={"status": ad.status},
                 after={"status": "paused", "verdict": verdict, "platform": ad.platform},

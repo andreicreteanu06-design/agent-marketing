@@ -30,10 +30,13 @@ from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
 from ppc_agent.ingestion.pipeline import run_ingestion
 from ppc_agent.providers.factory import ProviderFactory
+from ppc_agent.providers.live.meta import AdInsight, LiveMetaMarketingProvider
 from ppc_agent_server.db import get_engine
 from ppc_agent_server.jobs.brand_alignment import apply_brand_directive
 from ppc_agent_server.jobs.synthetic import run_tracking_contract_job, site_url
 from ppc_agent_server.models import (
+    AdFatiguePlatform,
+    AdLifecycleStatus,
     AdPerformanceRecord,
     AdQueueItem,
     ChangeOp,
@@ -68,7 +71,7 @@ from ppc_agent_server.services.queen_signals import (
     DbTechnicalSignals,
 )
 from ppc_agent_server.services.technician import evaluate_technical_health
-from ppc_agent_server.tracking.pipeline import to_ad_performance_state
+from ppc_agent_server.tracking.pipeline import apply_platform_insight, to_ad_performance_state
 from seo_geo_agent.audit.issues import AUDIT_ISSUE_TYPES
 from seo_geo_agent.audit.service import AuditConfig, AuditResult, run_audit
 from seo_geo_agent.audit.url_policy import CrawlTargetBlockedError, normalize_and_validate_start_url
@@ -536,17 +539,12 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
     ``AdPerformanceRecord``, pentru randurile al caror ``ad_id`` se regaseste in
     ``campaign_performance()``.
 
-    Scop deliberat limitat: NU atinge ``conversions``/``revenue`` (proprietatea
-    pipeline-ului de urmarire a conversiilor, vezi ``tracking/pipeline.py``) si
-    NU poate popula ``impressions``/``ctr``/frecventa/liniile de baza CTR-CPA pe
-    care Gate B/C din Fatigue Monitor le folosesc - ``GoogleAdsProvider``,
-    ``TikTokAdsProvider`` si ``MetaMarketingProvider`` nu expun inca acele
-    coloane (``campaign_performance()`` intoarce doar
-    ``arm_id/name/clicks/conversions/cost/revenue``). Verdictele care depind de
-    ele raman la fel de "oarbe" ca inainte de acest job - gap documentat, nu
-    ascuns. NU creeaza randuri noi (doar actualizeaza randuri deja existente) -
-    crearea ramane in sarcina pipeline-ului de conversii, care are contextul
-    (target_cpa, platforma) necesar unui rand nou.
+    Nu atinge ``conversions``/``revenue`` (proprietatea pipeline-ului de urmarire a
+    conversiilor, vezi ``tracking/pipeline.py``). In ``live``, anunturile Meta primesc
+    tot ce cer portile B si C ale monitorului de oboseala (afisari, CTR, frecventa,
+    liniile de baza, conversiile platformei) si randuri noi - si cele fara vanzari:
+    vezi :func:`_sync_meta_ads`. Google si TikTok raman doar pe ``spend``/``clicks``:
+    providerii lor nu expun inca nivelul de anunt.
 
     Tot aici se inlocuieste :class:`PlatformArmSnapshot` al clientului: ce a citit
     agentul din platforme in noaptea asta, pentru CFO. Doar in ``live``: in ``mock``
@@ -612,8 +610,68 @@ def run_metrics_sync_job(*, client_account_id: int) -> dict[str, Any]:
             record.updated_at = now
             session.add(record)
             updated += 1
+        meta = factory.meta()
+        meta_ads = (
+            _sync_meta_ads(session, account, meta.ad_insights(meta_id), now)
+            if isinstance(meta, LiveMetaMarketingProvider) and factory.configured("meta_ads")
+            else 0
+        )
         session.commit()
-        return {"checked": len(records), "updated": updated, "platform_arms": len(arms_for_cfo)}
+        return {
+            "checked": len(records),
+            "updated": updated,
+            "platform_arms": len(arms_for_cfo),
+            "meta_ads": meta_ads,
+        }
+
+
+def _sync_meta_ads(
+    session: Session, account: ClientAccount, insights: list[AdInsight], now: datetime
+) -> int:
+    """Anunturile din Meta, in randurile monitorului de oboseala - si cele fara vanzari.
+
+    Pana acum un rand aparea doar la prima conversie prin webhook: un anunt care
+    cheltuia fara nicio vanzare nu ajungea niciodata la poarta B (oprirea). Un anunt
+    oprit pe care nu l-am urmarit niciodata nu primeste rand; unul urmarit, care nu mai
+    ruleaza sau a fost sters, trece pe ``paused``. Intoarce cate anunturi a citit.
+    """
+    records = {
+        record.ad_id: record
+        for record in session.exec(
+            select(AdPerformanceRecord).where(
+                AdPerformanceRecord.client_account_id == account.id,
+                AdPerformanceRecord.platform == AdFatiguePlatform.META,
+            )
+        ).all()
+    }
+    running = [ad for ad in insights if ad.active and ad.impressions]
+    median_ctr = statistics.median(ad.clicks / ad.impressions for ad in running) if running else 0.0
+    for insight in insights:
+        record = records.get(insight.ad_id)
+        if record is None:
+            if not insight.active:
+                continue
+            record = AdPerformanceRecord(
+                client_account_id=account.id or 0,
+                ad_id=insight.ad_id,
+                platform=AdFatiguePlatform.META,
+                launch_time=insight.created_time,
+                target_cpa=account.default_lead_value,
+            )
+        apply_platform_insight(
+            record,
+            insight,
+            target_cpa=account.default_lead_value,
+            account_median_ctr=median_ctr,
+            now=now,
+        )
+        session.add(record)
+    seen = {insight.ad_id for insight in insights}
+    for ad_id, record in records.items():
+        if ad_id not in seen:
+            record.status = AdLifecycleStatus.PAUSED
+            session.add(record)
+    return len(insights)
 
 
 def list_client_account_ids() -> list[int]:

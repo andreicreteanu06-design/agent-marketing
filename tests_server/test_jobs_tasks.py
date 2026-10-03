@@ -13,7 +13,9 @@ from sqlmodel import Session, select
 
 import ppc_agent_server.jobs.tasks as tasks_module
 from ppc_agent.providers.factory import ProviderFactory
+from ppc_agent.providers.live.meta import AdInsight, LiveMetaMarketingProvider
 from ppc_agent.providers.mock.meta import MockMetaMarketingProvider
+from ppc_agent.services.execution_engine import resolve_target
 from ppc_agent_server.jobs.tasks import (
     ClientNotFoundError,
     _app_config_for,
@@ -24,6 +26,7 @@ from ppc_agent_server.jobs.tasks import (
 )
 from ppc_agent_server.models import (
     AdFatiguePlatform,
+    AdLifecycleStatus,
     AdPerformanceRecord,
     ChangeOp,
     ChangeStatus,
@@ -359,3 +362,51 @@ def test_the_cfo_judges_the_same_platform_numbers_the_budget_algorithm_moves(
             Decimal(str(row["cost"])).quantize(Decimal("0.01")),
             row["conversions"],
         )
+
+
+def test_an_ad_spending_without_sales_now_reaches_the_kill_switch(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Randul monitorului aparea doar la prima vanzare prin webhook: un anunt care
+    ardea bani fara nicio vanzare nu era judecat niciodata."""
+    account = _client_account(session)
+    account.meta_ad_account_id = "act_1"
+    session.add(account)
+    session.commit()
+    account_id = account.id or 0
+    monkeypatch.setenv("PPC_PROVIDER_MODE", "live")
+    monkeypatch.setenv("PPC_META_ACCESS_TOKEN", "token-de-test")
+    five_days_ago = datetime.now(tz=UTC) - timedelta(days=5)
+    ads = [
+        # 700 lei, 0 vanzari, tinta 300: peste 2x tinta, dupa 72 de ore -> oprire.
+        AdInsight(ad_id="ad_loser", name="Pierde", created_time=five_days_ago, active=True,
+                  spend=700.0, impressions=2000, clicks=30),
+        AdInsight(ad_id="ad_off", name="Oprit", created_time=five_days_ago, active=False),
+    ]
+    monkeypatch.setattr(
+        LiveMetaMarketingProvider,
+        "campaign_performance",
+        lambda self, ad_account_id: MockMetaMarketingProvider().campaign_performance("x"),
+    )
+    monkeypatch.setattr(LiveMetaMarketingProvider, "ad_insights", lambda self, ad_account_id: ads)
+
+    assert run_metrics_sync_job(client_account_id=account_id)["meta_ads"] == 2
+    assert run_fatigue_check_job(client_account_id=account_id)["created"] == 1
+
+    [pause] = session.exec(
+        select(ProposedChange).where(ProposedChange.source_module == "fatigue_monitor")
+    ).all()
+    assert pause.op is ChangeOp.PAUSE and "PAUSE_HARD" in pause.rationale
+    target = resolve_target(pause)  # numele pe care motorul il aplica in Meta
+    assert (target.kind, target.object_id) == ("ad", "ad_loser")
+
+    # A doua noapte anuntul a fost sters din Meta: nu se mai judeca, propunerea veche pleaca.
+    monkeypatch.setattr(LiveMetaMarketingProvider, "ad_insights", lambda self, ad_account_id: [])
+    run_metrics_sync_job(client_account_id=account_id)
+    night_two = run_fatigue_check_job(client_account_id=account_id)
+    assert (night_two["created"], night_two["superseded"]) == (0, 1)
+    [record] = session.exec(
+        select(AdPerformanceRecord).where(AdPerformanceRecord.client_account_id == account_id)
+    ).all()
+    session.refresh(record)
+    assert record.status is AdLifecycleStatus.PAUSED

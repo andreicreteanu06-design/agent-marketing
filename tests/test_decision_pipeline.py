@@ -108,3 +108,25 @@ def test_lead_value_keeps_a_cheap_lead_account_from_being_halved() -> None:
 
     assert cap(None) == Decimal("25.00")  # bugetul taiat la jumatate
     assert cap(Decimal("80")) > Decimal("50")  # lead de 80 lei luat cu 25: merita mai mult
+
+
+def test_paused_ad_sets_get_no_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un set oprit de om nu mai primeste buget: cota lui s-ar pierde, iar cele active
+    ar primi mai putin decat le revine."""
+
+    class _MetaWithPausedBrand(MockMetaMarketingProvider):
+        def campaign_performance(self, ad_account_id: str) -> pd.DataFrame:
+            frame = super().campaign_performance(ad_account_id)
+            frame["active"] = frame["arm_id"] != "as_brand"
+            return frame
+
+    settings = Settings(
+        provider_mode=ProviderMode.LIVE, meta_access_token="t", meta_ad_account_id="act_1"
+    )
+    config = AppConfig(settings=settings)
+    factory = ProviderFactory(config)
+    monkeypatch.setattr(factory, "meta", _MetaWithPausedBrand)
+
+    plan = run_plan(factory, config, n_samples=200)
+    funded = {item.arm_id for item in plan.budget_plan.allocations}
+    assert funded and "as_brand" not in funded

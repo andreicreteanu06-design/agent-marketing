@@ -30,8 +30,12 @@ def test_missing_access_token_raises_without_any_request() -> None:
 
 def test_campaign_performance_sums_conversion_actions() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url).startswith(_INSIGHTS_URL)
         assert request.headers["authorization"] == "Bearer token-123"
+        if str(request.url).startswith(_ADSETS_URL):
+            return httpx.Response(
+                200, json={"data": [{"id": "as_1", "effective_status": "ACTIVE"}], "paging": {}}
+            )
+        assert str(request.url).startswith(_INSIGHTS_URL)
         return httpx.Response(
             200,
             json={
@@ -63,6 +67,7 @@ def test_campaign_performance_sums_conversion_actions() -> None:
     assert row["conversions"] == 10  # doar "purchase", nu "link_click"
     assert row["cost"] == pytest.approx(150.50)
     assert row["revenue"] == pytest.approx(500.0)
+    assert bool(row["active"]) is True
 
 
 def test_same_purchase_reported_under_three_types_counts_once() -> None:
@@ -161,6 +166,8 @@ def test_pagination_follows_paging_next() -> None:
     calls = {"count": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(_ADSETS_URL):  # starea seturilor, o pagina
+            return httpx.Response(200, json={"data": [], "paging": {}})
         calls["count"] += 1
         if calls["count"] == 1:
             assert str(request.url).startswith(_INSIGHTS_URL)
@@ -358,3 +365,82 @@ def test_error_in_a_200_body_is_not_success() -> None:
     )
     with pytest.raises(ProviderError, match="Nothing changed"):
         _run(provider.pause_adset("23848"))
+
+
+def test_paused_ad_sets_keep_their_history_but_are_marked_inactive() -> None:
+    """Un set oprit a cheltuit luna asta: ramane in cifre (CFO), dar nu mai e "activ"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(_ADSETS_URL):
+            sets = [
+                {"id": "as_on", "effective_status": "ACTIVE"},
+                {"id": "as_off", "effective_status": "PAUSED"},
+            ]
+            return httpx.Response(200, json={"data": sets, "paging": {}})
+        rows = [
+            {"adset_id": set_id, "clicks": "10", "spend": "50"} for set_id in ("as_on", "as_off")
+        ]
+        return httpx.Response(200, json={"data": rows, "paging": {}})
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    frame = provider.campaign_performance("act_999")
+    assert dict(zip(frame["arm_id"], frame["active"], strict=True)) == {
+        "as_on": True,
+        "as_off": False,
+    }
+
+
+def test_ad_insights_reads_running_ads_for_the_fatigue_monitor() -> None:
+    """Lista anunturilor + cifrele celor active: de la lansare, frecventa, zi cu zi."""
+    seen: list[dict[str, str]] = []
+    purchase = ("purchase", "omni_purchase")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(parse_qsl(request.url.query.decode()))
+        seen.append(params)
+        if request.url.path.endswith("/ads"):
+            ads = [
+                {"id": "a1", "name": "Video", "created_time": "2026-09-20T10:00:00+0300",
+                 "effective_status": "ACTIVE"},
+                {"id": "a2", "name": "Oprit", "created_time": "2026-09-01T10:00:00+0300",
+                 "effective_status": "PAUSED"},
+            ]
+            return httpx.Response(200, json={"data": ads, "paging": {}})
+        if params.get("date_preset") == "maximum":
+            row = {
+                "ad_id": "a1", "spend": "120.50", "impressions": "3000", "clicks": "45",
+                "actions": [{"action_type": t, "value": "3", "7d_click": "2"} for t in purchase],
+                "action_values": [
+                    {"action_type": t, "value": "300", "7d_click": "200"} for t in purchase
+                ],
+            }
+            return httpx.Response(200, json={"data": [row], "paging": {}})
+        if params.get("date_preset") == "last_7d":
+            return httpx.Response(200, json={"data": [{"ad_id": "a1", "frequency": "2.4"}]})
+        day = {
+            "ad_id": "a1", "date_start": "2026-10-01", "spend": "10", "impressions": "300",
+            "clicks": "5", "actions": [{"action_type": "purchase", "value": "1"}],
+        }
+        return httpx.Response(200, json={"data": [day], "paging": {}})
+
+    provider = LiveMetaMarketingProvider(
+        access_token="token-123", transport=httpx.MockTransport(handler)
+    )
+    running, paused = provider.ad_insights("act_999")
+
+    assert (running.ad_id, running.active, running.spend, running.impressions) == (
+        "a1", True, 120.5, 3000
+    )
+    assert (running.conversions, running.revenue) == (2.0, 200.0)  # o data, 7 zile la click
+    assert running.frequency_7d == pytest.approx(2.4)
+    assert [(day.day.isoformat(), day.conversions) for day in running.days] == [
+        ("2026-10-01", 1.0)
+    ]
+    assert running.created_time.utcoffset() is not None
+    assert (paused.ad_id, paused.active, paused.spend) == ("a2", False, 0.0)
+    # Cifrele se cer doar pentru anunturile care ruleaza.
+    insights = [params for params in seen if "level" in params]
+    assert len(insights) == 3
+    assert all("ACTIVE" in params["filtering"] for params in insights)

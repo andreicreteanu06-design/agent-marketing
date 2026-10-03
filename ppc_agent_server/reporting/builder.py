@@ -88,15 +88,16 @@ def build_client_report(session: Session, account: ClientAccount) -> ClientRepor
             platform=record.platform.value,
             status=record.status.value,
             spend=record.spend,
-            revenue=record.revenue,
-            conversions=record.conversions,
+            revenue=record.counted[1],
+            conversions=record.counted[0],
             roas=record.roas,
         )
         for record in records
     ]
     total_spend = sum((record.spend for record in records), Decimal("0"))
-    total_revenue = sum((record.revenue for record in records), Decimal("0"))
-    total_conversions = sum(record.conversions for record in records)
+    # Conversiile din sursa care a vazut mai multe, pe fiecare anunt (``counted``).
+    total_revenue = sum((record.counted[1] for record in records), Decimal("0"))
+    total_conversions = sum(record.counted[0] for record in records)
     roas = float(total_revenue / total_spend) if total_spend > 0 else 0.0
 
     changes = session.exec(

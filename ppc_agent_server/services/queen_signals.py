@@ -402,7 +402,7 @@ def load_live_ads(session: Session, client_account_id: int) -> list[LiveAd]:
                 headline=str(launch.after.get("headline", "")),
                 body=str(launch.after.get("primary_text", "")),
                 spend=record.spend if record else None,
-                conversions=record.conversions if record else None,
+                conversions=record.counted[0] if record else None,
                 target_cpa=record.target_cpa if record else None,
             )
         )
@@ -553,8 +553,8 @@ class DbFinancialSignals:
                 platform=record.platform.value,
                 label=headlines.get(record.ad_id, ""),
                 spend=record.spend,
-                conversions=record.conversions,
-                revenue=record.revenue,
+                conversions=record.counted[0],
+                revenue=record.counted[1],
                 target_cpa=record.target_cpa,
             )
             for record in records
