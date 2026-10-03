@@ -13,6 +13,7 @@ Doua jumatati, testate separat:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -216,6 +217,14 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return attempts
 
 
+def ready_to_launch(account: ClientAccount) -> None:
+    """Interviul de dinaintea primei campanii, deja facut: costuri si zona (toata tara)."""
+    account.customer_profit = Decimal("600")
+    account.close_rate_pct = Decimal("30")
+    account.service_area = "national"
+    account.economics_confirmed_at = datetime.now(tz=UTC)
+
+
 def _signup(client: TestClient) -> tuple[dict[str, str], int]:
     response = client.post(
         "/api/v1/signup",
@@ -239,6 +248,7 @@ def launcher(
     account = session.get(ClientAccount, account_id)
     assert account is not None
     account.meta_ad_account_id = "act_555"
+    ready_to_launch(account)
     session.add(account)
     session.commit()
     return client, headers, account_id
@@ -350,8 +360,14 @@ def test_fara_cont_meta_configurat_nu_se_poate_propune(
     client: TestClient,
     agency_settings: Tenant,
     no_network: list[str],
+    session: Session,
 ) -> None:
-    headers, _ = _signup(client)
+    headers, account_id = _signup(client)
+    account = session.get(ClientAccount, account_id)
+    assert account is not None
+    ready_to_launch(account)
+    session.add(account)
+    session.commit()
     response = client.post("/api/v1/campaigns/propose_launch", headers=headers, json=_request())
     assert response.status_code == 409
     assert "contul de reclame Meta" in response.json()["detail"]

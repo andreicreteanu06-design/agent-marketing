@@ -59,10 +59,11 @@ from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session
 
 from ppc_agent_server.db import get_engine, get_session
-from ppc_agent_server.models import ClientUser
+from ppc_agent_server.models import ClientAccount, ClientUser
 from ppc_agent_server.rate_limit import CHAT_BURST, CHAT_HOURLY, too_many_requests
-from ppc_agent_server.routers.client_auth import get_current_client_user
+from ppc_agent_server.routers.client_auth import get_current_client_user, get_geocoder
 from ppc_agent_server.services import emergency_stop
+from ppc_agent_server.services.client_intake import handle_message
 from ppc_agent_server.services.council import (
     MAX_QUESTION_CHARS,
     CouncilEvent,
@@ -72,6 +73,7 @@ from ppc_agent_server.services.council import (
     QueenCouncil,
     clean_question,
 )
+from ppc_agent_server.services.geocoding import Geocoder
 from ppc_agent_server.services.llm_client import LLMRouter, llm_router_from_settings
 from ppc_agent_server.services.memory import MemoryOutcome, memory_line
 from ppc_agent_server.services.queen_agent import (
@@ -274,6 +276,17 @@ def _run_command(session: Session, user: ClientUser, command: Command) -> Counci
     return _command_reply(user.client_account_id, " ".join(parts))
 
 
+def _answer(reply: CouncilReply, request: Request) -> CouncilReply | StreamingResponse:
+    """Un raspuns gata facut (comanda, interviu), simplu sau ca flux - cum l-a cerut chatul."""
+    if SSE_MEDIA_TYPE not in request.headers.get("accept", ""):
+        return reply
+    return StreamingResponse(
+        council_event_stream(lambda on_event: reply),
+        media_type=SSE_MEDIA_TYPE,
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 _Done = object()
 
 
@@ -331,6 +344,7 @@ def chat_with_queen(
     system_one: Annotated[LLMRouter | None, Depends(get_system_one)],
     seo_intent: Annotated[SeoIntentSource, Depends(get_seo_intent)],
     traffic: Annotated[OrganicTrafficSource, Depends(get_organic_traffic)],
+    geocoder: Annotated[Geocoder, Depends(get_geocoder)],
 ) -> CouncilReply | StreamingResponse:
     """Raspunsul Reginei la o intrebare libera, dupa deliberarea consiliului (``reply``).
 
@@ -343,19 +357,30 @@ def chat_with_queen(
     "opreste campaniile" / "opreste tot" (oprirea de urgenta, ``emergency_stop.py``) si
     "reporneste agentul" (o ridica). Doar frazele exacte - o intrebare care contine
     "opreste" ajunge la consiliu ca oricare alta.
+
+    Interviul de dinaintea primei campanii (``services/client_intake.py``): cat timp o
+    intrebare despre costuri sau zona asteapta raspuns, mesajul e raspunsul ei - nu
+    ajunge la consiliu.
     """
     command = admin_command(body.message)
     if command is not None:
-        reply = _run_command(session, user, command)
-        if SSE_MEDIA_TYPE not in request.headers.get("accept", ""):
-            return reply
-        return StreamingResponse(
-            council_event_stream(lambda on_event: reply),
-            media_type=SSE_MEDIA_TYPE,
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return _answer(_run_command(session, user, command), request)
     key = f"client:{user.client_account_id}"
-    wait = CHAT_BURST.retry_after(key) or CHAT_HOURLY.retry_after(key)
+    wait = CHAT_HOURLY.retry_after(key)
+    if wait is not None:
+        raise too_many_requests(wait, "Ai trimis multe întrebări într-un timp scurt.")
+    # Raspunsurile din interviu nu cheama modelele: doar plafonul pe ora, nu si rafala -
+    # cineva care raspunde repede la "5" si "2%" nu trebuie oprit la jumatate.
+    account = session.get(ClientAccount, user.client_account_id)
+    intake = (
+        handle_message(session, account, body.message, geocoder=geocoder)
+        if account is not None
+        else None
+    )
+    if intake is not None:
+        CHAT_HOURLY.hit(key)
+        return _answer(_command_reply(user.client_account_id, intake), request)
+    wait = CHAT_BURST.retry_after(key)
     if wait is not None:
         raise too_many_requests(wait, "Ai trimis multe întrebări într-un timp scurt.")
     CHAT_BURST.hit(key)

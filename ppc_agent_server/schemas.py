@@ -598,3 +598,57 @@ class SeoOpportunityReport(BaseModel):
     window_days: int
     weak_position_threshold: float
     items: list[SeoOpportunityItem]
+
+
+# --- Costurile si zona clientului (inaintea primei campanii) ---
+
+
+class ClientEconomicsUpdate(BaseModel):
+    """Corpul ``PUT /api/v1/me/economics`` (si al agentiei) - doar campurile trimise.
+
+    Aceleasi raspunsuri ca in interviul din chat (``services/client_intake.py``); cand nu
+    mai lipseste nimic, consiliul calculeaza pragurile si raza.
+    """
+
+    average_order_value: Decimal | None = Field(default=None, gt=0)
+    product_cost: Decimal | None = Field(default=None, ge=0)
+    shipping_cost: Decimal | None = Field(default=None, ge=0)
+    payment_fee_pct: Decimal | None = Field(default=None, ge=0, lt=100)
+    return_rate_pct: Decimal | None = Field(default=None, ge=0, lt=100)
+    customer_profit: Decimal | None = Field(default=None, gt=0)
+    close_rate_pct: Decimal | None = Field(default=None, gt=0, le=100)
+    service_area: Literal["local", "national"] | None = None
+    business_address: str | None = Field(default=None, min_length=5, max_length=300)
+    business_kind: Literal["zilnic", "programat", "destinatie", "livrare"] | None = None
+    #: Limita clientului; raza o alege consiliul, cel mult atat. ``null`` = decide consiliul.
+    max_travel_km: Decimal | None = Field(default=None, gt=0, le=80)
+
+
+class ClientEconomicsRead(BaseModel):
+    """Costurile, zona si ce a calculat consiliul din ele."""
+
+    objective: CampaignObjective
+    average_order_value: Decimal | None
+    product_cost: Decimal | None
+    shipping_cost: Decimal | None
+    payment_fee_pct: Decimal | None
+    return_rate_pct: Decimal | None
+    customer_profit: Decimal | None
+    close_rate_pct: Decimal | None
+    service_area: str
+    business_address: str
+    business_kind: str
+    location_label: str
+    target_radius_km: Decimal | None
+    max_travel_km: Decimal | None
+    #: Completat = se pot propune campanii.
+    economics_confirmed_at: datetime | None
+    max_cac: Decimal | None = None
+    max_cpl: Decimal | None = None
+    break_even_roas: Decimal | None = None
+    #: Ce intreaba consiliul acum (``None`` = nu lipseste nimic).
+    next_question: str | None = None
+    #: Ce a inteles consiliul: pragurile si zona, ca in chat.
+    summary: str | None = None
+    #: De ce raza asta (cand a fost aleasa acum).
+    radius_reason: str | None = None

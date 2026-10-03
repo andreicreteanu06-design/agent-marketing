@@ -998,6 +998,35 @@ dupa campanie pica, campania se sterge (`DELETE`), iar propunerea ramane
 Id-urile create ajung in `execution_result`; o campanie pe care rollback-ul
 n-a putut-o sterge apare acolo ca `orphan_campaign_id`.
 
+#### Inaintea primei campanii: costurile clientului si zona reclamelor
+
+Nicio campanie nu se propune pana consiliul nu stie cat castiga clientul dintr-o vanzare
+si unde sunt clientii lui (`propose_launch` raspunde 409 cu prima intrebare). Le cere
+in chat, pe rand (`services/client_intake.py`), sau le primeste din formular
+(`PUT /api/v1/me/economics`; agentia: `PUT /api/v1/clients/{id}/economics`;
+`GET` pe aceleasi rute arata pragurile si urmatoarea intrebare):
+
+- **Magazin**: cosul mediu, costul produselor, transportul platit de magazin, comisionul
+  de incasare (%), retururile (%). Contributia unei comenzi - ce ramane inainte de
+  reclame - e **CAC-ul maxim**; ROAS-ul minim e `cos / contributie` (devine
+  `min_roas`, deci il folosesc Kelly, CFO-ul si oprirea reclamelor fara vanzari).
+- **Lead-uri**: profitul unui client nou si cate cereri devin clienti. Un lead valoreaza
+  `profit x rata` (CPL-ul maxim, devine `default_lead_value`).
+- **Zona**: in toata tara, sau local - adresa exacta (OpenStreetMap / Nominatim, gratuit),
+  tipul afacerii si pana unde vrea clientul sa ajunga. **Raza o alege consiliul** din tipul
+  afacerii si marimea localitatii: o cafenea intr-un oras mare - 3 km, un service auto -
+  6 km, o mobila - 20 km; intr-un sat, mai mult, ca reclama sa aiba cui sa se arate.
+  Limita clientului e plafonul; una mai larga incepe de la raza logica, iar consiliul
+  spune de ce. "raza 8 km" o schimba, "schimba zona" / "actualizeaza costurile" reiau
+  intrebarile, "anuleaza" opreste interviul (raspunsurile raman salvate).
+
+Raspunsurile se inteleg fara model ("1.250 lei", "40%", "3 din 10", "nu stiu"); ce nu se
+intelege primeste intrebarea din nou, cu un exemplu, iar "de ce?" primeste motivul. Cat
+timp o intrebare asteapta, mesajele din chat nu ajung la consiliu si nu consuma limita de
+rafala (doar plafonul pe ora). Lansarea care urmeaza merge pe raza aleasa (Meta
+`custom_locations`), iar avizul consiliului si rationamentul spun pragul: "profitabila
+cat timp un client costa sub X lei; la B lei pe zi, cel putin N vanzari pe zi".
+
 #### Brief-ul de lansare: agentii SEO/GEO si PPC, inainte de coada
 
 Inainte ca o lansare sa intre in coada, `propose_launch` ii ataseaza un brief

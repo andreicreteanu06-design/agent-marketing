@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -43,6 +44,7 @@ from ppc_agent_server.models import (
 from ppc_agent_server.routers import queen
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
+from ppc_agent_server.services.client_intake import launch_economics, open_intake
 from ppc_agent_server.services.council import CouncilReply
 from ppc_agent_server.services.council_guard import DECIDED_BY
 from ppc_agent_server.services.creative_evaluator import (
@@ -160,18 +162,37 @@ def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaL
             image_url=payload.image_url.strip(),
             country=payload.country or account.geo.strip().upper(),
             call_to_action=payload.call_to_action or DEFAULT_CALL_TO_ACTION[account.objective],
+            **_local_area(account),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _local_area(account: ClientAccount) -> dict[str, Decimal]:
+    """Raza aleasa de consiliu pentru o afacere locala; ``{}`` = toata tara."""
+    if account.service_area != "local" or account.target_radius_km is None:
+        return {}
+    if account.location_lat is None or account.location_lng is None:
+        return {}
+    return {
+        "latitude": account.location_lat,
+        "longitude": account.location_lng,
+        "radius_km": account.target_radius_km,
+    }
+
+
 def _rationale(spec: MetaLaunchSpec, ad_account: str) -> str:
     """Ce citeste omul care aproba: cifre si consecinte, nu formule."""
     objective = build_meta_campaign_payload(spec.objective)["objective"]
+    area = (
+        f"o raza de {spec.radius_km} km in jurul afacerii"
+        if spec.radius_km is not None
+        else f"tara {spec.country}"
+    )
     return (
         f"Lansare campanie Meta '{spec.campaign_name}' in contul {ad_account}: "
         f"{objective}, buget {spec.daily_budget} pe zi, optimizata pe evenimentul "
-        f"{spec.custom_event_type} al pixelului {spec.pixel_id}, tara {spec.country}. "
+        f"{spec.custom_event_type} al pixelului {spec.pixel_id}, {area}. "
         "Dupa aprobare se creeaza campania, setul de reclame si anuntul, TOATE OPRITE "
         "(PAUSED) - nimic nu cheltuie pana nu le activezi manual din Ads Manager. "
         "Bugetul intra in plafonul zilnic din momentul aprobarii."
@@ -215,6 +236,17 @@ def propose_launch(
     account = session.get(ClientAccount, client_user.client_account_id)
     if account is None:  # pragma: no cover - FK garanteaza existenta
         raise HTTPException(status_code=404, detail="contul clientului nu exista")
+    if account.economics_confirmed_at is None:
+        question = open_intake(session, account)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Înainte de prima campanie, consiliul are nevoie de costurile tale și de zona "
+                "în care sunt clienții: din ele calculează cât poți plăti pe un client fără să "
+                "pierzi bani. Răspunde în chat la întrebări"
+                + (f" - prima: {question}" if question else ".")
+            ),
+        )
 
     config = _app_config_for(account)
     raw_ad_account = config.settings.meta_ad_account_id
@@ -252,8 +284,12 @@ def propose_launch(
         )
 
     client_id = account.id or 0
+    economics = launch_economics(account, spec.daily_budget)
+    question = launch_question(spec.campaign_name, spec.daily_budget)
+    if economics is not None:
+        question += f" {economics['note']}"
     try:
-        reply = council(session, client_id, launch_question(spec.campaign_name, spec.daily_budget))
+        reply = council(session, client_id, question)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -271,12 +307,18 @@ def propose_launch(
         # scria cand omul a aprobat, chiar daca setarea clientului se schimba.
         resource=f"meta_ad_account/{ad_account}",
         resource_type="campaign",
-        before={**brief.to_payload(), REVIEW_KEY: review(reply), CREATIVE_KEY: creative},
+        before={
+            **brief.to_payload(),
+            REVIEW_KEY: review(reply),
+            CREATIVE_KEY: creative,
+            "economics": economics,
+        },
         after=spec.to_payload(),
         projected_daily_spend=spec.daily_budget,
         rationale=(
             f"{_rationale(spec, ad_account)} {brief.summary()} "
-            f"Consiliul: {reply.ruling.decision} {_creative_note(creative)}"
+            + (f"{economics['note']} " if economics else "")
+            + f"Consiliul: {reply.ruling.decision} {_creative_note(creative)}"
         ),
         source_module=SOURCE_MODULE,
         status=ChangeStatus.PENDING,

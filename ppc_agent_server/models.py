@@ -37,6 +37,11 @@ def _money_column() -> Column[Decimal]:
     return Column(Numeric(10, 2), nullable=False)
 
 
+def _optional_money() -> Column[Decimal]:
+    """Ca :func:`_money_column`, dar camp optional (``None`` = necompletat)."""
+    return Column(Numeric(10, 2), nullable=True)
+
+
 class SubscriptionStatus(enum.StrEnum):
     """SQLModel nu mapeaza ``Literal[...]`` la o coloana SQL — doar ``Enum``
     (vezi ``issubclass()`` in ``sqlmodel.main.get_sqlalchemy_type``) — de-asta
@@ -241,6 +246,39 @@ class ClientAccount(SQLModel, table=True):
     min_roas: Decimal | None = Field(
         default=None, sa_column=Column(Numeric(10, 2), nullable=True)
     )
+
+    # Costurile clientului, cerute de consiliu inaintea primei campanii (in chat sau
+    # din formular) - din ele ies CAC-ul maxim, ``min_roas`` si ``default_lead_value``
+    # (``ppc_agent.client_economics``). Magazin: cosul mediu, costul produselor,
+    # transportul, comisionul de plata (%), retururile (%). Lead-uri: profitul unui
+    # client nou si cate cereri devin clienti (%).
+    average_order_value: Decimal | None = Field(default=None, sa_column=_optional_money())
+    product_cost: Decimal | None = Field(default=None, sa_column=_optional_money())
+    shipping_cost: Decimal | None = Field(default=None, sa_column=_optional_money())
+    payment_fee_pct: Decimal | None = Field(default=None, sa_column=_optional_money())
+    return_rate_pct: Decimal | None = Field(default=None, sa_column=_optional_money())
+    customer_profit: Decimal | None = Field(default=None, sa_column=_optional_money())
+    close_rate_pct: Decimal | None = Field(default=None, sa_column=_optional_money())
+    #: Cand s-au completat toate costurile (si zona): de atunci se pot lansa campanii.
+    economics_confirmed_at: datetime | None = None
+
+    # Unde ajung reclamele: ``national`` (toata tara) sau ``local`` (o raza in jurul
+    # adresei afacerii, aleasa de consiliu din tipul afacerii si marimea localitatii).
+    service_area: str = ""
+    business_address: str = ""
+    business_kind: str = ""
+    location_label: str = ""
+    location_lat: Decimal | None = Field(
+        default=None, sa_column=Column(Numeric(9, 6), nullable=True)
+    )
+    location_lng: Decimal | None = Field(
+        default=None, sa_column=Column(Numeric(9, 6), nullable=True)
+    )
+    place_size: str = ""
+    max_travel_km: Decimal | None = Field(default=None, sa_column=_optional_money())
+    target_radius_km: Decimal | None = Field(default=None, sa_column=_optional_money())
+    #: Intrebarea la care raspunde clientul acum in chat (``services/client_intake.py``).
+    intake_step: str = ""
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")

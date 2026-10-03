@@ -196,6 +196,11 @@ class MetaLaunchSpec:
     image_url: str
     country: str
     call_to_action: str
+    #: Afacere locala: reclamele merg pe ``radius_km`` in jurul acestui punct, nu in
+    #: toata tara (``country``). Toate trei, sau niciunul.
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    radius_km: Decimal | None = None
 
     def __post_init__(self) -> None:
         _require_text("campaign_name", self.campaign_name)
@@ -221,6 +226,16 @@ class MetaLaunchSpec:
             )
         if not _COUNTRY.match(self.country):
             raise ValueError(f"tara trebuie sa fie un cod ISO de 2 litere ('{self.country}')")
+        local = (self.latitude, self.longitude, self.radius_km)
+        if any(value is not None for value in local):
+            if any(value is None for value in local):
+                raise ValueError("zona locala cere latitudine, longitudine si raza, toate trei")
+            assert self.latitude is not None and self.longitude is not None
+            assert self.radius_km is not None
+            if not (-90 <= self.latitude <= 90 and -180 <= self.longitude <= 180):
+                raise ValueError("coordonatele zonei nu sunt valide")
+            if not (1 <= self.radius_km <= 80):
+                raise ValueError(f"raza trebuie sa fie intre 1 si 80 km ({self.radius_km})")
 
     def to_payload(self) -> dict[str, Any]:
         """Forma JSON salvata in ``ProposedChange.after``.
@@ -242,6 +257,15 @@ class MetaLaunchSpec:
             "image_url": self.image_url,
             "country": self.country,
             "call_to_action": self.call_to_action,
+            "location": (
+                {
+                    "latitude": str(self.latitude),
+                    "longitude": str(self.longitude),
+                    "radius_km": str(self.radius_km),
+                }
+                if self.radius_km is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -257,6 +281,7 @@ class MetaLaunchSpec:
                 f"versiunea specificatiei de lansare e '{version}', asteptat "
                 f"{LAUNCH_SPEC_VERSION} - propunerea a fost salvata de alta versiune a codului"
             )
+        location = payload.get("location") or {}
         try:
             return cls(
                 campaign_name=str(payload["campaign_name"]),
@@ -271,6 +296,9 @@ class MetaLaunchSpec:
                 image_url=str(payload["image_url"]),
                 country=str(payload["country"]),
                 call_to_action=str(payload["call_to_action"]),
+                latitude=Decimal(location["latitude"]) if location else None,
+                longitude=Decimal(location["longitude"]) if location else None,
+                radius_km=Decimal(location["radius_km"]) if location else None,
             )
         except KeyError as exc:
             raise ValueError(f"specificatia de lansare nu are campul {exc}") from exc
@@ -339,15 +367,32 @@ def adset_fields(
         "promoted_object": _json(
             {"pixel_id": spec.pixel_id, "custom_event_type": spec.custom_event_type}
         ),
-        # Tintire larga: doar tara, plus Advantage+ audience. Cu
+        # Tintire larga: tara (sau raza in jurul afacerii, la una locala), plus
+        # Advantage+ audience - care largeste varsta si interesele, nu locatia. Cu
         # advantage_audience=1, Meta accepta age_min doar intre 18 si 25 si
         # fixeaza age_max la 65 - deci nu trimitem restrictii de varsta deloc.
         "targeting": _json(
             {
-                "geo_locations": {"countries": [spec.country]},
+                "geo_locations": _geo_locations(spec),
                 "targeting_automation": {"advantage_audience": 1},
             }
         ),
+    }
+
+
+def _geo_locations(spec: MetaLaunchSpec) -> dict[str, Any]:
+    """Toata tara, sau raza in jurul afacerii (``custom_locations``, in km)."""
+    if spec.radius_km is None:
+        return {"countries": [spec.country]}
+    return {
+        "custom_locations": [
+            {
+                "latitude": float(spec.latitude or 0),
+                "longitude": float(spec.longitude or 0),
+                "radius": float(spec.radius_km),
+                "distance_unit": "kilometer",
+            }
+        ]
     }
 
 

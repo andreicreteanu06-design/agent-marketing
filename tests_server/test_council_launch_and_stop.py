@@ -31,6 +31,7 @@ from ppc_agent_server.routers.campaigns import get_launch_council
 from ppc_agent_server.services import emergency_stop
 from ppc_agent_server.services.council import CouncilReply
 from ppc_agent_server.settings import get_server_settings
+from tests_server.test_campaign_launch import ready_to_launch
 
 ADMIN = "andreicreteanu06@gmail.com"
 LAUNCH = {
@@ -78,6 +79,7 @@ def _login(client: TestClient, session: Session, email: str) -> tuple[dict[str, 
     account = session.get(ClientAccount, account_id)
     assert account is not None
     account.meta_ad_account_id = "act_555"
+    ready_to_launch(account)
     session.add(account)
     session.commit()
     return headers, account_id

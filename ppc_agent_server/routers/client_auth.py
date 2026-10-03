@@ -9,6 +9,7 @@ conturile de reclame (``PATCH /me/credentials``).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 import jwt
@@ -28,6 +29,8 @@ from ppc_agent_server.schemas import (
     ClientAccountRead,
     ClientCredentialsUpdate,
     ClientCredentialsUpdateResponse,
+    ClientEconomicsRead,
+    ClientEconomicsUpdate,
     ClientLoginRequest,
     ClientMeResponse,
     ClientSignupRequest,
@@ -41,9 +44,16 @@ from ppc_agent_server.security import (
     hash_password,
     verify_password,
 )
+from ppc_agent_server.services import client_intake, geocoding
+from ppc_agent_server.services.geocoding import Geocoder
 from ppc_agent_server.settings import get_server_settings
 
 router = APIRouter(prefix="/api/v1", tags=["client-auth"])
+
+
+def get_geocoder() -> Geocoder:
+    """Harta pentru adresa afacerii (interviul de dinaintea primei campanii)."""
+    return lambda address, country: geocoding.nominatim_geocode(address, country)
 
 
 def _require_jwt_configured() -> None:
@@ -104,9 +114,7 @@ def signup(
     _require_jwt_configured()
     settings = get_server_settings()
     if settings.agency_tenant_id is None:
-        raise HTTPException(
-            status_code=503, detail="AGENCY_TENANT_ID nu e configurat pe server"
-        )
+        raise HTTPException(status_code=503, detail="AGENCY_TENANT_ID nu e configurat pe server")
     tenant = session.get(Tenant, settings.agency_tenant_id)
     if tenant is None:
         raise HTTPException(
@@ -163,15 +171,83 @@ def login(
     if wait is not None:
         raise too_many_requests(wait, "Prea multe încercări de autentificare.")
 
-    user = session.exec(
-        select(ClientUser).where(func.lower(ClientUser.email) == email_key)
-    ).first()
+    user = session.exec(select(ClientUser).where(func.lower(ClientUser.email) == email_key)).first()
     if user is None or not verify_password(payload.password, user.password_hash):
         LOGIN_FAILURES_BY_EMAIL.hit(email_key)
         raise HTTPException(status_code=401, detail="email sau parola incorecte")
 
     LOGIN_FAILURES_BY_EMAIL.clear(email_key)
     return ClientTokenResponse(access_token=create_client_token(user.id))  # type: ignore[arg-type]
+
+
+def economics_read(
+    account: ClientAccount, *, radius_reason: str | None = None
+) -> ClientEconomicsRead:
+    """Costurile, zona si pragurile calculate din ele - forma comuna clientului si agentiei."""
+    limits = client_intake.thresholds(account)
+    return ClientEconomicsRead.model_validate(
+        {
+            **{
+                field: getattr(account, field)
+                for field in ClientEconomicsRead.model_fields
+                if hasattr(account, field)
+            },
+            "max_cac": limits.max_cac if limits else None,
+            "max_cpl": limits.max_cpl if limits else None,
+            "break_even_roas": limits.break_even_roas if limits else None,
+            "next_question": client_intake.first_question(account),
+            "summary": (
+                client_intake.summary(account, limits)
+                if limits and account.economics_confirmed_at
+                else None
+            ),
+            "radius_reason": radius_reason,
+        }
+    )
+
+
+def update_economics(
+    session: Session,
+    account: ClientAccount,
+    payload: ClientEconomicsUpdate,
+    geocoder: Geocoder,
+) -> ClientEconomicsRead:
+    """``PUT .../economics`` - clientul sau agentia; 422 cu motivul cand nu se poate folosi."""
+    try:
+        reason = client_intake.apply_form(
+            session,
+            account,
+            payload.model_dump(exclude_unset=True),
+            geocoder=geocoder,
+            now=datetime.now(tz=UTC),
+        )
+    except client_intake.FormError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return economics_read(account, radius_reason=reason)
+
+
+@router.get("/me/economics", response_model=ClientEconomicsRead)
+def read_my_economics(
+    user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> ClientEconomicsRead:
+    """Costurile si zona clientului, cu pragurile calculate si urmatoarea intrebare."""
+    account = session.get(ClientAccount, user.client_account_id)
+    assert account is not None
+    return economics_read(account)
+
+
+@router.put("/me/economics", response_model=ClientEconomicsRead)
+def update_my_economics(
+    payload: ClientEconomicsUpdate,
+    user: Annotated[ClientUser, Depends(get_current_client_user)],
+    session: Annotated[Session, Depends(get_session)],
+    geocoder: Annotated[Geocoder, Depends(get_geocoder)],
+) -> ClientEconomicsRead:
+    """Formularul de costuri si zona - aceleasi raspunsuri ca interviul din chat."""
+    account = session.get(ClientAccount, user.client_account_id)
+    assert account is not None
+    return update_economics(session, account, payload, geocoder)
 
 
 @router.get("/me", response_model=ClientMeResponse)

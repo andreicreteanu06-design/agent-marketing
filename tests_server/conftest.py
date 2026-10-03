@@ -24,7 +24,7 @@ from ppc_agent_server.jobs.queue import InlineJobQueue, set_job_queue
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.rate_limit import reset_rate_limits
 from ppc_agent_server.routers import campaigns as campaigns_router
-from ppc_agent_server.services import market_trends
+from ppc_agent_server.services import geocoding, market_trends
 from ppc_agent_server.services.llm_client import reset_llm_state
 from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.skills import web_search
@@ -146,6 +146,19 @@ def _no_llm_services(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     get_server_settings.cache_clear()
     reset_llm_state()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adresa afacerii nu pleaca la OpenStreetMap din teste: harta "nu raspunde".
+
+    Testele interviului isi dau propria harta (``get_geocoder`` inlocuit).
+    """
+
+    def offline(address: str, country: str, **_: object) -> None:
+        raise ProviderError("harta nu ruleaza in teste")
+
+    monkeypatch.setattr(geocoding, "nominatim_geocode", offline)
 
 
 @pytest.fixture(autouse=True)

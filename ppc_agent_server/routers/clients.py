@@ -14,7 +14,15 @@ from ppc_agent_server.deps import get_owned_client
 from ppc_agent_server.models import ClientAccount, Tenant
 from ppc_agent_server.reporting.builder import build_client_report
 from ppc_agent_server.reporting.models import ClientReport
-from ppc_agent_server.schemas import ClientAccountCreate, ClientAccountRead, ClientAccountUpdate
+from ppc_agent_server.routers.client_auth import economics_read, get_geocoder, update_economics
+from ppc_agent_server.schemas import (
+    ClientAccountCreate,
+    ClientAccountRead,
+    ClientAccountUpdate,
+    ClientEconomicsRead,
+    ClientEconomicsUpdate,
+)
+from ppc_agent_server.services.geocoding import Geocoder
 
 router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
 
@@ -75,6 +83,29 @@ def update_client(
     session.commit()
     session.refresh(account)
     return account
+
+
+@router.get("/{client_id}/economics", response_model=ClientEconomicsRead)
+def get_client_economics(
+    client_id: int,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    session: Annotated[Session, Depends(get_session)],
+) -> ClientEconomicsRead:
+    """Costurile si zona clientului, cu pragurile calculate de consiliu."""
+    return economics_read(get_owned_client(client_id, tenant, session))
+
+
+@router.put("/{client_id}/economics", response_model=ClientEconomicsRead)
+def update_client_economics(
+    client_id: int,
+    payload: ClientEconomicsUpdate,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    session: Annotated[Session, Depends(get_session)],
+    geocoder: Annotated[Geocoder, Depends(get_geocoder)],
+) -> ClientEconomicsRead:
+    """Agentia completeaza costurile si zona in locul clientului (ex. la onboarding)."""
+    account = get_owned_client(client_id, tenant, session)
+    return update_economics(session, account, payload, geocoder)
 
 
 @router.get("/{client_id}/report", response_model=ClientReport)

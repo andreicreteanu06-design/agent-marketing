@@ -27,6 +27,7 @@ from ppc_agent.services.launch_brief import LaunchBrief
 from ppc_agent_server.models import ChangeStatus, ClientAccount, ProposedChange, Tenant
 from ppc_agent_server.routers import campaigns
 from seo_geo_agent.audit import url_policy
+from tests_server.test_campaign_launch import ready_to_launch
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 _IDS: dict[str, dict[str, Any]] = {
@@ -362,6 +363,7 @@ def _account(client: TestClient, session: Session) -> dict[str, str]:
     account = session.get(ClientAccount, account_id)
     assert account is not None
     account.meta_ad_account_id = "act_555"
+    ready_to_launch(account)
     session.add(account)
     session.commit()
     return headers
