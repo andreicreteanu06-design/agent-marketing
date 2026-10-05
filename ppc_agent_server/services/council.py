@@ -108,6 +108,7 @@ from ppc_agent_server.services.memory import (
     recall_for,
 )
 from ppc_agent_server.services.pricing import PricingRecommendation, recommend_pricing
+from ppc_agent_server.services.propensity import experiment_line, fear_manipulation_risk
 from ppc_agent_server.services.queen_agent import (
     _BY_KEY,
     MAX_MESSAGE_CHARS,
@@ -1195,8 +1196,9 @@ def strategist_position(directive: BrandStrategyDirective) -> str:
     angle = directive.copywriting_angle
     organic = directive.organic_context
     shift = organic.implication if organic is not None else ""
+    test = f" {experiment_line(directive.experiment)}" if directive.experiment else ""
     if directive.status != "ok" or avatar is None or angle is None:
-        return f"{directive.ideal_avatar_profile} {shift}".strip()
+        return f"{directive.ideal_avatar_profile}{test} {shift}".strip()
     text = (
         f"Clientul ideal e {_avatar_line(directive)}: vrea {_BY_KEY[avatar.key].desires[0]}. "
         f"{angle.summary}"
@@ -1212,6 +1214,7 @@ def strategist_position(directive: BrandStrategyDirective) -> str:
         fresh = [part for part in _sentences(note or "") if part not in text]
         if fresh:
             text += " " + " ".join(fresh)
+    text += test
     if shift:
         text += f" {shift}"
     return text
@@ -1426,12 +1429,15 @@ _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def check_council_text(text: str, *, facts: str, max_chars: int = MAX_REPLY_CHARS) -> str | None:
+def check_council_text(
+    text: str, *, facts: str, max_chars: int = MAX_REPLY_CHARS, sensitive: bool = False
+) -> str | None:
     """Ce e in neregula cu textul unui LLM din consiliu, sau ``None`` daca poate pleca.
 
     ``facts`` e tot ce a primit modelul (fapte + intrebarea clientului): orice
     cifra din text trebuie sa fie acolo. Cifrele clientului pot fi repetate,
-    dar nu si "calculate mai departe" - matematica ramane determinista.
+    dar nu si "calculate mai departe" - matematica ramane determinista. Intr-un
+    domeniu sensibil (``sensitive``), nici ton alarmist (``fear_manipulation_risk``).
     """
     stripped = text.strip()
     if not stripped:
@@ -1450,6 +1456,9 @@ def check_council_text(text: str, *, facts: str, max_chars: int = MAX_REPLY_CHAR
         match = pattern.search(plain)
         if match is not None and match.group(0) not in plain_facts:
             return f"{what} («{match.group(0)}»)"
+    alarm = fear_manipulation_risk(stripped) if sensitive else []
+    if alarm:
+        return f"avea ton alarmist într-un domeniu sensibil («{alarm[0]}»)"
     return None
 
 
@@ -2118,6 +2127,7 @@ class QueenCouncil:
                 on_token=(lambda chunk: emit(CouncilEvent("token", text=chunk)))
                 if on_event is not None
                 else None,
+                sensitive=context.sensitive_domain is not None,
             )
             if text is None:
                 logger.warning(
@@ -2175,6 +2185,7 @@ class QueenCouncil:
         question: str,
         max_chars: int,
         on_token: Callable[[str], None] | None = None,
+        sensitive: bool = False,
     ) -> tuple[str | None, str | None]:
         """Sinteza Reginei: ``(text, None)`` sau ``(None, motivul)`` - nimic nu arunca.
 
@@ -2211,7 +2222,7 @@ class QueenCouncil:
             )
             if len(text) < MIN_SYNTHESIS_CHARS:
                 return None, "Modelul s-a oprit în mijlocul frazei, fără un răspuns întreg"
-        problem = check_council_text(text, facts=user, max_chars=max_chars)
+        problem = check_council_text(text, facts=user, max_chars=max_chars, sensitive=sensitive)
         if problem is None and text:
             problem = check_synthesis_shape(text, question=question)
         if problem is not None:

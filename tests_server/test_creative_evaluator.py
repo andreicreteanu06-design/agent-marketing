@@ -25,6 +25,7 @@ import ppc_agent_server.services.creative_evaluator as ce
 from ppc_agent.errors import ProviderError, SetupRequiredError
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.routers.creative import get_text_judge, get_vision_model
+from ppc_agent_server.services.avatar_builder import CustomerAvatar
 from ppc_agent_server.services.creative_evaluator import (
     MAX_IMAGE_BYTES,
     VISION_MAX_GENERATION_SECONDS,
@@ -107,7 +108,7 @@ def ocr(monkeypatch: pytest.MonkeyPatch) -> _FakeOcr:
 #: Mare Intrebare si re-agatari, dar fara fenta.
 JUDGE_DEFAULTS: dict[str, float | str] = {
     "domain": "other", "brand": 0.9, "conditions": 0.9, "authentic": 0.1, "typos": 0,
-    "hook": "line_0", "intro": 0.1, "captions": 0.1, "cta": 0.9,
+    "hook": "line_0", "intro": 0.1, "captions": 0.1, "cta": 0.9, "scarcity": 0.1,
     "avatar": 0.9, "at_stake": 0.9, "urgency": 0.9, "big_question": 0.9, "headfake": 0.1,
     "rehooks": 0.9,
 }
@@ -311,6 +312,39 @@ def test_fara_beneficiu_scris_cere_unul() -> None:
     assert result["scores"]["cognitive_load_and_hierarchy"] == 4
 
 
+def test_urgenta_falsa_scade_increderea() -> None:
+    """«Doar azi» fara o data sau un motiv: presiune care costa increderea (-3)."""
+    result = _run(_png(), judge=_FakeJudge(scarcity=0.9))
+
+    assert result["scores"]["trust"] == 7
+    assert (
+        "urgență falsă: presiune («doar azi», numărătoare inversă) fără o dată sau un motiv "
+        "verificabil"
+    ) in result["detected_risks"]
+    assert result["priority_fixes"][0].startswith("Pune data reală a ofertei")
+
+
+def test_stock_ul_drept_clienti_reali_e_autoritate_neverificata() -> None:
+    risks = _evaluate(_seen(stock_photo=True, claims_authentic=True))["detected_risks"]
+    assert (
+        "autoritate neverificată: fotografie stock prezentată drept echipa sau clienții reali"
+    ) in risks
+
+
+def test_jev_vede_clientul_ideal_spus_de_client() -> None:
+    judge = _FakeJudge()
+    audience = CustomerAvatar(
+        customer_situation="i s-a stricat mașina înainte de concediu", anxieties=["prețul"]
+    )
+    _run(_png(), judge=judge, audience=audience)
+
+    state = judge.calls[0][0]
+    assert state["ideal_customer"] == {
+        "situation": "i s-a stricat mașina înainte de concediu",
+        "worries": ["prețul"],
+    }
+
+
 # --- formatul, masurat din fisier ------------------------------------------------------
 
 
@@ -342,7 +376,9 @@ def test_jev_primeste_tot_textul_intr_o_singura_cerere() -> None:
         "on_screen_text": ["Revizie completă în 24h", "Programează-te azi"],
         "opening_text": ["Revizie completă în 24h", "Programează-te azi"],
     }
-    assert set(questions) == {"domain", "brand", "conditions", "authentic", "typos", "hook"}
+    assert set(questions) == {
+        "domain", "brand", "conditions", "authentic", "scarcity", "typos", "hook",
+    }
     hook = questions["hook"]
     assert isinstance(hook, Choice)
     assert hook.options == {  # randurile, de la cel mai mare
@@ -423,7 +459,7 @@ def test_fara_text_jev_nu_e_intrebat_de_greseli_si_beneficiu(ocr: _FakeOcr) -> N
     judge = _FakeJudge()
     result = _run(_png(), judge=judge)
 
-    assert set(judge.calls[0][1]) == {"domain", "brand", "conditions", "authentic"}
+    assert set(judge.calls[0][1]) == {"domain", "brand", "conditions", "authentic", "scarcity"}
     assert result["scores"]["cognitive_load_and_hierarchy"] == 9  # nimic de ingropat
 
 
@@ -753,6 +789,15 @@ def test_clientul_afla_ce_lipseste_din_poveste(tmp_path: Path) -> None:
     ) in risks
     assert "din mize lipsește: urgența (de ce acum, nu mâine)" in risks
     assert result["priority_fixes"][0].startswith("Spune din primele secunde ce pierde")
+
+
+@needs_ffmpeg
+def test_intr_un_domeniu_sensibil_miza_se_spune_fara_frica(tmp_path: Path) -> None:
+    result = _run(_video(tmp_path, MOTION), judge=_FakeJudge(domain="health", at_stake=0.1))
+    assert (
+        "Spune din primele secunde ce câștigă privitorul cu tine, calm, fără să-l sperii"
+        in result["priority_fixes"]
+    )
 
 
 @needs_ffmpeg

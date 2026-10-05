@@ -27,6 +27,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from ppc_agent_server.models import ChangeOp, ChangeStatus, ProposedChange
+from ppc_agent_server.services.propensity import SENSITIVE_LABELS
 from ppc_agent_server.services.queen_agent import (
     AdAlignment,
     BrandStrategist,
@@ -88,6 +89,18 @@ def to_rewrite_proposal(
             "persuasion_lever": psychology.lever,
             "needs": psychology.decision_mode.needs,
             "cognitive_note": ad.cognitive_note,
+        }
+    if directive.customer_avatar is not None:
+        brief["customer_avatar"] = directive.customer_avatar.model_dump()
+    if directive.experiment is not None:
+        # Rescrierea e varianta unui test, nu un text aruncat: ipoteza si cum se judeca.
+        brief["experiment"] = directive.experiment.model_dump()
+    if directive.sensitive_domain is not None:
+        brief["guardrails"] = {
+            "fear_manipulation_risk": (
+                f"blocat: domeniu sensibil ({SENSITIVE_LABELS[directive.sensitive_domain]}) - "
+                "fără frică, fără ton alarmist"
+            )
         }
     return ProposedChange(
         client_account_id=client_account_id,

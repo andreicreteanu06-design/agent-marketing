@@ -1027,6 +1027,35 @@ rafala (doar plafonul pe ora). Lansarea care urmeaza merge pe raza aleasa (Meta
 `custom_locations`), iar avizul consiliului si rationamentul spun pragul: "profitabila
 cat timp un client costa sub X lei; la B lei pe zi, cel putin N vanzari pe zi".
 
+#### Clientul ideal (Jobs to Be Done) si psihologia cumparatorului
+
+Dupa cifre si zona, acelasi interviu intreaba cine sunt clientii (`services/avatar_builder.py`):
+situatia in care ajung sa caute, treaba concreta, progresul dorit, cum vor sa se simta si
+sa fie vazuti, ce ii face sa ezite, ce ii costa sa schimbe - plus cate pachete vad si ce
+garantie primesc. "nu stiu" e un raspuns (campul ramane gol); "actualizeaza profilul"
+reia intrebarile. Lansarea asteapta si profilul (409 cu prima intrebare), iar clientii
+vechi raspund la urmatoarea lansare.
+
+Profilul (`CustomerAvatar`, in `clientaccount.avatar_answers`) intra in directiva Reginei,
+deci il vad toti cei care o primesc:
+
+- **CMO-ul** (`services/propensity.py`): `P(actiune) = (Relevanta + Valoare + Incredere) -
+  (Risc + Frictiune)`, fiecare factor 0-10 din dovezi (alinierea reclamelor, bariera
+  masurata in cont, grijile spuse de client, garantia, pachetele). Bariera dominanta
+  (`lack_of_trust`, `price_uncertainty`, `perceived_risk`, `friction`, `low_relevance`)
+  primeste un **experiment** cu ipoteza falsificabila: varianta, control, metrica, +15% la
+  conversie, 100 de click-uri pe varianta si 14 zile, si ce o infirma. Rescrierile propuse
+  il poarta in brief, langa profil.
+- **Garda `fear_manipulation_risk`**: in sanatate, financiar si recrutare (din brand,
+  cautari si raspunsuri), declansatorii de frica nu ajung la copywriter, parghia nu mai e
+  aversiunea la pierdere, iar textele scrise de model cu ton alarmist sunt respinse.
+- **CPO-ul**: peste 3 pachete = choice overload (mutare RICE: cel mult 3, clare); fara
+  garantie, propune inversarea riscului potrivita barierei (garantie, audit sau
+  consultatie gratuita, pret fix). Povestea ofertei foloseste cuvintele clientului.
+- **CCO-ul**: Jev vede clientul ideal cand judeca personajul si mizele; urgenta falsa
+  ("doar azi" fara data) scade increderea, iar stock-ul prezentat drept clienti reali e
+  autoritate neverificata.
+
 #### Brief-ul de lansare: agentii SEO/GEO si PPC, inainte de coada
 
 Inainte ca o lansare sa intre in coada, `propose_launch` ii ataseaza un brief

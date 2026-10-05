@@ -279,6 +279,12 @@ class ClientAccount(SQLModel, table=True):
     target_radius_km: Decimal | None = Field(default=None, sa_column=_optional_money())
     #: Intrebarea la care raspunde clientul acum in chat (``services/client_intake.py``).
     intake_step: str = ""
+    #: Clientul ideal in Jobs to Be Done si oferta (pachete, garantie), cum le-a spus
+    #: clientul in interviu - cheie prezenta = intrebare raspunsa ("nu stiu" -> ``null``).
+    #: Se citeste prin ``services/avatar_builder.py``.
+    avatar_answers: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")

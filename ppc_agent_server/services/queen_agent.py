@@ -72,6 +72,12 @@ from typing import Literal, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from ppc_agent.texttools import tokenize
+from ppc_agent_server.services.avatar_builder import (
+    CustomerAvatar,
+    OfferFacts,
+    avatar_facts,
+    avatar_texts,
+)
 from ppc_agent_server.services.cognitive import (
     AdDemand,
     CognitiveProfile,
@@ -86,6 +92,18 @@ from ppc_agent_server.services.organic_context import (
     OrganicSignals,
     build_organic_context,
     organic_facts,
+)
+from ppc_agent_server.services.propensity import (
+    SENSITIVE_LABELS,
+    Experiment,
+    PropensityScore,
+    SensitiveDomain,
+    design_experiment,
+    experiment_line,
+    fear_manipulation_risk,
+    safe_trigger,
+    score_propensity,
+    sensitive_domain,
 )
 from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
@@ -176,6 +194,10 @@ class BrandSignals:
     notes: Sequence[str] = ()
     #: Traficul din GA4, Google organic si pozitiile urmarite; ``None`` = necitit.
     organic: OrganicSignals | None = None
+    #: Clientul ideal in Jobs to Be Done, din interviul de dinaintea primei campanii.
+    customer_avatar: CustomerAvatar | None = None
+    #: Pachetele si garantia ofertei (tot din interviu).
+    offer: OfferFacts | None = None
 
 
 class BrandSignalsSource(Protocol):
@@ -650,6 +672,15 @@ class BrandStrategyDirective(BaseModel):
     notes: list[str]
     #: Traficul Meta fata de Google organic (GA4, Search Console, pozitiile urmarite).
     organic_context: OrganicContext | None = None
+    #: Clientul ideal in Jobs to Be Done, spus de client - contextul tuturor agentilor.
+    customer_avatar: CustomerAvatar | None = None
+    offer: OfferFacts | None = None
+    #: P(actiune) = (Relevanta + Valoare + Incredere) - (Risc + Frictiune), cu dovezile.
+    propensity: PropensityScore | None = None
+    #: Testul pe bariera dominanta, cu ipoteza falsificabila.
+    experiment: Experiment | None = None
+    #: Sanatate, financiar, recrutare: fara frica in reclame (``fear_manipulation_risk``).
+    sensitive_domain: SensitiveDomain | None = None
 
     @property
     def misaligned_ads(self) -> list[AdAlignment]:
@@ -996,7 +1027,11 @@ def _targeting(
     return adjustments
 
 
-def _angle(avatar: AvatarProfile, alignments: Sequence[AdAlignment]) -> CopywritingAngle:
+def _angle(
+    avatar: AvatarProfile,
+    alignments: Sequence[AdAlignment],
+    domain: SensitiveDomain | None = None,
+) -> CopywritingAngle:
     archetype = _BY_KEY[avatar.key]
     if not alignments:
         summary = (
@@ -1027,11 +1062,18 @@ def _angle(avatar: AvatarProfile, alignments: Sequence[AdAlignment]) -> Copywrit
     avoid = list(archetype.objections)
     if archetype.rejects_jargon:
         avoid.append("jargon tehnic (acronime, coduri de piese)")
+    hooks = list(archetype.copy_examples)
+    if domain is not None:  # garda fear_manipulation_risk: copywriterul nu primeste frica
+        hooks = [hook for hook in hooks if not fear_manipulation_risk(hook)]
+        avoid.append(
+            f"frica și tonul alarmist: domeniu sensibil ({SENSITIVE_LABELS[domain]}), "
+            "regula fear_manipulation_risk"
+        )
     return CopywritingAngle(
         summary=summary,
-        emotion_trigger=archetype.emotion_trigger,
+        emotion_trigger=safe_trigger(archetype.emotion_trigger, domain),
         tone=archetype.tone,
-        hooks=list(archetype.copy_examples),
+        hooks=hooks,
         must_include=list(archetype.proof_points),
         avoid=avoid,
     )
@@ -1089,8 +1131,15 @@ def build_directive(
     )
     notes = [*signals.notes, _DEMOGRAPHICS_NOTE]
     organic = build_organic_context(signals.organic) if signals.organic is not None else None
+    jtbd = signals.customer_avatar
+    domain = sensitive_domain(
+        [signals.brand, *(search.query for search in signals.searches), *avatar_texts(jtbd)]
+    )
 
     if not attribution.is_sufficient() or not segments:
+        propensity = score_propensity(
+            avatar=jtbd, offer=signals.offer, measured_barrier=None, alignment=[]
+        )
         queries = _count(attribution.queries_attributed, "căutări atribuite", "căutare atribuită")
         return BrandStrategyDirective(
             client_account_id=client_account_id,
@@ -1115,6 +1164,12 @@ def build_directive(
             data_basis=basis,
             notes=notes,
             organic_context=organic,
+            propensity=propensity,
+            experiment=design_experiment(propensity, jtbd),
+            # Ce a spus clientul in interviu intra in directiva si fara date de cont.
+            customer_avatar=jtbd,
+            offer=signals.offer,
+            sensitive_domain=domain,
         )
 
     top = segments[0]
@@ -1131,10 +1186,17 @@ def build_directive(
         sample_queries=top.sample_queries,
     )
     shares = {segment.key: segment.share for segment in segments}
-    psychology = cognitive_profile(segments)
+    psychology = cognitive_profile(segments, sensitive=domain is not None)
     alignments = [
         _evaluate_ad(ad, avatar, shares, psychology.decision_mode) for ad in signals.ads
     ]
+    measured = psychology.barrier.kind
+    propensity = score_propensity(
+        avatar=jtbd,
+        offer=signals.offer,
+        measured_barrier=None if measured in ("none", "unknown") else measured,
+        alignment=[ad.alignment_score for ad in alignments],
+    )
     return BrandStrategyDirective(
         client_account_id=client_account_id,
         generated_at=generated_at,
@@ -1143,12 +1205,17 @@ def build_directive(
         avatar=avatar,
         segments=segments,
         targeting_adjustments=_targeting(avatar, attribution, segments, signals.brand),
-        copywriting_angle=_angle(avatar, alignments),
+        copywriting_angle=_angle(avatar, alignments, domain),
         ad_alignment=alignments,
         cognitive_profile=psychology,
         data_basis=basis,
         notes=notes,
         organic_context=organic,
+        propensity=propensity,
+        experiment=design_experiment(propensity, jtbd),
+        customer_avatar=jtbd,
+        offer=signals.offer,
+        sensitive_domain=domain,
     )
 
 
@@ -1216,9 +1283,11 @@ CMO_SYSTEM_PROMPT = (
     "3. Structură: cine e publicul ideal și pe ce se bazează concluzia; cum decide și ce îl "
     "oprește să cumpere (psihologia din FAPTE); ce reclamă nu îi vorbește și de ce; ce am "
     "propus și că totul așteaptă aprobarea lui. Când FAPTELE au traficul Meta față de Google "
-    "organic, spui într-o frază ce arată, ca o corelare, nu ca o cauză.\n"
+    "organic, spui într-o frază ce arată, ca o corelare, nu ca o cauză. Când FAPTELE au un "
+    "experiment, spui bariera, ipoteza și cum o testăm.\n"
     "4. Maximum 150 de cuvinte, la persoana I plural («am observat»), adresându-te cu «tu». "
-    "Fără markdown, fără liste, fără linkuri.\n\n"
+    "Fără markdown, fără liste, fără linkuri.\n"
+    "5. Când FAPTELE spun «Domeniu sensibil», fără frică, fără presiune și fără ton alarmist.\n\n"
     f"{CONSULTANT_VOICE}"
 )
 
@@ -1226,6 +1295,23 @@ CMO_SYSTEM_PROMPT = (
 def cmo_facts(directive: BrandStrategyDirective) -> str:
     """Faptele pe care le primeste LLM-ul - singura lui sursa de adevar."""
     lines = [directive.ideal_avatar_profile]
+    if directive.customer_avatar is not None:
+        lines.append(avatar_facts(directive.customer_avatar))
+    score = directive.propensity
+    if score is not None and score.evidence:
+        lines.append(
+            f"Propensitatea de cumpărare (calculată determinist, fiecare factor 0-10): "
+            f"(relevanța {score.relevance} + valoarea {score.value} + încrederea {score.trust}) "
+            f"- (riscul {score.risk} + fricțiunea {score.friction}) = {score.p_action}. "
+            + " ".join(score.evidence)
+        )
+    if directive.experiment is not None:
+        lines.append(experiment_line(directive.experiment))
+    if directive.sensitive_domain is not None:
+        lines.append(
+            f"Domeniu sensibil ({SENSITIVE_LABELS[directive.sensitive_domain]}): fără frică și "
+            "fără ton alarmist, în mesaje și în reclame."
+        )
     psychology = directive.cognitive_profile
     if psychology is not None:
         lines.append(
@@ -1279,15 +1365,22 @@ def _numbers(text: str) -> set[str]:
     return found
 
 
-def check_cmo_message(message: str, *, facts: str) -> str | None:
+def check_cmo_message(message: str, *, facts: str, sensitive: bool = False) -> str | None:
     """De ce NU se poate trimite mesajul LLM-ului clientului, sau ``None`` daca se poate.
 
     Garda care tine LLM-ul in rolul de traducator: nu are voie sa aduca cifre,
-    subiecte (bugete, licitari) sau linkuri pe care nu le-a primit.
+    subiecte (bugete, licitari) sau linkuri pe care nu le-a primit - iar intr-un
+    domeniu sensibil, nici ton alarmist (``fear_manipulation_risk``).
     """
     text = message.strip()
     if not text:
         return "Modelul a întors un mesaj gol - mesaj din template."
+    alarm = fear_manipulation_risk(text) if sensitive else []
+    if alarm:
+        return (
+            f"Mesajul modelului avea ton alarmist ({', '.join(alarm)}) într-un domeniu sensibil "
+            "- mesaj din template."
+        )
     if len(text) > MAX_MESSAGE_CHARS:
         return "Mesajul modelului era prea lung - mesaj din template."
     if "http" in text.lower() or "www." in text.lower():
@@ -1332,8 +1425,9 @@ def template_cmo_message(directive: BrandStrategyDirective) -> str:
     """Mesajul determinist - fallback-ul vocii CMO, cu aceleasi fapte."""
     avatar = directive.avatar
     angle = directive.copywriting_angle
+    test = f" {experiment_line(directive.experiment)}" if directive.experiment else ""
     if directive.status != "ok" or avatar is None or angle is None or not directive.segments:
-        return f"Încă nu pot contura clientul tău ideal. {directive.ideal_avatar_profile}"
+        return f"Încă nu pot contura clientul tău ideal. {directive.ideal_avatar_profile}{test}"
 
     top = directive.segments[0]
     detail = f"{_percent(top.demand_share)} din căutări"
@@ -1364,6 +1458,8 @@ def template_cmo_message(directive: BrandStrategyDirective) -> str:
     exclusion = next((t for t in directive.targeting_adjustments if t.kind == "exclusion"), None)
     if exclusion is not None:
         parts.append(f"Tot acolo: {_lower_first(exclusion.suggestion)} {exclusion.reason}")
+    if test:
+        parts.append(test.strip())
     parts.append("Toate sunt propuneri: nimic nu se aplică până nu le aprobi tu.")
     return " ".join(parts)
 
@@ -1438,7 +1534,9 @@ class BrandStrategist:
             )
             return _template(f"Modelul nu a răspuns ({type(exc).__name__}) - mesaj din template.")
 
-        problem = check_cmo_message(text, facts=user)
+        problem = check_cmo_message(
+            text, facts=user, sensitive=directive.sensitive_domain is not None
+        )
         if problem is not None:
             logger.warning(
                 "[Regina] mesaj LLM respins pentru clientul %s: %s", client_account_id, problem

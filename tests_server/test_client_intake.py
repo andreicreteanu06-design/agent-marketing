@@ -7,6 +7,7 @@ cu "lei", virgule, "3 din 10", "nu stiu".
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -17,6 +18,11 @@ from sqlmodel import Session
 from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent_server.models import ClientAccount, ProposedChange, Tenant
 from ppc_agent_server.routers.client_auth import get_geocoder
+from ppc_agent_server.services.avatar_builder import (
+    PROFILE_KEYS,
+    CustomerAvatar,
+    avatar_from_answers,
+)
 from ppc_agent_server.services.client_intake import parse_number, parse_share, plain
 from ppc_agent_server.services.geocoding import Place
 from tests_server.test_campaign_launch import _request, _signup
@@ -104,7 +110,9 @@ def test_a_shop_interview_ends_with_its_profit_threshold_and_a_local_radius(
     assert account.min_roas == Decimal("2.28")
     assert account.default_lead_value == Decimal("250.00")
     assert account.target_radius_km == Decimal("3")
-    assert account.intake_step == ""
+    # Dupa cifre, clientul ideal: prima intrebare JTBD asteapta deja in chat.
+    assert done.endswith("Ce se întâmplă în viața clientului tău chiar înainte să te caute?")
+    assert account.intake_step == "customer_situation"
     assert the_map.asked[-1] == ("str. memorandumului 28, cluj napoca", "RO")
 
 
@@ -171,6 +179,10 @@ def test_the_first_launch_waits_for_the_interview_then_targets_the_radius(
     assert done.startswith("Pentru o afacere cu programări într-un oraș mare, clienții vin")
     assert "rază de 6 km în jurul adresei" in done
     assert _say(client, headers, "raza 8 km").startswith("Am schimbat raza la 8 km")
+    # Clientul ideal si oferta: "nu știu" e un răspuns bun - nu blochează lansarea.
+    for _ in PROFILE_KEYS:
+        last = _say(client, headers, "nu știu")
+    assert last.startswith("Gata, am tot ce-mi trebuie. Despre clienții tăi nu știm încă multe")
 
     response = client.post("/api/v1/campaigns/propose_launch", headers=headers, json=_request())
 
@@ -187,6 +199,58 @@ def test_the_first_launch_waits_for_the_interview_then_targets_the_radius(
     assert economics["max_cpl"] == "320.00"
     assert "o raza de 8.00 km in jurul afacerii" in proposal.rationale
     assert "Campania e profitabilă cât timp un client costă sub 800 lei" in proposal.rationale
+
+
+def test_the_ideal_customer_interview_builds_the_jtbd_avatar_in_the_clients_words(
+    chat: tuple[TestClient, dict[str, str], int, _Map], session: Session
+) -> None:
+    """Un client vechi, cu cifrele deja date: la lansare, consiliul intreaba doar de clienti."""
+    client, headers, account_id, _ = chat
+    account = session.get(ClientAccount, account_id)
+    assert account is not None
+    account.customer_profit = Decimal("600")
+    account.close_rate_pct = Decimal("30")
+    account.service_area = "national"
+    account.economics_confirmed_at = datetime.now(tz=UTC)
+    session.add(account)
+    session.commit()
+
+    first = _say(client, headers, "Vreau să lansez prima campanie")
+    assert first.startswith("Înainte de prima campanie, consiliul vrea să-ți cunoască clienții")
+    assert first.endswith("Ce se întâmplă în viața clientului tău chiar înainte să te caute?")
+    _say(client, headers, "I s-a stricat mașina și pleacă în concediu peste o săptămână")
+    _say(client, headers, "mașina reparată până vineri")
+    _say(client, headers, "să plece liniștit la drum")
+    _say(client, headers, "liniștit")
+    _say(client, headers, "nu contează")
+    why = _say(client, headers, "De ce întrebi?")
+    assert why.startswith("Bariera cea mai mare decide ce testăm primul")
+    _say(client, headers, "prețul; și că nu știe dacă lucrarea iese bine?")
+    _say(client, headers, "merge la service-ul de lângă bloc")
+    unclear = _say(client, headers, "multe")
+    assert unclear.startswith("Nu am înțeles răspunsul - de exemplu «3», sau «unul singur»")
+    _say(client, headers, "cinci pachete")
+    done = _say(client, headers, "nu oferim")
+
+    assert done.startswith(
+        "Gata, am tot ce-mi trebuie. Clientul ideal, în cuvintele afacerii (Jobs to Be Done) - "
+        "situația: «I s-a stricat mașina și pleacă în concediu peste o săptămână»"
+    )
+    assert "Oferta: 5 pachete, fără garanție." in done
+    session.expire_all()
+    account = session.get(ClientAccount, account_id)
+    assert account is not None and account.intake_step == ""
+    assert avatar_from_answers(account.avatar_answers) == CustomerAvatar(
+        customer_situation="I s-a stricat mașina și pleacă în concediu peste o săptămână",
+        functional_job="mașina reparată până vineri",
+        desired_progress="să plece liniștit la drum",
+        emotional_job="liniștit",
+        anxieties=["prețul", "că nu știe dacă lucrarea iese bine?"],
+        switching_cost="merge la service-ul de lângă bloc",
+    )
+    assert account.avatar_answers is not None
+    assert account.avatar_answers["offer_options"] == 5
+    assert account.avatar_answers["risk_reversal"] == ""
 
 
 def test_the_form_gives_the_same_thresholds_and_refuses_a_losing_shop(

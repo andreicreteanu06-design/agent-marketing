@@ -44,6 +44,11 @@ from ppc_agent_server.models import (
 from ppc_agent_server.routers import queen
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
+from ppc_agent_server.services.avatar_builder import (
+    CustomerAvatar,
+    avatar_from_answers,
+    profile_missing,
+)
 from ppc_agent_server.services.client_intake import launch_economics, open_intake
 from ppc_agent_server.services.council import CouncilReply
 from ppc_agent_server.services.council_guard import DECIDED_BY
@@ -90,7 +95,8 @@ def get_launch_council() -> Council:
 
 #: CCO-ul pe imaginea unei lansari: verdictul (``CreativeEvaluation``) sau, cand nu poate
 #: rula, ``{"unavailable": motiv}``.
-CreativeReview = Callable[[str], dict[str, Any]]
+#: Imaginea lansarii si clientul ideal (JTBD) -> verdictul CCO-ului.
+CreativeReview = Callable[[str, CustomerAvatar | None], dict[str, Any]]
 CREATIVE_KEY = "creative_review"
 #: Verdictul care opreste lansarea: o creativa slaba se repara inainte sa cheltuie bani.
 #: "HUMAN_REVIEW_REQUIRED" nu opreste - aprobarea e chiar acea verificare umana.
@@ -105,7 +111,7 @@ def get_creative_review() -> CreativeReview:
     opreste lansarea: avizul spune ca evaluarea lipseste, iar omul decide la aprobare.
     """
 
-    def evaluate(image_url: str) -> dict[str, Any]:
+    def evaluate(image_url: str, audience: CustomerAvatar | None) -> dict[str, Any]:
         settings = get_server_settings()
         try:
             image = asyncio.run(download_image(image_url, max_bytes=MAX_IMAGE_BYTES))
@@ -115,6 +121,7 @@ def get_creative_review() -> CreativeReview:
                 judge=text_judge_from_settings(settings),
                 whisper_model=settings.whisper_model,
                 elevenlabs_api_key=settings.elevenlabs_api_key,
+                audience=audience,
             )
         except (PpcAgentError, ValueError) as exc:
             return {"unavailable": str(exc)[:300]}
@@ -236,15 +243,15 @@ def propose_launch(
     account = session.get(ClientAccount, client_user.client_account_id)
     if account is None:  # pragma: no cover - FK garanteaza existenta
         raise HTTPException(status_code=404, detail="contul clientului nu exista")
-    if account.economics_confirmed_at is None:
+    if account.economics_confirmed_at is None or profile_missing(account.avatar_answers):
         question = open_intake(session, account)
         raise HTTPException(
             status_code=409,
             detail=(
-                "Înainte de prima campanie, consiliul are nevoie de costurile tale și de zona "
-                "în care sunt clienții: din ele calculează cât poți plăti pe un client fără să "
-                "pierzi bani. Răspunde în chat la întrebări"
-                + (f" - prima: {question}" if question else ".")
+                "Înainte de prima campanie, consiliul are nevoie de costurile tale, de zona în "
+                "care sunt clienții și de câteva vorbe despre ei: din ele calculează cât poți "
+                "plăti pe un client fără să pierzi bani și ce îi oprește să cumpere. Răspunde "
+                "în chat la întrebări" + (f" - prima: {question}" if question else ".")
             ),
         )
 
@@ -297,7 +304,7 @@ def propose_launch(
         ) from exc
     # Dupa deliberare: o taietura a CFO-ului de acum e deja in memorie, deci conteaza.
     block = growth_block(session, client_id)
-    creative = creative_review(spec.image_url)
+    creative = creative_review(spec.image_url, avatar_from_answers(account.avatar_answers))
 
     proposal = ProposedChange(
         client_account_id=client_id,

@@ -1,15 +1,17 @@
-"""Interviul din chat inaintea primei campanii: costurile clientului si zona reclamelor.
+"""Interviul din chat inaintea primei campanii: costurile, zona si clientul ideal.
 
 Consiliul nu lanseaza nimic pana nu stie cat castiga clientul dintr-o vanzare (de acolo
-CAC-ul maxim si pragul de rentabilitate - ``ppc_agent.client_economics``) si unde sunt
-clientii lui. Intrebarile vin pe rand, in chat; fiecare raspuns se salveaza imediat, deci
-interviul se poate relua oricand de unde a ramas.
+CAC-ul maxim si pragul de rentabilitate - ``ppc_agent.client_economics``), unde sunt
+clientii lui si cine sunt ei: clientul ideal in Jobs to Be Done si oferta (pachete,
+garantie) - ``avatar_builder.py``. Intrebarile vin pe rand, in chat; fiecare raspuns se
+salveaza imediat, deci interviul se poate relua oricand de unde a ramas. La clientul
+ideal, orice raspuns e bun - "nu stiu" lasa campul gol, nu blocheaza.
 
 Cand porneste: la prima propunere de lansare fara costuri (``routers/campaigns.py``) sau
 cand clientul vorbeste in chat despre o campanie. Cat timp o intrebare asteapta raspuns,
 mesajele din chat sunt raspunsuri - nu ajung la consiliu (si nu consuma modelele).
-"anuleaza" il opreste; "actualizeaza costurile" / "schimba zona" il repornesc; "raza 8 km"
-schimba raza aleasa.
+"anuleaza" il opreste; "actualizeaza costurile" / "schimba zona" / "actualizeaza profilul"
+il repornesc; "raza 8 km" schimba raza aleasa.
 
 Raspunsurile se inteleg fara model: numere romanesti ("1.250,50 lei", "40%", "3 din 10"),
 cifra unei variante sau cuvinte cheie. Ce nu se intelege primeste intrebarea din nou, cu
@@ -41,6 +43,16 @@ from ppc_agent.client_economics import (
 )
 from ppc_agent.errors import PpcAgentError
 from ppc_agent_server.models import ClientAccount
+from ppc_agent_server.services.avatar_builder import (
+    MAX_ANSWER_CHARS,
+    MAX_ANXIETIES,
+    PROFILE_KEYS,
+    QUESTIONS,
+    avatar_facts,
+    avatar_from_answers,
+    offer_from_answers,
+    profile_missing,
+)
 from ppc_agent_server.services.geocoding import Geocoder
 
 _HUNDRED = Decimal("100")
@@ -63,6 +75,16 @@ _RESTART_COSTS = frozenset(
     {"actualizeaza costurile", "schimba costurile", "costurile mele", "refa costurile"}
 )
 _RESTART_AREA = frozenset({"schimba zona", "schimba adresa", "alta adresa", "refa zona"})
+_RESTART_PROFILE = frozenset({"actualizeaza profilul", "schimba profilul", "refa profilul"})
+#: La clientul ideal: "nu stiu" e un raspuns (campul ramane gol).
+_UNKNOWN = frozenset({
+    "nu stiu", "nu", "nu am", "nimic", "niciuna", "niciunul", "nicio", "sari", "treci",
+    "nu conteaza", "habar n am", "-",
+})
+_COUNT_WORDS = {
+    "unul": 1, "unu": 1, "una": 1, "singur": 1, "singura": 1, "doua": 2, "doi": 2, "trei": 3,
+    "patru": 4, "cinci": 5, "sase": 6, "sapte": 7, "opt": 8, "noua": 9, "zece": 10,
+}
 _RADIUS_COMMAND = re.compile(r"^raza(?: de)? (\d+(?:[.,]\d+)?) ?(?:km|kilometri)?$")
 
 _COST_FIELDS = (
@@ -278,10 +300,26 @@ _STEPS: dict[str, Step] = {
     ),
 }
 
+_STEPS.update({key: Step(key, *QUESTIONS[key]) for key in PROFILE_KEYS})
+
 _INTRO = (
-    "Înainte de prima campanie, consiliul are nevoie de câteva cifre: din ele calculez cât "
-    "poți plăti în reclame pentru un client fără să pierzi bani, și unde merg reclamele. "
-    "Durează un minut; «anulează» oprește, iar răspunsurile date rămân salvate."
+    "Înainte de prima campanie, consiliul are nevoie de câteva cifre și de câteva vorbe "
+    "despre clienții tăi: din ele calculez cât poți plăti în reclame pentru un client fără să "
+    "pierzi bani, unde merg reclamele și ce îi oprește să cumpere. «anulează» oprește, iar "
+    "răspunsurile date rămân salvate."
+)
+_PROFILE_INTRO = (
+    "Acum câteva întrebări despre clienții tăi, cu vorbele tale: din ele aflăm ce îi aduce la "
+    "tine și ce îi oprește. «nu știu» e un răspuns bun."
+)
+_PROFILE_FIRST = (
+    "Înainte de prima campanie, consiliul vrea să-ți cunoască clienții: câteva întrebări "
+    "scurte, cu vorbele tale - din ele aflăm ce îi aduce la tine și ce îi oprește. «nu știu» e "
+    "un răspuns bun; «anulează» oprește, iar răspunsurile date rămân salvate."
+)
+_READY = (
+    "Consiliul judecă de acum fiecare campanie după aceste praguri și după clienții tăi; poți "
+    "propune prima campanie."
 )
 
 
@@ -382,6 +420,7 @@ def summary(account: ClientAccount, limits: Thresholds) -> str:
 
 
 def _finish(account: ClientAccount, now: datetime) -> str:
+    """Pragurile din costuri, salvate pe cont; intoarce ce a inteles consiliul."""
     limits = thresholds(account)
     if limits is None:  # costurile nu lasa profit: le reluam
         raise EconomicsError("costurile nu lasă loc de profit")
@@ -390,12 +429,61 @@ def _finish(account: ClientAccount, now: datetime) -> str:
     account.default_lead_value = limits.conversion_value
     account.economics_confirmed_at = now
     account.intake_step = ""
-    return (
-        "Gata, am tot ce-mi trebuie. "
-        + summary(account, limits)
-        + " Consiliul judecă de acum fiecare campanie după aceste praguri; poți propune "
-        "prima campanie."
-    )
+    return summary(account, limits)
+
+
+def profile_summary(account: ClientAccount) -> str:
+    """Clientul ideal si oferta, cum i-a inteles consiliul din raspunsuri."""
+    avatar = avatar_from_answers(account.avatar_answers)
+    parts = [
+        avatar_facts(avatar)
+        if avatar is not None
+        else "Despre clienții tăi nu știm încă multe: consiliul învață din primele campanii."
+    ]
+    offer = offer_from_answers(account.avatar_answers)
+    bits = []
+    if offer is not None and offer.options is not None:
+        bits.append("un singur pachet" if offer.options == 1 else f"{offer.options} pachete")
+    if offer is not None and offer.risk_reversal:
+        bits.append(f"garanția «{offer.risk_reversal}»")
+    elif offer is not None and offer.risk_reversal is not None:
+        bits.append("fără garanție")
+    if bits:
+        parts.append(f"Oferta: {', '.join(bits)}.")
+    return " ".join(parts)
+
+
+def _apply_profile(account: ClientAccount, key: str, message: str) -> bool:
+    """Salveaza raspunsul despre clientul ideal sau oferta; ``False`` = nu l-am inteles."""
+    text = plain(message)
+    answer = " ".join(message.split())[:MAX_ANSWER_CHARS]
+    value: object
+    if key == "offer_options":
+        number = parse_number(text)
+        if number is None:
+            number = next(
+                (Decimal(n) for word, n in _COUNT_WORDS.items() if word in text.split()), None
+            )
+        if number is None and text not in _UNKNOWN:
+            return False
+        if number is not None and not (1 <= number <= 100 and number == int(number)):
+            return False
+        value = None if number is None else int(number)
+    elif key == "risk_reversal":
+        nothing = text in _UNKNOWN or (text.startswith("nu ") and len(text.split()) <= 3)
+        value = "" if nothing else answer
+    elif text in _UNKNOWN:
+        value = [] if key == "anxieties" else None
+    elif key == "anxieties":
+        parts = (part.strip() for part in re.split(r"[,;\n]", message))
+        items = [re.sub(r"^(?:și|si|dar|sau)\s+", "", part, flags=re.IGNORECASE) for part in parts]
+        value = list(dict.fromkeys(item[:MAX_ANSWER_CHARS] for item in items if item))[
+            :MAX_ANXIETIES
+        ]
+    else:
+        value = answer
+    account.avatar_answers = {**(account.avatar_answers or {}), key: value}
+    return True
 
 
 def _apply(account: ClientAccount, key: str, text: str, geocoder: Geocoder) -> str | None:
@@ -517,9 +605,15 @@ def handle_message(
         account.location_lat = account.location_lng = None
         account.max_travel_km = account.target_radius_km = None
         return _start(session, account)
+    if text in _RESTART_PROFILE:
+        account.avatar_answers = None
+        return _start(session, account)
 
     if not account.intake_step:
-        if account.economics_confirmed_at is None and any(word in text for word in _LAUNCH_WORDS):
+        unready = account.economics_confirmed_at is None or profile_missing(
+            account.avatar_answers
+        )
+        if unready and any(word in text for word in _LAUNCH_WORDS):
             return _start(session, account, intro=True)
         return None
 
@@ -528,22 +622,29 @@ def handle_message(
         _save(session, account)
         return (
             "Bine, ne oprim aici; răspunsurile date rămân salvate. Prima campanie așteaptă "
-            "restul cifrelor - scrie «actualizează costurile» sau propune o campanie și reluăm "
+            "restul răspunsurilor - propune o campanie sau scrie «vreau să lansez» și reluăm "
             "de unde am rămas."
         )
     step = _STEPS[account.intake_step]
-    if "?" in message or text.startswith(("de ce", "pentru ce", "ce inseamna")):
+    profile = step.key in PROFILE_KEYS
+    # La clientul ideal, un "?" poate fi chiar raspunsul ("oare iese bine?").
+    asking = "?" in message and not profile
+    if asking or text.startswith(("de ce", "pentru ce", "ce inseamna")):
         return f"{step.why} {step.question}"
-    outcome = _apply(account, step.key, text, geocoder)
-    if outcome is None:
-        return f"Nu am înțeles răspunsul - de exemplu {step.example}. {step.question}"
-    if outcome and step.key != "max_travel_km":  # o problema (adresa negasita, harta cazuta)
-        return outcome
-    reason = outcome
-    following = _missing(account)
-    if following is None:
+    if profile:
+        if not _apply_profile(account, step.key, message):
+            return f"Nu am înțeles răspunsul - de exemplu {step.example}. {step.question}"
+        reason = ""
+    else:
+        outcome = _apply(account, step.key, text, geocoder)
+        if outcome is None:
+            return f"Nu am înțeles răspunsul - de exemplu {step.example}. {step.question}"
+        if outcome and step.key != "max_travel_km":  # o problema (adresa negasita, harta cazuta)
+            return outcome
+        reason = outcome
+    if not profile and _missing(account) is None:
         try:
-            text_done = _finish(account, now())
+            money = _finish(account, now())
         except EconomicsError:
             for field in _COST_FIELDS:
                 setattr(account, field, None)
@@ -554,45 +655,50 @@ def handle_message(
                 "reclamă ar adăuga pierdere. Hai să le verificăm: "
                 + (first_question(account) or "")
             )
+        following = profile_missing(account.avatar_answers)
+        if following is None:
+            _save(session, account)
+            return f"{reason} Gata, am tot ce-mi trebuie. {money} {_READY}".strip()
+        account.intake_step = following
         _save(session, account)
-        return f"{reason} {text_done}".strip()
-    account.intake_step = following
+        return (
+            f"{reason} Gata cu cifrele. {money} {_PROFILE_INTRO} {_STEPS[following].question}"
+        ).strip()
+    next_step = _missing(account) or profile_missing(account.avatar_answers)
+    if next_step is None:
+        account.intake_step = ""
+        _save(session, account)
+        return f"Gata, am tot ce-mi trebuie. {profile_summary(account)} {_READY}"
+    account.intake_step = next_step
     _save(session, account)
-    return f"{reason} {_STEPS[following].question}".strip()
+    return f"{reason} {_STEPS[next_step].question}".strip()
 
 
 def _start(session: Session, account: ClientAccount, *, intro: bool = False) -> str:
-    step = _missing(account)
+    step = _missing(account) or profile_missing(account.avatar_answers)
     if step is None:
         account.intake_step = ""
         _save(session, account)
-        return "Am deja tot ce-mi trebuie. " + (
-            summary(account, limits) if (limits := thresholds(account)) else ""
-        )
+        money = summary(account, limits) if (limits := thresholds(account)) else ""
+        return f"Am deja tot ce-mi trebuie. {money} {profile_summary(account)}"
     account.intake_step = step
-    account.economics_confirmed_at = None
+    if step not in PROFILE_KEYS:
+        account.economics_confirmed_at = None
     _save(session, account)
     question = _STEPS[step].question
-    return f"{_INTRO} {question}" if intro else question
+    if not intro:
+        return question
+    return f"{_PROFILE_FIRST if step in PROFILE_KEYS else _INTRO} {question}"
 
 
 def open_intake(session: Session, account: ClientAccount) -> str | None:
-    """Porneste interviul de la prima intrebare fara raspuns (lansarea fara costuri)."""
-    step = _missing(account)
+    """Porneste interviul de la prima intrebare fara raspuns (lansarea fara costuri/profil)."""
+    step = _missing(account) or profile_missing(account.avatar_answers)
     if step is None:
         return None
     account.intake_step = step
     _save(session, account)
     return _STEPS[step].question
-
-
-def complete(session: Session, account: ClientAccount, now: datetime) -> str | None:
-    """Dupa ce costurile vin din formular: pragurile, daca nu mai lipseste nimic."""
-    if _missing(account) is not None:
-        return None
-    message = _finish(account, now)
-    _save(session, account)
-    return message
 
 
 def radius_from_form(account: ClientAccount, max_km: Decimal | None) -> str:

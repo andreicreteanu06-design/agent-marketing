@@ -322,17 +322,24 @@ _LEVERS: dict[DecisionSystem, tuple[str, str]] = {
 }
 
 
+#: Intr-un domeniu sensibil (sanatate, financiar, recrutare), nu aversiunea la pierdere:
+#: frica impinge, dar nu e corect fata de omul care decide (garda fear_manipulation_risk).
+_SAFE_LEVER = ("eliminarea riscului", "garanții, condiții clare, fără presiune")
+
+
 def persuasion_route(mode: DecisionMode) -> PersuasionRoute:
     route, label, cues = _ROUTES[mode.system]
     return PersuasionRoute(route=route, label=label, cues=list(cues))
 
 
-def cognitive_profile(profiles: Sequence[Footprint]) -> CognitiveProfile:
+def cognitive_profile(
+    profiles: Sequence[Footprint], *, sensitive: bool = False
+) -> CognitiveProfile:
     """Profilul complet - functie pura, determinista."""
     mode = decision_mode(profiles)
     barrier = conversion_barrier(profiles)
     route = persuasion_route(mode)
-    lever, meaning = _LEVERS[mode.system]
+    lever, meaning = _SAFE_LEVER if sensitive else _LEVERS[mode.system]
     summary = (
         f"{_MODE_SENTENCES[mode.system]} {_BARRIER_SENTENCES[barrier.kind]} Mesajul merge pe "
         f"{_ROUTE_PHRASES[route.route]}. Pârghia pentru texte e {lever} ({meaning})."

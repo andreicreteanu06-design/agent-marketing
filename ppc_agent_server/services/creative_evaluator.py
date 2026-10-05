@@ -18,7 +18,9 @@ depinde de dispozitia unui model:
 - **Trust** (prioritatea 0): in domeniile sensibile (recrutare, financiar, sanatate),
   fara firma identificabila, scorul cade sub 4 si decizia e ``HUMAN_REVIEW_REQUIRED``;
   conditiile lipsa si greselile masive de scriere scad si ele; o imagine stock nu e rea
-  in sine, dar e penalizata cand textul pretinde ca e echipa sau clientul real;
+  in sine, dar e penalizata cand textul pretinde ca e echipa sau clientul real
+  (**autoritate neverificata**); **urgenta falsa** ("doar azi", numaratoare inversa fara
+  o data sau un motiv verificabil) scade si ea increderea;
 - **Ierarhie si incarcare cognitiva**: peste 3 blocuri de text concurente sau hook-ul
   ingropat in text mic = incarcare MARE (scor slab);
 - **Hook power**: la imagine, impactul la prima privire, plafonat cand hook-ul nu domina;
@@ -37,6 +39,9 @@ depinde de dispozitia unui model:
   banal, apoi intoarce) si **re-agatarile** (la 3-5 s ceva nou: un cadru - masurat de
   ffmpeg - sau o intrebare, o dezvaluire). Fara mize sau fara Marea Intrebare, hook-ul nu
   trece de 5, oricat de frumoase ar fi culorile; toate patru dau **virality**.
+
+Cu profilul JTBD al clientului (``avatar_builder.CustomerAvatar``), Jev stie cine e
+publicul cand judeca personajul si mizele.
 
 Imaginea sta in memorie; video-ul se scrie temporar pe disc doar cat il citeste ffmpeg.
 """
@@ -60,6 +65,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from ppc_agent.errors import ProviderError, SetupRequiredError
+from ppc_agent_server.services.avatar_builder import CustomerAvatar
 from ppc_agent_server.services.llm_client import (
     Answer,
     Choice,
@@ -209,6 +215,8 @@ class _Facts:
     fixes: list[str]
     #: ``None`` = nejudecata: imagine, ori un video cu sunet si vocea netranscrisa.
     story: _Story | None = None
+    #: Presiune de timp sau de stoc fara un motiv verificabil.
+    fake_scarcity: bool = False
 
 
 @dataclass(frozen=True)
@@ -317,6 +325,14 @@ _CAPTIONS = Noul(
     instructions="Does `on_screen_text` carry the main message of `speech`, so a viewer "
     "with the sound off still gets it?",
 )
+_SCARCITY = Noul(
+    instructions="Does the ad pressure the viewer with scarcity or a deadline (only today, "
+    "last places, a countdown, the offer ends soon) without a verifiable reason?",
+    true="pressure to act now with nothing that proves it - no real end date, stock count or "
+    "cause stated",
+    false="no scarcity pressure, or the limit is concrete and checkable (a date, a real "
+    "number of places)",
+)
 _CTA = Noul(
     instructions="Does the ad tell the viewer what to do next (call, apply, buy, write), in "
     "`ending_text` or at the end of `speech`?",
@@ -324,11 +340,13 @@ _CTA = Noul(
 # Povestea (doar video): ce tine privitorul pana la final.
 _AVATAR = Noul(
     instructions="Is there a person or character in the ad (shown, speaking or described) "
-    "in whose situation its target viewer would recognize themselves?",
+    "in whose situation its target viewer (`ideal_customer`, when given) would recognize "
+    "themselves?",
 )
 _AT_STAKE = Noul(
     instructions="Does the ad make clear what the viewer personally stands to lose, or keeps "
-    "missing, without the offer - money, time, health, a chance?",
+    "missing, without the offer - money, time, health, a chance? Its worries are in "
+    "`ideal_customer`, when given.",
     true="a concrete personal loss or missed gain for the viewer is named or shown",
     false="it only presents the product or offer; nothing is at stake for the viewer",
 )
@@ -822,7 +840,12 @@ def _look(
 
 
 def _observe(
-    frames: Sequence[bytes], video: _Video | None, *, model: VisionModel, judge: TextJudge
+    frames: Sequence[bytes],
+    video: _Video | None,
+    *,
+    model: VisionModel,
+    judge: TextJudge,
+    audience: CustomerAvatar | None = None,
 ) -> _Facts:
     """OCR pe fiecare cadru, o cerere Jev pentru tot textul si vocea, un cadru la model."""
     read = [_read_text(frame) for frame in frames]
@@ -841,6 +864,14 @@ def _observe(
         ),
         "opening_text": _texts(opening),
     }
+    if audience is not None:
+        # Clientul ideal, in cuvintele afacerii (JTBD): cine priveste si de ce se teme.
+        customer: dict[str, JsonValue] = {
+            "situation": audience.customer_situation,
+            "wants": audience.desired_progress,
+            "worries": list(audience.anxieties),
+        }
+        state["ideal_customer"] = {key: value for key, value in customer.items() if value}
     if video is not None:
         state["ending_text"] = _texts(read[-1])
         state["speech"] = speech
@@ -856,6 +887,7 @@ def _observe(
     )[:MAX_HOOK_CANDIDATES]
     questions: dict[str, Question] = {
         "domain": _DOMAIN, "brand": _BRAND, "conditions": _CONDITIONS, "authentic": _AUTHENTIC,
+        "scarcity": _SCARCITY,
     }
     if every:
         questions["typos"] = _TYPOS
@@ -929,6 +961,7 @@ def _observe(
         opens_with_brand_intro=yes("intro"),
         captions_present=yes("captions"),
         cta_present=yes("cta"),
+        fake_scarcity=yes("scarcity"),
         # Vazut real: modelul mic scrie uneori in engleza, orice i-ai cere.
         risks=[risk for risk in seen.risks if _in_romanian(risk)],
         fixes=[fix for fix in seen.fixes if _in_romanian(fix)],
@@ -971,9 +1004,18 @@ def _trust(seen: _Facts, risks: list[str], fixes: list[str]) -> int:
         else:
             score -= 1
     if seen.stock_photo and seen.claims_authentic:
-        risks.append("fotografie stock prezentată drept echipa sau clienții reali")
+        risks.append(
+            "autoritate neverificată: fotografie stock prezentată drept echipa sau clienții reali"
+        )
         fixes.append("Înlocuiește fotografia stock cu una reală sau scoate pretenția")
         score -= 4
+    if seen.fake_scarcity:
+        risks.append(
+            "urgență falsă: presiune («doar azi», numărătoare inversă) fără o dată sau un motiv "
+            "verificabil"
+        )
+        fixes.append("Pune data reală a ofertei sau scoate presiunea: urgența falsă te costă")
+        score -= 3
     if sensitive:
         risks.insert(0, f"domeniu sensibil ({_DOMAIN_NAMES[seen.domain]}): încrederea decide")
     return _clamp(score)
@@ -1022,8 +1064,11 @@ def _hook(
                 "reclamei tale îi lipsesc mizele: nu ai definit ce riscă privitorul dacă nu "
                 "folosește serviciul tău"
             )
+            # Intr-un domeniu sensibil, miza fara frica (garda fear_manipulation_risk a CMO-ului).
             fixes.append(
-                "Spune din primele secunde ce pierde privitorul fără tine (bani, timp, o șansă)"
+                "Spune din primele secunde ce câștigă privitorul cu tine, calm, fără să-l sperii"
+                if seen.domain in _SENSITIVE
+                else "Spune din primele secunde ce pierde privitorul fără tine: bani, timp, o șansă"
             )
         if story is not None and not story.big_question:
             risks.append(
@@ -1166,6 +1211,7 @@ def evaluate_creative(
     judge: TextJudge,
     whisper_model: str | Path = "",
     elevenlabs_api_key: str = "",
+    audience: CustomerAvatar | None = None,
 ) -> dict[str, Any]:
     """Evaluarea CCO-ului: tipul, decizia, scorurile, riscurile si top 3 remedieri.
 
@@ -1177,6 +1223,8 @@ def evaluate_creative(
         whisper_model: Modelul whisper.cpp (ggml) pentru vocea din video, local.
         elevenlabs_api_key: Cu ea, vocea o transcrie ElevenLabs Scribe (in locul lui
             whisper). Fara amandoua, vocea nu se transcrie; restul sunetului se masoara.
+        audience: Clientul ideal (JTBD), din interviul clientului - Jev il vede cand
+            judeca personajul si mizele.
 
     Raises:
         ValueError: nu e imagine/video suportat, e prea mare/lung sau nu se poate citi.
@@ -1203,7 +1251,7 @@ def evaluate_creative(
         if not video.frames:
             raise ValueError("video-ul nu are cadre lizibile")
         frames, size = video.frames, (video.width, video.height)
-    seen = _observe(frames, video, model=model, judge=judge)
+    seen = _observe(frames, video, model=model, judge=judge, audience=audience)
 
     risks: list[str] = []
     fixes: list[str] = []

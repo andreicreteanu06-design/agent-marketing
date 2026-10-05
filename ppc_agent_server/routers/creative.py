@@ -10,10 +10,13 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from sqlmodel import Session
 
-from ppc_agent_server.models import ClientUser
+from ppc_agent_server.db import get_session
+from ppc_agent_server.models import ClientAccount, ClientUser
 from ppc_agent_server.rate_limit import CREATIVE_HOURLY, too_many_requests
 from ppc_agent_server.routers.client_auth import get_current_client_user
+from ppc_agent_server.services.avatar_builder import avatar_from_answers
 from ppc_agent_server.services.creative_evaluator import (
     MAX_IMAGE_BYTES,
     MAX_VIDEO_BYTES,
@@ -46,6 +49,7 @@ def upload_creative(
     user: Annotated[ClientUser, Depends(get_current_client_user)],
     model: Annotated[VisionModel, Depends(get_vision_model)],
     judge: Annotated[TextJudge, Depends(get_text_judge)],
+    session: Annotated[Session, Depends(get_session)],
 ) -> dict[str, object]:
     """Verdictul CCO-ului: ``asset_type``, ``decision``, ``scores``, ``detected_risks``,
     ``priority_fixes`` si, la video, ``video_facts`` (durata, taieturi, voce, muzica).
@@ -74,12 +78,14 @@ def upload_creative(
         )
     settings = get_server_settings()
     try:
+        account = session.get(ClientAccount, user.client_account_id)
         return evaluate_creative(
             data,
             model=model,
             judge=judge,
             whisper_model=settings.whisper_model,
             elevenlabs_api_key=settings.elevenlabs_api_key,
+            audience=avatar_from_answers(account.avatar_answers) if account else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

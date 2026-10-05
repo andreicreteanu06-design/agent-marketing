@@ -68,6 +68,7 @@ from ppc_agent_server.models import (
     SiteSpeedSample,
     TrackingEvidence,
 )
+from ppc_agent_server.services.avatar_builder import avatar_from_answers, offer_from_answers
 from ppc_agent_server.services.council import AdSpend, FinancialSignals, TermSpend
 from ppc_agent_server.services.market_trends import (
     TrendsSource,
@@ -471,6 +472,8 @@ class DbBrandSignals:
             ads=load_live_ads(self._session, client_account_id),
             notes=notes,
             organic=self._organic(account),
+            customer_avatar=avatar_from_answers(account.avatar_answers),
+            offer=offer_from_answers(account.avatar_answers),
         )
 
     def _organic(self, account: ClientAccount) -> OrganicSignals:

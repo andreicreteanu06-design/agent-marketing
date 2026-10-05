@@ -359,8 +359,8 @@ def chat_with_queen(
     "opreste" ajunge la consiliu ca oricare alta.
 
     Interviul de dinaintea primei campanii (``services/client_intake.py``): cat timp o
-    intrebare despre costuri sau zona asteapta raspuns, mesajul e raspunsul ei - nu
-    ajunge la consiliu.
+    intrebare despre costuri, zona sau clientul ideal asteapta raspuns, mesajul e
+    raspunsul ei - nu ajunge la consiliu.
     """
     command = admin_command(body.message)
     if command is not None:

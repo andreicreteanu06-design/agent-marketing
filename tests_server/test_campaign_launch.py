@@ -41,6 +41,7 @@ from ppc_agent_server.models import (
     Tenant,
 )
 from ppc_agent_server.routers.campaigns import get_creative_review
+from ppc_agent_server.services.avatar_builder import PROFILE_KEYS
 
 
 def _spec(**overrides: Any) -> MetaLaunchSpec:
@@ -218,11 +219,13 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def ready_to_launch(account: ClientAccount) -> None:
-    """Interviul de dinaintea primei campanii, deja facut: costuri si zona (toata tara)."""
+    """Interviul de dinaintea primei campanii, deja facut: costuri, zona (toata tara) si
+    clientul ideal - la care clientul a raspuns "nu stiu" peste tot."""
     account.customer_profit = Decimal("600")
     account.close_rate_pct = Decimal("30")
     account.service_area = "national"
     account.economics_confirmed_at = datetime.now(tz=UTC)
+    account.avatar_answers = dict.fromkeys(PROFILE_KEYS)
 
 
 def _signup(client: TestClient) -> tuple[dict[str, str], int]:
@@ -456,7 +459,10 @@ def _cco(decision: str) -> dict[str, Any]:
 
 
 def _launch_with_cco(client: TestClient, headers: dict[str, str], verdict: dict[str, Any]) -> Any:
-    client.app.dependency_overrides[get_creative_review] = lambda: lambda image_url: verdict  # type: ignore[attr-defined]
+    def review(image_url: str, audience: object) -> dict[str, Any]:
+        return verdict
+
+    client.app.dependency_overrides[get_creative_review] = lambda: review  # type: ignore[attr-defined]
     return client.post("/api/v1/campaigns/propose_launch", headers=headers, json=_request())
 
 

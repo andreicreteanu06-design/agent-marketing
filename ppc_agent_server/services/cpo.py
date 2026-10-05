@@ -21,6 +21,10 @@ Framework-uri de produs (idei din menkesu/awesome-pm-skills, niciun rand copiat)
   vorbesc reclamele, pozitionarea se poate ascuti.
 - **Strategic storytelling**: povestea ofertei in trei timpi - problema (durerea
   profilului), promisiunea (dorinta lui), dovada (ce il convinge).
+- **Arhitectura alegerii** (Iyengar, choice overload): peste 3 pachete, oamenii amana
+  alegerea - CPO-ul cere cel mult 3, clare; fara garantie, propune inversarea riscului
+  (garantie, audit sau consultatie gratuita), dupa bariera dominanta a CMO-ului. Faptele
+  vin din interviul clientului (``avatar_builder.OfferFacts``), nu din cont.
 - **RICE** (Intercom): mutarile de oferta, ordonate dupa Reach x Impact x
   Confidence / Effort. Reach = procentul din conversii atins (din cautari, cat timp
   conversiile nu ajung), Impact pe scara 0,25-3, Confidence din cat de solide sunt
@@ -45,6 +49,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel
 
 from ppc_agent_server.services.llm_client import MIN_CONFIDENCE, JsonValue, Score, ScoreAnswer
+from ppc_agent_server.services.propensity import MAX_OPTIONS
 from ppc_agent_server.services.queen_agent import (
     _BY_KEY,
     AdAlignment,
@@ -53,13 +58,14 @@ from ppc_agent_server.services.queen_agent import (
     _quote,
 )
 from ppc_agent_server.services.researcher import MarketDirective, PainSignal
+from ppc_agent_server.services.ro_format import count as _count
 from ppc_agent_server.services.ro_format import percent as _percent
 from ppc_agent_server.services.ro_format import ron as _ron
 
 logger = logging.getLogger("ppc_agent_server.services.cpo")
 
 OfferStatus = Literal["fit", "message_gap", "positioning_gap", "offer_gap", "pivot", "unknown"]
-MoveKind = Literal["pivot", "reposition", "offer_test", "message"]
+MoveKind = Literal["pivot", "reposition", "offer_test", "message", "simplify", "risk_reversal"]
 #: Cine a estimat impactul si efortul unei mutari: Jev sau tabelul fix.
 RiceEstimate = Literal["jev", "fixed"]
 
@@ -75,7 +81,11 @@ _RICE: dict[MoveKind, tuple[float, float]] = {
     "reposition": (2.0, 2.0),
     "offer_test": (2.0, 1.0),
     "message": (1.0, 0.5),
+    "simplify": (2.0, 1.0),
+    "risk_reversal": (2.0, 0.5),
 }
+#: Cat de sigure sunt mutarile de arhitectura a alegerii: pleaca din ce a spus clientul.
+CHOICE_CONFIDENCE = 0.8
 
 # Intrebarile pentru Jev: in engleza (acolo e cel mai precis), cu nivelurile in ordine,
 # fiecare cu valoarea lui RICE. Jev alege nivelul; valoarea si formula raman in cod.
@@ -107,7 +117,16 @@ _MOVE_TYPES: dict[MoveKind, str] = {
     "reposition": "reposition the offer for another customer segment",
     "offer_test": "test the current offer with its strongest proof in front",
     "message": "rewrite the ads so they speak to the ideal customer",
+    "simplify": "cut the offer down to at most three clear packages",
+    "risk_reversal": "add a guarantee or a free first step that removes the buyer's risk",
 }
+#: Inversarea riscului potrivita barierei dominante (CMO).
+_RISK_REVERSALS: dict[str, str] = {
+    "lack_of_trust": "un audit sau o primă consultație gratuită, ca să te cunoască fără risc",
+    "perceived_risk": "o garanție scrisă pe rezultat",
+    "price_uncertainty": "prețul fix, scris dinainte, fără costuri ascunse",
+}
+_DEFAULT_REVERSAL = "o garanție scrisă sau o primă consultație gratuită"
 
 
 class RiceScorer(Protocol):
@@ -153,6 +172,8 @@ class ProductDirective(BaseModel):
     moves: list[OfferMove]
     summary: str
     generated_at: datetime
+    #: Pachetele si garantia (choice overload, inversarea riscului); ``None`` = nu stim oferta.
+    choice_architecture: str | None = None
 
 
 def _number(value: float) -> str:
@@ -265,6 +286,42 @@ def _scored_by_jev(moves: list[OfferMove], scorer: RiceScorer) -> list[OfferMove
     return scored
 
 
+def _choice_architecture(directive: BrandStrategyDirective) -> tuple[str | None, list[OfferMove]]:
+    """Cate pachete si ce garantie vede clientul: verdictul si mutarile (cel mult 3, garantie)."""
+    offer = directive.offer
+    if offer is None:
+        return None, []
+    sentences: list[str] = []
+    moves: list[OfferMove] = []
+    if offer.options is not None and offer.options > MAX_OPTIONS:
+        sentences.append(
+            f"{offer.options} pachete sunt prea multe: peste {MAX_OPTIONS}, clientul amână "
+            f"alegerea. Cel mult {MAX_OPTIONS}, clare, cu unul recomandat."
+        )
+        moves.append(
+            _move(
+                "simplify",
+                f"reducerea ofertei la cel mult {MAX_OPTIONS} pachete clare (acum {offer.options})",
+                1.0,
+                CHOICE_CONFIDENCE,
+            )
+        )
+    elif offer.options is not None:
+        many = "un singur pachet" if offer.options == 1 else _count(offer.options, "pachete")
+        sentences.append(f"{many[:1].upper()}{many[1:]}: alegerea e ușoară.")
+    if offer.risk_reversal:
+        sentences.append(f"Garanția există («{offer.risk_reversal}»): pune-o în prim-plan.")
+    elif offer.risk_reversal is not None:
+        experiment = directive.experiment
+        reversal = _RISK_REVERSALS.get(experiment.barrier if experiment else "", _DEFAULT_REVERSAL)
+        sentences.append(f"Lipsește inversarea riscului: propun {reversal}.")
+        moves.append(
+            _move("risk_reversal", f"inversarea riscului: {reversal}", 1.0, CHOICE_CONFIDENCE)
+        )
+    verdict = "Arhitectura alegerii: " + " ".join(sentences) if sentences else None
+    return verdict, moves
+
+
 def evaluate_offer(
     directive: BrandStrategyDirective,
     *,
@@ -281,11 +338,18 @@ def evaluate_offer(
     ``scorer`` = Jev, pentru impactul si efortul mutarilor; ``None`` = estimarile fixe.
     """
     avatar = directive.avatar
+    choice, choice_moves = _choice_architecture(directive)
     if directive.status != "ok" or avatar is None:
         unknown = (
             "Oferta nu se poate judeca încă: lipsește clientul ideal (prea puține căutări "
             "atribuite)."
         )
+        if scorer is not None and choice_moves:
+            choice_moves = _scored_by_jev(choice_moves, scorer)
+        choice_moves.sort(key=lambda move: -move.rice)
+        summary = f"{unknown} {choice}" if choice else unknown
+        if choice_moves:
+            summary += f" Prioritatea (RICE): {choice_moves[0].text} (scor {choice_moves[0].rice})."
         return ProductDirective(
             client_account_id=directive.client_account_id,
             status="unknown",
@@ -295,9 +359,10 @@ def evaluate_offer(
             best_fit=None,
             positioning="",
             story="",
-            moves=[],
-            summary=unknown,
+            moves=choice_moves,
+            summary=summary,
             generated_at=generated_at,
+            choice_architecture=choice,
         )
 
     own = next(segment for segment in directive.segments if segment.key == avatar.key)
@@ -416,6 +481,7 @@ def evaluate_offer(
                 confidence,
             )
         )
+    moves += choice_moves
     if scorer is not None and moves:
         moves = _scored_by_jev(moves, scorer)
     moves.sort(key=lambda move: -move.rice)
@@ -436,14 +502,19 @@ def evaluate_offer(
         positioning += (
             f" Alternativele pe care le compară (găsite pe web): {', '.join(rivals[:3])}."
         )
+    # Povestea, cu cuvintele clientului cand le avem (JTBD): situatia si progresul dorit.
+    jtbd = directive.customer_avatar
     problem = archetype.pains[0]
+    promise = archetype.desires[0]
+    if jtbd is not None and target is own:
+        problem = f"«{jtbd.customer_situation}»" if jtbd.customer_situation else problem
+        promise = f"«{jtbd.desired_progress}»" if jtbd.desired_progress else promise
     if status == "pivot" and pain is not None:
         problem = f"piața caută acum «{pain.theme}»"
-    story = (
-        f"Problema: {problem}. Promisiunea: {archetype.desires[0]}. "
-        f"Dovada: {archetype.proof_points[0]}."
-    )
+    story = f"Problema: {problem}. Promisiunea: {promise}. Dovada: {archetype.proof_points[0]}."
     summary = f"{verdict} Poziționarea: {positioning} Povestea ofertei: {story}"
+    if choice:
+        summary += f" {choice}"
     if moves:
         summary += f" Prioritatea (RICE): {moves[0].text} (scor {moves[0].rice})."
     return ProductDirective(
@@ -458,6 +529,7 @@ def evaluate_offer(
         moves=moves,
         summary=summary,
         generated_at=generated_at,
+        choice_architecture=choice,
     )
 
 
@@ -468,6 +540,8 @@ def cpo_facts(product: ProductDirective) -> str:
         lines.append(f"Poziționarea (clientul care cumpără cel mai ușor): {product.positioning}")
     if product.story:
         lines.append(f"Povestea ofertei (problemă, promisiune, dovadă): {product.story}")
+    if product.choice_architecture:
+        lines.append(product.choice_architecture)
     lines.extend(
         f"Mutarea {index} după RICE: {move.text}. Reach {move.reach}% din cerere, impact "
         f"{_number(move.impact)}, încredere {_percent(move.confidence)}, efort "
