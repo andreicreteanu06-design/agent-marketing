@@ -1396,15 +1396,30 @@ pe ce s-a sprijinit (`context_notes`) si poarta `evaluation_id`.
 
 `.github/workflows/trend_ingestion.yml` ruleaza `scripts/trend_scraper.py` in fiecare luni
 la 04:00 UTC (si manual, din tab-ul Actions). Scriptul e Python pur (doar biblioteca
-standard): scrie trendurile in `trends.json` (deocamdata date de proba, in forma
-`TrendPayload`), apoi le trimite la `POST /api/v1/trends/ingest` cu antetul `X-Cron-Secret`.
+standard): scrie trendurile in `trends.json` (forma `TrendPayload`), apoi le trimite la
+`POST /api/v1/trends/ingest` cu antetul `X-Cron-Secret`.
+
+Trendurile vin din **Meta Ad Library** (`ads_archive`): pe fiecare industrie din
+`TREND_SEARCH_TERMS` (implicit service auto, stomatologie, salon, clinica, magazin online,
+curatenie) si pe fiecare format (video, imagine), reclamele active in Romania pornite de
+cel putin 21 de zile - o reclama tinuta atata, de obicei, aduce bani. Raman cele mai vazute
+in UE (`eu_total_reach`), cate una pe pagina; hook-ul e prima fraza a textului, sursa e
+linkul public din Ad Library (nu `ad_snapshot_url`, care poate purta tokenul). Fara
+`META_AD_LIBRARY_TOKEN` pleaca datele de proba din script.
+
+Tokenul: contul de Facebook cu identitatea confirmata (facebook.com/ID), o aplicatie pe
+developers.facebook.com, apoi un token de utilizator din Graph API Explorer, prelungit la
+~60 de zile din Access Token Debugger ("Extend Access Token"). Cand expira, rularea de luni
+cade cu "Meta Ad Library a refuzat (400) ... Session has expired" si nu trimite nimic:
+generezi altul si inlocuiesti secretul.
 Ruta sterge intai ce e mai vechi de 30 de zile, apoi salveaza trendurile cu vectori
 (acelasi titlu pe aceeasi platforma se actualizeaza). Fara `CRON_SECRET_KEY` (minimum 32 de
 caractere) ruta e oprita - 503.
 
 Secretele din GitHub (Settings > Secrets and variables > Actions): `API_URL` - adresa
-publica HTTPS a API-ului (GitHub nu vede `localhost`) - si `CRON_SECRET_KEY`, aceeasi
-valoare ca in `.env`.
+publica HTTPS a API-ului (GitHub nu vede `localhost`) -, `CRON_SECRET_KEY`, aceeasi
+valoare ca in `.env`, si optional `META_AD_LIBRARY_TOKEN`. `TREND_SEARCH_TERMS` (optional)
+e o variabila, nu un secret: tab-ul Variables, industriile separate prin virgula.
 
 Vocea se transcrie cu ElevenLabs Scribe cand e setat `ELEVENLABS_API_KEY` (romana cea mai
 buna; pleaca doar sunetul, dar pleaca la ElevenLabs si costa pe minut), altfel local cu
@@ -1428,6 +1443,13 @@ transcrie ElevenLabs.
 100% offline — SQLite in-memory, `InlineJobQueue`, zero Redis/Postgres reale
 (la fel ca restul proiectului). `ruff check` (fara argument de cale) acopera
 deja tot, inclusiv `ppc_agent_server/` si `tests_server/`.
+
+Pe GitHub, `.github/workflows/ci.yml` ruleaza totul la fiecare push pe `master` si la
+fiecare pull request: `ruff`, `mypy --strict` (ppc_agent, ppc_agent_server, seo_geo_agent,
+scripts), migrarile pe un Postgres 16 real (upgrade, `alembic check`, downgrade pana la
+baza, iar upgrade), apoi cele trei suite de teste - cu ffmpeg si tesseract, deci si testele
+OCR ale CCO-ului, si cu `TEST_POSTGRES_URL`, deci si rolul limitat `ppc_app`. Fara `.env`:
+testele nu au voie sa depinda de cheile de pe laptop.
 
 ### Inainte de pilotul Meta (si de orice lansare majora)
 

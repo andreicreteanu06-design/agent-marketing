@@ -104,3 +104,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_adperformancerecord_ad_id'), table_name='adperformancerecord')
     op.drop_table('adperformancerecord')
     # ### end Alembic commands ###
+    # Postgres pastreaza tipurile ENUM dupa DROP TABLE: fara asta, un upgrade facut
+    # dupa downgrade cade cu "type ... already exists" (SQLite n-are tipuri: no-op).
+    for enum_name in ('adfatigueplatform', 'adlifecyclestatus', 'conversioneventtype'):
+        sa.Enum(name=enum_name).drop(op.get_bind(), checkfirst=True)

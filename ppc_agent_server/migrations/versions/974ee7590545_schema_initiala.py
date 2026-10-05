@@ -110,3 +110,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_tenant_api_key_hash'), table_name='tenant')
     op.drop_table('tenant')
     # ### end Alembic commands ###
+    # Postgres pastreaza tipurile ENUM dupa DROP TABLE: fara asta, un upgrade facut
+    # dupa downgrade cade cu "type ... already exists" (SQLite n-are tipuri: no-op).
+    for enum_name in ('platform', 'adqueuestatus', 'changeop', 'changestatus', 'subscriptionstatus'):
+        sa.Enum(name=enum_name).drop(op.get_bind(), checkfirst=True)

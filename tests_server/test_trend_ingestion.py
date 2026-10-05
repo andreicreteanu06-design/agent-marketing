@@ -8,11 +8,14 @@ saptamanal - si CCO-ul care nu mai da 9 unui concept care a esuat deja.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
+import urllib.error
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -282,8 +285,81 @@ def test_without_the_avatar_or_the_hypothesis_the_verdict_says_so() -> None:
 
 
 def test_the_scripts_trends_match_the_api_contract() -> None:
-    trends = scraper.collect_trends(date(2026, 10, 5))
+    trends = scraper.sample_trends(date(2026, 10, 5))
     assert len(TrendIngest.model_validate({"trends": trends}).trends) == len(trends)
+
+
+def _ad(ad_id: str, page: str, started: str, reach: int | None, body: str) -> dict[str, Any]:
+    """O reclama cum o intoarce Meta Ad Library (``ads_archive``)."""
+    return {
+        "id": ad_id,
+        "page_id": page,
+        "page_name": f"Pagina {page}",
+        "ad_creative_bodies": [body],
+        "ad_creative_link_titles": ["Programează-te azi"],
+        "ad_delivery_start_time": started,
+        "publisher_platforms": ["FACEBOOK", "INSTAGRAM"],
+        "eu_total_reach": reach,
+    }
+
+
+def test_meta_trends_keep_the_proven_most_seen_ads_one_per_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ads = [
+        _ad("1", "a", "2026-09-30", 90_000, "Prea nouă: rulează de 5 zile."),
+        _ad("2", "b", "2026-08-01", 1_200, "Cât costă, de fapt? Uite prețul."),
+        _ad("3", "c", "2026-06-01", 25_000, "Asta e piesa schimbată degeaba. Vino la noi."),
+        _ad("4", "c", "2026-06-01", 20_000, "Aceeași pagină, altă reclamă."),
+        _ad("5", "d", "2026-07-01", 50_000, "Reducere la {{product.name}}"),
+    ]
+    searched: list[tuple[str, str]] = []
+
+    def fetch(token: str, term: str, media: str, today: date) -> list[dict[str, Any]]:
+        searched.append((term, media))
+        return ads if media == "VIDEO" else []
+
+    monkeypatch.setattr(scraper, "fetch_ads", fetch)
+
+    trends = scraper.meta_trends("token", ["service auto"], date(2026, 10, 5))
+
+    assert searched == [("service auto", "VIDEO"), ("service auto", "IMAGE")]
+    # Prea noua, a doua de pe aceeasi pagina si sablonul dinamic nu trec; cea mai vazuta e prima.
+    assert [t["source"] for t in trends] == [
+        "https://www.facebook.com/ads/library/?id=3",
+        "https://www.facebook.com/ads/library/?id=2",
+    ]
+    best = trends[0]
+    assert best["hook"] == "Asta e piesa schimbată degeaba."
+    assert best["visual_format"] == "Video pe Facebook, Instagram"
+    assert best["virality_reason"].startswith(
+        "Rulează de 126 de zile în România (~25.000 de oameni în UE)"
+    )
+    assert TrendIngest.model_validate({"trends": trends})
+    assert [scraper._de(n) for n in (21, 101, 119, 120)] == ["de ", "", "", "de "]
+
+
+def test_when_meta_refuses_the_token_nothing_is_sent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "trends.json"
+    monkeypatch.setenv("API_URL", "https://api.exemplu.ro")
+    monkeypatch.setenv("CRON_SECRET_KEY", SECRET)
+    monkeypatch.setenv("META_AD_LIBRARY_TOKEN", "un-token-expirat")
+    monkeypatch.setenv("TRENDS_FILE", str(path))
+
+    def expired(*args: object) -> list[dict[str, Any]]:
+        body = io.BytesIO(b'{"error": {"message": "Session has expired", "code": 190}}')
+        raise urllib.error.HTTPError(scraper.ADS_ARCHIVE_URL, 400, "Bad Request", Message(), body)
+
+    def post(*args: object) -> dict[str, Any]:
+        raise AssertionError("fara trenduri reale nu se trimite nimic")
+
+    monkeypatch.setattr(scraper, "fetch_ads", expired)
+    monkeypatch.setattr(scraper, "post", post)
+
+    assert scraper.main() == 1
+    assert not path.exists()
 
 
 @pytest.mark.parametrize(
@@ -311,6 +387,7 @@ def test_the_script_writes_trends_json_then_posts_it(
     path = tmp_path / "trends.json"
     monkeypatch.setenv("API_URL", "https://api.exemplu.ro")
     monkeypatch.setenv("TRENDS_FILE", str(path))
+    monkeypatch.delenv("META_AD_LIBRARY_TOKEN", raising=False)
     sent: list[tuple[str, str]] = []
 
     def post(url: str, secret: str, payload: dict[str, Any]) -> dict[str, Any]:

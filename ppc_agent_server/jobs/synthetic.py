@@ -168,12 +168,13 @@ async def record_journey(
     Raises:
         ImportError: Playwright nu e instalat (imaginea API-ului) - apelantul raporteaza.
     """
-    from playwright.async_api import Error as PlaywrightError
-    from playwright.async_api import Request, Response, Route, async_playwright
-
+    # Scutul SSRF nu are nevoie de browser: o adresa interna e refuzata si fara Playwright.
     start, error = await _final_url(contract.url, allow_private=allow_private)
     if error is not None:
         return JourneyRecord(None, error, False, False, None, None)
+
+    from playwright.async_api import Error as PlaywrightError
+    from playwright.async_api import Request, Response, Route, async_playwright
 
     hits: dict[Request, CollectHit] = {}
     blocked: list[str] = []

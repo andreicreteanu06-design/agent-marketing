@@ -116,3 +116,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_searchtermconversion_client_account_id'), table_name='searchtermconversion')
     op.drop_table('searchtermconversion')
     # ### end Alembic commands ###
+    # Postgres pastreaza tipurile ENUM dupa DROP TABLE: fara asta, un upgrade facut
+    # dupa downgrade cade cu "type ... already exists" (SQLite n-are tipuri: no-op).
+    for enum_name in ('keywordintent', 'serpsource'):
+        sa.Enum(name=enum_name).drop(op.get_bind(), checkfirst=True)

@@ -1,8 +1,12 @@
 # Trendurile saptamanii -> trends_db (RAG-ul CCO-ului), fara n8n: un script Python pur.
 # Cron-ul GitHub e in UTC: luni 04:00 UTC = 07:00 ora Romaniei vara, 06:00 iarna.
 # Secretele (Settings > Secrets and variables > Actions):
-#   API_URL          adresa publica HTTPS a API-ului (GitHub nu vede localhost-ul tau)
-#   CRON_SECRET_KEY  aceeasi valoare ca CRON_SECRET_KEY din .env-ul serverului
+#   API_URL                adresa publica HTTPS a API-ului (GitHub nu vede localhost-ul tau)
+#   CRON_SECRET_KEY        aceeasi valoare ca CRON_SECRET_KEY din .env-ul serverului
+#   META_AD_LIBRARY_TOKEN  optional: trendurile reale din Meta Ad Library; fara el pleaca
+#                          datele de proba. Expira - vezi README.
+# Variabila optionala (tab-ul Variables): TREND_SEARCH_TERMS, industriile cautate,
+# separate prin virgula (implicit: service auto, stomatologie, salon, clinica...).
 name: Ingestia saptamanala de trenduri
 
 on:
@@ -28,11 +32,11 @@ jobs:
         with:
           python-version: '3.13'
 
-      # Scriptul foloseste doar biblioteca standard: nimic de instalat. Un scraper real
-      # cu dependinte le pune intr-un scripts/requirements.txt si adauga aici
-      # `pip install -r scripts/requirements.txt`.
+      # Scriptul foloseste doar biblioteca standard: nimic de instalat.
       - name: Trimite trendurile
         env:
           API_URL: ${{ secrets.API_URL }}
           CRON_SECRET_KEY: ${{ secrets.CRON_SECRET_KEY }}
+          META_AD_LIBRARY_TOKEN: ${{ secrets.META_AD_LIBRARY_TOKEN }}
+          TREND_SEARCH_TERMS: ${{ vars.TREND_SEARCH_TERMS }}
         run: python scripts/trend_scraper.py

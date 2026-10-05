@@ -1,38 +1,180 @@
 """Trendurile saptamanii -> ``trends.json`` -> ``POST /api/v1/trends/ingest``.
 
 Il ruleaza GitHub Actions in fiecare luni (``.github/workflows/trend_ingestion.yml``).
-Python pur, doar biblioteca standard - pe runner nu se instaleaza nimic. Deocamdata
-trendurile sunt date de proba (:func:`collect_trends`); un scraper real le inlocuieste
-acolo, cu aceeasi forma (``TrendPayload`` din ``services/creative_context.py``).
+Python pur, doar biblioteca standard - pe runner nu se instaleaza nimic. Trendurile vin
+din Meta Ad Library (:func:`meta_trends`): reclamele active in Romania de cel putin
+``PROVEN_DAYS`` zile, pe industriile cautate - o reclama tinuta atata, de obicei, aduce
+bani. Fara ``META_AD_LIBRARY_TOKEN`` pleaca datele de proba (:func:`sample_trends`).
+Forma e ``TrendPayload`` din ``services/creative_context.py``.
 
 Variabile de mediu:
-    API_URL           adresa publica a API-ului (ex. https://api.exemplu.ro), HTTPS -
-                      cheia pleaca in antet; http doar pentru localhost.
-    CRON_SECRET_KEY   aceeasi valoare ca in .env-ul serverului (antetul X-Cron-Secret).
-    TRENDS_FILE       optional, unde se scrie fisierul intermediar (implicit trends.json).
+    API_URL                adresa publica a API-ului (ex. https://api.exemplu.ro), HTTPS -
+                           cheia pleaca in antet; http doar pentru localhost.
+    CRON_SECRET_KEY        aceeasi valoare ca in .env-ul serverului (antetul X-Cron-Secret).
+    META_AD_LIBRARY_TOKEN  optional, token Meta cu acces la Ad Library API (contul trebuie
+                           sa aiba identitatea confirmata); expira - vezi README.
+    TREND_SEARCH_TERMS     optional, industriile cautate, separate prin virgula
+                           (implicit ``DEFAULT_TERMS``).
+    TRENDS_FILE            optional, unde se scrie fisierul intermediar (implicit trends.json).
 
-Coduri de iesire: 0 trimis, 1 serverul a refuzat sau nu raspunde, 2 lipsesc variabile.
+Coduri de iesire: 0 trimis; 1 Meta sau serverul a refuzat ori nu raspunde, sau Meta n-a
+dat niciun trend; 2 lipsesc variabile.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 INGEST_PATH = "/api/v1/trends/ingest"
 TIMEOUT_SECONDS = 60
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# Versiunea din documentatia Ad Library (octombrie 2026); Meta retrage o versiune la ~2 ani.
+ADS_ARCHIVE_URL = "https://graph.facebook.com/v26.0/ads_archive"
+#: O reclama tinuta 3 saptamani se plateste, de obicei: cele care pierd bani se opresc.
+PROVEN_DAYS = 21
+#: Cele mai vazute reclame pastrate pe fiecare cautare (industrie x format).
+PER_SEARCH = 2
+MAX_TRENDS = 200  # limita lui TrendIngest
+DEFAULT_TERMS = (
+    "service auto",
+    "stomatologie",
+    "salon",
+    "clinica",
+    "magazin online",
+    "curatenie",
+)
+_MEDIA = {"VIDEO": "Video", "IMAGE": "Imagine"}
+_FIELDS = (
+    "id,page_id,page_name,ad_creative_bodies,ad_creative_link_titles,ad_delivery_start_time,"
+    "publisher_platforms,eu_total_reach"
+)
 
-def collect_trends(today: date) -> list[dict[str, Any]]:
-    """Trendurile saptamanii - DATE DE PROBA, pana la scraper-ul real.
+
+def _de(number: int) -> str:
+    """«21 de zile», dar «101 zile»: fara «de» cand ultimele doua cifre sunt 1-19."""
+    return "" if 1 <= number % 100 <= 19 else "de "
+
+
+def _cut(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _texts(ad: dict[str, Any], key: str) -> list[str]:
+    """Textele reale ale reclamei; sabloanele reclamelor dinamice ({{product.name}}) nu."""
+    return [t for t in ad.get(key) or [] if isinstance(t, str) and t.strip() and "{{" not in t]
+
+
+def _reach(ad: dict[str, Any]) -> int:
+    reach = ad.get("eu_total_reach")
+    return reach if isinstance(reach, int) and reach > 0 else 0
+
+
+def search_terms() -> list[str]:
+    terms = [t.strip() for t in os.getenv("TREND_SEARCH_TERMS", "").split(",") if t.strip()]
+    return terms or list(DEFAULT_TERMS)
+
+
+def fetch_ads(token: str, term: str, media: str, today: date) -> list[dict[str, Any]]:
+    """Prima pagina de reclame active in Romania, pornite de cel putin ``PROVEN_DAYS`` zile.
+
+    Raises:
+        urllib.error.URLError: Meta refuza (token expirat...) sau nu raspunde.
+    """
+    query = urlencode(
+        {
+            "access_token": token,
+            "ad_reached_countries": '["RO"]',
+            "ad_active_status": "ACTIVE",
+            "ad_delivery_date_max": (today - timedelta(days=PROVEN_DAYS)).isoformat(),
+            "search_terms": term,
+            "media_type": media,
+            "fields": _FIELDS,
+            "limit": "50",
+        }
+    )
+    # Adresa contine tokenul: nu se scrie in log; erorile urllib nu o includ.
+    with urllib.request.urlopen(f"{ADS_ARCHIVE_URL}?{query}", timeout=TIMEOUT_SECONDS) as r:
+        body: dict[str, Any] = json.loads(r.read().decode("utf-8"))
+    return [ad for ad in body.get("data") or [] if isinstance(ad, dict)]
+
+
+def ad_trend(ad: dict[str, Any], term: str, media: str, today: date) -> dict[str, Any] | None:
+    """O reclama dovedita -> ``TrendPayload``; ``None`` daca e prea noua sau fara text."""
+    bodies = _texts(ad, "ad_creative_bodies")
+    try:
+        started = date.fromisoformat(str(ad.get("ad_delivery_start_time", ""))[:10])
+    except ValueError:
+        return None
+    days = (today - started).days
+    if not bodies or days < PROVEN_DAYS or not str(ad.get("id", "")).isdigit():
+        return None
+    first_line = re.split(r"(?<=[.!?…])\s|\n", bodies[0].strip(), maxsplit=1)[0]
+    hook = _cut(first_line, 300)
+    if len(hook) < 5:
+        return None
+    headline = (_texts(ad, "ad_creative_link_titles") or [hook])[0]
+    page = str(ad.get("page_name") or "").strip() or "Un advertiser"
+    platforms = ", ".join(
+        str(p).replace("_", " ").title() for p in ad.get("publisher_platforms") or []
+    )
+    reach = _reach(ad)
+    seen = f" (~{reach:,} {_de(reach)}oameni în UE)".replace(",", ".") if reach else ""
+    media_name = _MEDIA[media]
+    return {
+        "title": _cut(f"{page}: {headline}", 120),
+        "hook": hook,
+        "visual_format": _cut(f"{media_name} pe {platforms}" if platforms else media_name, 120),
+        "virality_reason": f"Rulează de {days} {_de(days)}zile în România{seen}: o reclamă "
+        "ținută atâta, de obicei, aduce bani.",
+        "platform": "meta",
+        "industry": _cut(term, 120),
+        # Nu ad_snapshot_url: aceea poate purta tokenul.
+        "source": f"https://www.facebook.com/ads/library/?id={ad['id']}",
+        "observed_at": today.isoformat(),
+    }
+
+
+def meta_trends(token: str, terms: list[str], today: date) -> list[dict[str, Any]]:
+    """Cele mai vazute reclame dovedite, pe fiecare industrie si format; o reclama pe pagina.
+
+    Raises:
+        urllib.error.URLError: vezi :func:`fetch_ads`.
+    """
+    trends: dict[str, dict[str, Any]] = {}
+    pages: set[str] = set()
+    for term in terms:
+        for media in _MEDIA:
+            ads = sorted(
+                fetch_ads(token, term, media, today),
+                key=lambda ad: (-_reach(ad), str(ad.get("ad_delivery_start_time") or "9")),
+            )
+            kept = 0
+            for ad in ads:
+                trend = ad_trend(ad, term, media, today)
+                page = str(ad.get("page_id") or ad.get("page_name") or "")
+                if trend is None or page in pages or trend["title"] in trends:
+                    continue
+                trends[trend["title"]] = trend
+                pages.add(page)
+                kept += 1
+                if kept == PER_SEARCH:
+                    break
+    return list(trends.values())[:MAX_TRENDS]
+
+
+def sample_trends(today: date) -> list[dict[str, Any]]:
+    """DATE DE PROBA - pleaca doar cand lipseste ``META_AD_LIBRARY_TOKEN``.
 
     Aceeasi forma ca ``TrendPayload``: titlu, hook, format vizual, de ce merge, platforma,
     industria (cuvinte cheie; gol = orice industrie), sursa, data observarii.
@@ -160,8 +302,26 @@ def main() -> int:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
+    today = datetime.now(tz=UTC).date()
+    token = os.getenv("META_AD_LIBRARY_TOKEN", "")
+    if token:
+        try:
+            trends = meta_trends(token, search_terms(), today)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            print(f"Meta Ad Library a refuzat ({exc.code}): {detail}", file=sys.stderr)
+            return 1
+        except (urllib.error.URLError, TimeoutError) as exc:
+            print(f"Meta Ad Library nu răspunde: {exc}", file=sys.stderr)
+            return 1
+        if not trends:
+            print("Meta n-a dat nicio reclamă dovedită pe industriile căutate.", file=sys.stderr)
+            return 1
+    else:
+        print("Fără META_AD_LIBRARY_TOKEN: trimit datele de probă.")
+        trends = sample_trends(today)
     path = Path(os.getenv("TRENDS_FILE", "trends.json"))
-    save(collect_trends(datetime.now(tz=UTC).date()), path)
+    save(trends, path)
     payload = load(path)
     try:
         result = post(url, secret, payload)
