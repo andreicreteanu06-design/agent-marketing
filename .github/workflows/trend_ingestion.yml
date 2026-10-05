@@ -1,0 +1,38 @@
+# Trendurile saptamanii -> trends_db (RAG-ul CCO-ului), fara n8n: un script Python pur.
+# Cron-ul GitHub e in UTC: luni 04:00 UTC = 07:00 ora Romaniei vara, 06:00 iarna.
+# Secretele (Settings > Secrets and variables > Actions):
+#   API_URL          adresa publica HTTPS a API-ului (GitHub nu vede localhost-ul tau)
+#   CRON_SECRET_KEY  aceeasi valoare ca CRON_SECRET_KEY din .env-ul serverului
+name: Ingestia saptamanala de trenduri
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trend-ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Scriptul foloseste doar biblioteca standard: nimic de instalat. Un scraper real
+      # cu dependinte le pune intr-un scripts/requirements.txt si adauga aici
+      # `pip install -r scripts/requirements.txt`.
+      - name: Trimite trendurile
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          CRON_SECRET_KEY: ${{ secrets.CRON_SECRET_KEY }}
+        run: python scripts/trend_scraper.py

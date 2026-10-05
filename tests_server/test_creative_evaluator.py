@@ -54,7 +54,7 @@ from tests_server.llm_fakes import FakeJev
 
 KEYS = {
     "asset_type", "purpose", "decision", "scores", "detected_risks", "priority_fixes",
-    "video_facts", "context_notes", "evaluation_id",
+    "video_facts", "context_notes", "evaluation_id", "concept",
 }
 #: Tesseract-ul adevarat (fixture-ul ``ocr`` il inlocuieste in toate celelalte teste).
 REAL_READ_TEXT = ce._read_text
@@ -113,7 +113,7 @@ def ocr(monkeypatch: pytest.MonkeyPatch) -> _FakeOcr:
 JUDGE_DEFAULTS: dict[str, float | str] = {
     "domain": "other", "brand": 0.9, "conditions": 0.9, "authentic": 0.1, "typos": 0,
     "hook": "line_0", "intro": 0.1, "captions": 0.1, "cta": 0.9, "scarcity": 0.1,
-    "worry": "worry_0", "hypothesis": 0.9,
+    "worry": "worry_0", "hypothesis": 0.9, "job": 0.9,
     "avatar": 0.9, "at_stake": 0.9, "urgency": 0.9, "big_question": 0.9, "headfake": 0.1,
     "rehooks": 0.9,
 }
@@ -181,6 +181,7 @@ def _run(
     media: bytes, *, model: _FakeVision | None = None, judge: _FakeJudge | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    kwargs.setdefault("context", CreativeEvaluationContext())  # obligatoriu in productie
     return evaluate_creative(
         media, model=model or _FakeVision(), judge=judge or _FakeJudge(), **kwargs
     )

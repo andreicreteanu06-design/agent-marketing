@@ -39,6 +39,7 @@ from ppc_agent_server.routers import (
     reports,
     seo_intelligence,
     tracking,
+    trends,
 )
 from ppc_agent_server.routers.mcp_router import MCP_MOUNT_PATH, build_mcp_asgi_app
 from ppc_agent_server.settings import get_server_settings
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(reports.router)
     app.include_router(seo_intelligence.router)
     app.include_router(tracking.router)
+    app.include_router(trends.router)
 
     # Serverul MCP e o aplicatie ASGI separata, montata - nu un APIRouter:
     # transporturile isi tin propriul ciclu de viata al conexiunii, iar schema lui

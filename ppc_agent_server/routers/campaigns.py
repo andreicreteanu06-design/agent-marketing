@@ -57,6 +57,7 @@ from ppc_agent_server.services.creative_evaluator import (
     vision_model_from_settings,
 )
 from ppc_agent_server.services.creative_memory import build_context, save_evaluation
+from ppc_agent_server.services.embeddings import embedder_from_settings
 from ppc_agent_server.services.emergency_stop import require_running
 from ppc_agent_server.services.launch_council import (
     REVIEW_KEY,
@@ -307,7 +308,10 @@ def propose_launch(
     block = growth_block(session, client_id)
     # CCO-ul afla de la ceilalti agenti pe ce sa judece: clientul ideal, ipoteza CMO-ului,
     # lectiile din piata ale contului, ce merge acum pe Meta.
-    context = build_context(session, account, purpose="ad", platform="meta")
+    context = build_context(
+        session, account, purpose="ad", platform="meta",
+        embedder=embedder_from_settings(get_server_settings()),
+    )
     creative = creative_review(spec.image_url, context)
     sha = str(creative.pop("asset_sha256", ""))
     if creative.get("decision") is not None:  # verdictul se pastreaza: PPC-ul ii va raspunde

@@ -448,6 +448,8 @@ class CreativeEvaluationRecord(SQLModel, table=True):
     platform: str = ""
     decision: str
     scores: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    #: Conceptul: hook-ul principal citit pe creativa - recunoscut si in alt fisier.
+    concept: str = ""
     #: Platforma si anuntul in care a ajuns creativa (gol = nelansata inca).
     ad_platform: str = ""
     ad_id: str = Field(default="", index=True)
@@ -480,21 +482,30 @@ class PerformanceCalibration(SQLModel, table=True):
 
 
 class CreativeTrend(SQLModel, table=True):
-    """trends_db: ce merge ACUM pe Meta/TikTok intr-o industrie - stiinta agentiei.
+    """trends_db: ce merge ACUM pe Meta/TikTok intr-o industrie.
 
-    Notele le adauga agentia (``POST /api/v1/creative/trends``); CCO-ul le cauta dupa
-    industria clientului inainte de evaluare (RAG fara embeddings: suprapunere de
-    cuvinte, ca ``copywriter/swipe.py``) si le pune in prompt ca date.
+    Doua surse: notele agentiei (``POST /api/v1/creative/trends``, ``tenant_id`` setat) si
+    automatizarea saptamanala (``POST /api/v1/trends/ingest``, ``tenant_id`` gol = pentru
+    toti). Fiecare are vectorul ei (``services/embeddings.py``); CCO-ul cauta dupa
+    industria clientului inainte de evaluare si pune ce gaseste in prompt, ca date. Mai
+    vechi de 30 de zile = sters la urmatoarea ingestie.
     """
 
     id: int | None = Field(default=None, primary_key=True)
-    tenant_id: int = Field(foreign_key="tenant.id", index=True)
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     platform: str = "all"
     industry: str = ""
+    #: Ce vede CCO-ul in prompt (la ingestie: titlul, hook-ul, formatul si de ce merge).
     insight: str
+    title: str = ""
+    hook: str = ""
+    visual_format: str = ""
+    virality_reason: str = ""
     source: str = ""
     observed_at: date
     expires_at: date
+    embedding: list[float] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    embedding_model: str = ""
     created_at: datetime = Field(default_factory=_now)
 
 

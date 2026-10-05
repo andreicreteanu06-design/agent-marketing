@@ -158,6 +158,15 @@ class ServerSettings(BaseSettings):
     # mai buna decat whisper local), in locul lui WHISPER_MODEL. Sunetul clientului
     # pleaca la ElevenLabs. Gol = whisper local (sau nimic).
     elevenlabs_api_key: str = ""
+    # Modelul Ollama de embeddings pentru trendurile CCO-ului (RAG), ex. "nomic-embed-text"
+    # (`ollama pull nomic-embed-text`, ~274 MB). Gol = vectori lexicali locali, fara model
+    # (n-grame de litere): gasesc aceleasi cuvinte, nu si sinonimele.
+    ollama_embed_model: str = ""
+    # Cheia cu care automatizarea saptamanala (GitHub Actions, scripts/trend_scraper.py)
+    # trimite trendurile la POST /api/v1/trends/ingest, in antetul X-Cron-Secret. Gol =
+    # ruta e oprita (503). Minimum 32 de caractere: python -c "import secrets;
+    # print(secrets.token_urlsafe(32))".
+    cron_secret_key: str = ""
     # Scutul financiar al pilotului: suma bugetelor zilnice angajate pe TOATA
     # platforma (toti clientii, toate propunerile executate sau in curs) nu trece
     # de aici, orice ar permite limita fiecarui client. Moneda contului Meta
@@ -174,7 +183,7 @@ class ServerSettings(BaseSettings):
 
     @field_validator(
         "jev_api_key", "jev_model", "ollama_model", "ollama_keep_alive", "ollama_vision_model",
-        "elevenlabs_api_key",
+        "elevenlabs_api_key", "ollama_embed_model", "cron_secret_key",
     )
     @classmethod
     def _no_blanks(cls, value: str) -> str:

@@ -44,10 +44,12 @@ CCO-ul nu judeca in vid (``creative_context.CreativeEvaluationContext``, adunat 
 ``creative_memory.build_context``):
 
 - **Message Match**: cu avatarul JTBD si ipoteza CMO-ului, Jev spune daca reclama raspunde
-  la o grija a clientului ideal si daca face ce cere ipoteza. Daca nu, ``message_match``
-  cade sub 5 si reclama se respinge - oricat de buna ar fi estetic;
+  la o grija a clientului ideal sau ii arata treaba pe care o vrea facuta, si daca face ce
+  cere ipoteza. Daca nu, ``message_match`` cade sub 5 si reclama se respinge - oricat de
+  buna ar fi estetic;
 - **lectiile din piata**: ce a supraestimat (sau subestimat) CCO-ul pe acest cont, dupa
-  hook rate, CTR si ROAS trimise de PPC, muta scorul hook-ului si al alinierii;
+  hook rate, CTR si ROAS trimise de PPC, muta scorul hook-ului si al alinierii; un concept
+  care a esuat deja (acelasi fisier sau acelasi hook) nu trece de 5;
 - **trendurile** (trends_db): ce merge acum pe Meta/TikTok in industria clientului intra in
   promptul modelului cu vision, ca date;
 - **GEO** (``purpose="page"``): o imagine pentru landing page/blog se judeca dupa cat de
@@ -60,6 +62,7 @@ Imaginea sta in memorie; video-ul se scrie temporar pe disc doar cat il citeste 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import shutil
@@ -77,9 +80,11 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ppc_agent.errors import ProviderError, SetupRequiredError
 from ppc_agent_server.services.creative_context import (
+    FAILED_CONCEPT_CAP,
     CalibratedScore,
     CreativeEvaluationContext,
     Purpose,
+    same_concept,
     score_bias,
 )
 from ppc_agent_server.services.llm_client import (
@@ -246,8 +251,12 @@ class _Facts:
     fake_scarcity: bool = False
     #: Grija clientului ideal la care raspunde reclama; ``""`` = niciuna, ``None`` = neintrebat.
     worry_answered: str | None = None
+    #: Arata treaba pe care o vrea facuta clientul ideal; ``None`` = neintrebat.
+    job_shown: bool | None = None
     #: Face ce cere ipoteza CMO-ului; ``None`` = nu exista ipoteza.
     follows_hypothesis: bool | None = None
+    #: Conceptul: hook-ul principal (sau primul rand din deschidere).
+    concept: str = ""
     shows_data: bool = False
     #: GEO: cifrele cu unitate citite pe imagine si cate cuvinte se citesc.
     metrics_shown: list[str] = field(default_factory=list)
@@ -306,6 +315,8 @@ class CreativeEvaluation(BaseModel):
     context_notes: list[str] = Field(default_factory=list)
     #: Id-ul verdictului pastrat - PPC-ul il citeaza cand trimite cifrele din piata.
     evaluation_id: int | None = None
+    #: Hook-ul principal citit pe creativa: dupa el se recunoaste un concept care a esuat.
+    concept: str = ""
 
 
 _SYSTEM = (
@@ -388,6 +399,12 @@ _SCARCITY = Noul(
 _WORRY = (
     "Which of the ideal customer's worries (`ideal_customer.worries`) does the ad answer "
     "directly - with a fact, a guarantee or a proof that removes it?"
+)
+_JOB = Noul(
+    instructions="Does the ad show the job the ideal customer wants done "
+    "(`ideal_customer.job`) or the result they want (`ideal_customer.wants`)?",
+    true="the ad shows that job or that result, in words or in pictures",
+    false="the ad talks about something else - the company, a generic offer",
 )
 _HYPOTHESIS = Noul(
     instructions="Does the ad do what `cmo_hypothesis.test_variant` asks for?",
@@ -933,6 +950,7 @@ def _observe(
         # Clientul ideal, in cuvintele afacerii (JTBD): cine priveste si de ce se teme.
         customer: dict[str, JsonValue] = {
             "situation": audience.customer_situation,
+            "job": audience.functional_job,
             "wants": audience.desired_progress,
             "worries": list(audience.anxieties),
         }
@@ -966,6 +984,8 @@ def _observe(
         concerns: dict[str, str | None] = {f"worry_{i}": w for i, w in enumerate(worries)}
         concerns["none"] = "the ad answers none of these worries"
         questions["worry"] = Choice(instructions=_WORRY, options=concerns)
+    if ad and audience is not None and (audience.functional_job or audience.desired_progress):
+        questions["job"] = _JOB
     if hypothesis is not None:
         questions["hypothesis"] = _HYPOTHESIS
     if candidates and ad:
@@ -1051,7 +1071,9 @@ def _observe(
         cta_present=yes("cta"),
         fake_scarcity=yes("scarcity"),
         worry_answered=worry,
+        job_shown=yes("job") if "job" in questions else None,
         follows_hypothesis=yes("hypothesis") if hypothesis is not None else None,
+        concept=main_hook or next(iter(_texts(opening)), ""),
         shows_data=seen.shows_data,
         metrics_shown=list(
             dict.fromkeys(m.group().strip() for line in every for m in _METRIC.finditer(line.text))
@@ -1278,18 +1300,28 @@ def _message_match(
     o reclama care vorbeste altcuiva sau testeaza altceva decat strategia.
     """
     hypothesis = context.cmo_hypothesis
-    if seen.worry_answered is None and seen.follows_hypothesis is None:
+    avatar_known = seen.worry_answered is not None or seen.job_shown is not None
+    if not avatar_known and seen.follows_hypothesis is None:
         return None
     misses = 0
-    worries = context.avatar.anxieties if context.avatar is not None else []
-    if seen.worry_answered == "":
+    avatar = context.avatar
+    worries = avatar.anxieties if avatar is not None else []
+    job = (avatar.functional_job or avatar.desired_progress or "") if avatar is not None else ""
+    # Aliniata cu clientul ideal = raspunde la o grija a lui SAU ii arata treaba dorita.
+    if avatar_known and not (seen.worry_answered or seen.job_shown):
         misses += 1
-        listed = ", ".join(f"«{worry}»" for worry in worries)
-        risks.append(
-            f"lipsă de aliniere strategică: reclama nu răspunde la nicio grijă a clientului "
-            f"ideal ({listed})"
+        missing = []
+        if worries:
+            listed = ", ".join(f"«{worry}»" for worry in worries)
+            missing.append(f"nu răspunde la nicio grijă a clientului ideal ({listed})")
+        if job:
+            missing.append(f"nu arată treaba pe care o vrea făcută («{job}»)")
+        risks.append("lipsă de aliniere strategică: reclama " + " și ".join(missing))
+        fixes.append(
+            f"Răspunde în reclamă la grija «{worries[0]}», cu dovada care o stinge"
+            if worries
+            else f"Arată în reclamă treaba pe care o vrea făcută: «{job}»"
         )
-        fixes.append(f"Răspunde în reclamă la grija «{worries[0]}», cu dovada care o stinge")
     if hypothesis is not None and seen.follows_hypothesis is False:
         misses += 1
         risks.append(
@@ -1317,11 +1349,49 @@ def _calibrated(
     if score is None or not shift:
         return score
     verb, move = ("supraestimat", "scad") if shift < 0 else ("subestimat", "cresc")
+    taught = "o lecție" if lessons == 1 else f"{lessons} lecții"
+    points = "un punct" if abs(shift) == 1 else f"{abs(shift)} puncte"
     risks.append(
-        f"pe acest cont, CCO-ul a {verb} {_CALIBRATED_LABELS[name]} în piață ({lessons} "
-        f"lecții de la PPC): {move} {abs(shift)} puncte"
+        f"pe acest cont, CCO-ul a {verb} {_CALIBRATED_LABELS[name]} în piață ({taught} de "
+        f"la PPC): {move} {points}"
     )
     return _clamp(score + shift)
+
+
+def _failed_concept(
+    score: int | None,
+    name: CalibratedScore,
+    context: CreativeEvaluationContext,
+    *,
+    asset_sha256: str,
+    concept: str,
+    risks: list[str],
+) -> int | None:
+    """Un concept care a esuat deja pe cont (acelasi fisier sau acelasi hook) nu trece de 5."""
+    if score is None or score <= FAILED_CONCEPT_CAP:
+        return score
+    failed = next(
+        (
+            lesson
+            for lesson in context.lessons
+            if lesson.score == name
+            and lesson.direction == "overestimated"
+            and (
+                (asset_sha256 and lesson.asset_sha256 == asset_sha256)
+                or same_concept(lesson.concept, concept)
+            )
+        ),
+        None,
+    )
+    if failed is None:
+        return score
+    what = (
+        "aceeași creativă"
+        if failed.asset_sha256 == asset_sha256
+        else f"conceptul «{failed.concept}»"
+    )
+    risks.append(f"{what} a eșuat deja pe acest cont: {failed.lesson}")
+    return FAILED_CONCEPT_CAP
 
 
 def _geo(
@@ -1387,8 +1457,15 @@ def _context_notes(context: CreativeEvaluationContext) -> list[str]:
     if context.avatar is not None and context.avatar.anxieties:
         worries = ", ".join(f"«{worry}»" for worry in context.avatar.anxieties)
         notes.append(f"Clientul ideal (JTBD) ezită din cauza: {worries}.")
+    if context.purpose == "ad" and context.avatar is None:
+        notes.append(
+            "Fără profilul clientului ideal (interviul JTBD): alinierea cu grijile și "
+            "treburile lui nu s-a verificat."
+        )
     if context.cmo_hypothesis is not None:
         notes.append(f"Ipoteza CMO-ului: {context.cmo_hypothesis.hypothesis}")
+    elif context.purpose == "ad":
+        notes.append("Fără ipoteză CMO (nicio barieră dominantă încă): strategia nu s-a verificat.")
     if context.lessons:
         notes.append(
             f"Lecții din piață pe acest cont: {len(context.lessons)}. Ultima: "
@@ -1422,7 +1499,7 @@ def evaluate_creative(
     judge: TextJudge,
     whisper_model: str | Path = "",
     elevenlabs_api_key: str = "",
-    context: CreativeEvaluationContext | None = None,
+    context: CreativeEvaluationContext,
 ) -> dict[str, Any]:
     """Evaluarea CCO-ului: tipul, decizia, scorurile, riscurile si top 3 remedieri.
 
@@ -1434,8 +1511,9 @@ def evaluate_creative(
         whisper_model: Modelul whisper.cpp (ggml) pentru vocea din video, local.
         elevenlabs_api_key: Cu ea, vocea o transcrie ElevenLabs Scribe (in locul lui
             whisper). Fara amandoua, vocea nu se transcrie; restul sunetului se masoara.
-        context: Ce stiu ceilalti agenti (``creative_memory.build_context``): avatarul,
-            ipoteza CMO-ului, lectiile contului, trendurile, scopul (reclama sau pagina).
+        context: Obligatoriu - ce stiu ceilalti agenti (``creative_memory.build_context``):
+            avatarul, ipoteza CMO-ului, lectiile contului, trendurile, scopul (reclama sau
+            pagina).
 
     Raises:
         ValueError: nu e imagine/video suportat, e prea mare/lung sau nu se poate citi.
@@ -1451,7 +1529,6 @@ def evaluate_creative(
     limit = MAX_IMAGE_BYTES if asset == "image" else MAX_VIDEO_BYTES
     if len(data) > limit:
         raise ValueError(f"fișierul depășește {limit // (1024 * 1024)} MB")
-    context = context or CreativeEvaluationContext()
     page = context.purpose == "page"
     if page and asset == "video":
         raise ValueError("imaginile pentru pagini se evaluează doar ca imagine (JPEG/PNG)")
@@ -1472,13 +1549,20 @@ def evaluate_creative(
     fixes: list[str] = []
     trust = _trust(seen, risks, fixes)
     # Strategia inaintea esteticii: o reclama nealiniata se respinge oricat de frumoasa ar fi.
+    sha = hashlib.sha256(data).hexdigest()
     aligned = _message_match(seen, context, risks, fixes)
-    match = _calibrated(aligned, "message_match", context, risks)
+    match = _failed_concept(
+        _calibrated(aligned, "message_match", context, risks), "message_match", context,
+        asset_sha256=sha, concept=seen.concept, risks=risks,
+    )
     hierarchy = _hierarchy(seen, risks, fixes)
     geo = _geo(seen, context, risks, fixes) if page else None
     hook = None
     if not page:
-        hook = _calibrated(_hook(seen, video, risks, fixes), "hook_power", context, risks)
+        hook = _failed_concept(
+            _calibrated(_hook(seen, video, risks, fixes), "hook_power", context, risks),
+            "hook_power", context, asset_sha256=sha, concept=seen.concept, risks=risks,
+        )
     audio = retention = virality = None
     facts = None
     if video is not None:
@@ -1521,6 +1605,7 @@ def evaluate_creative(
         priority_fixes=_unique([*fixes, *seen.fixes])[:3],
         video_facts=facts,
         context_notes=_context_notes(context),
+        concept=seen.concept,
     ).model_dump()
 
 

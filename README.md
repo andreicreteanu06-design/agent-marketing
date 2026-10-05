@@ -1378,9 +1378,33 @@ pe ce s-a sprijinit (`context_notes`) si poarta `evaluation_id`.
   judeca dupa cat de usor o citeaza un AI - cifre cu unitate (3), text lizibil (2),
   diagrama/tabel (2), alt descriptiv (2), firma (1) = `geo_citability`; hook-ul si formatul
   de feed nu conteaza acolo.
-- **trends_db** (`POST`/`GET /api/v1/creative/trends`, agentia): note "ce merge acum" pe
-  Meta/TikTok, pe industrie, cu expirare. Cautate dupa cuvintele industriei clientului (RAG
-  fara embeddings) si puse in promptul modelului cu vision, ca date.
+- **trends_db** (RAG-ul CCO-ului): note "ce merge acum" pe Meta/TikTok, pe industrie. Doua
+  surse: agentia (`POST`/`GET /api/v1/creative/trends`) si automatizarea saptamanala
+  (`POST /api/v1/trends/ingest`, mai jos). Fiecare trend are vectorul lui
+  (`services/embeddings.py`): cu `OLLAMA_EMBED_MODEL` (ex. `nomic-embed-text`), embeddings
+  semantice din Ollama; fara, vectori lexicali locali (n-grame de litere, fara model).
+  Vectorii stau ca JSON langa trend, iar cosinusul se calculeaza in Python - sute de
+  trenduri, nu milioane (pgvector ar cere alta imagine de Postgres). CCO-ul ia trendurile
+  apropiate de industria clientului si le pune in promptul modelului cu vision, ca date.
+- **Concepte esuate**: fiecare verdict pastreaza conceptul (hook-ul principal) si fisierul
+  (SHA-256); daca acelasi fisier sau acelasi hook, spus putin altfel, a esuat deja pe cont,
+  scorul lui nu trece de 5.
+- **Contextul e obligatoriu** la orice evaluare; fara profilul JTBD sau fara ipoteza CMO,
+  `context_notes` spune ce nu s-a putut verifica.
+
+#### Trendurile saptamanii: GitHub Actions, fara n8n
+
+`.github/workflows/trend_ingestion.yml` ruleaza `scripts/trend_scraper.py` in fiecare luni
+la 04:00 UTC (si manual, din tab-ul Actions). Scriptul e Python pur (doar biblioteca
+standard): scrie trendurile in `trends.json` (deocamdata date de proba, in forma
+`TrendPayload`), apoi le trimite la `POST /api/v1/trends/ingest` cu antetul `X-Cron-Secret`.
+Ruta sterge intai ce e mai vechi de 30 de zile, apoi salveaza trendurile cu vectori
+(acelasi titlu pe aceeasi platforma se actualizeaza). Fara `CRON_SECRET_KEY` (minimum 32 de
+caractere) ruta e oprita - 503.
+
+Secretele din GitHub (Settings > Secrets and variables > Actions): `API_URL` - adresa
+publica HTTPS a API-ului (GitHub nu vede `localhost`) - si `CRON_SECRET_KEY`, aceeasi
+valoare ca in `.env`.
 
 Vocea se transcrie cu ElevenLabs Scribe cand e setat `ELEVENLABS_API_KEY` (romana cea mai
 buna; pleaca doar sunetul, dar pleaca la ElevenLabs si costa pe minut), altfel local cu

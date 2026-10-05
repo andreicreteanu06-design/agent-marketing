@@ -46,3 +46,6 @@ ppc_agent_server.db
 
 # Skill-uri locale pentru agenti AI - nu fac parte din aplicatie
 .agents/
+
+# Fisierul intermediar al scripts/trend_scraper.py
+trends.json

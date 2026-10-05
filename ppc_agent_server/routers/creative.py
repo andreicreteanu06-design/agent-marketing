@@ -9,13 +9,15 @@
   Ads Manager - legatura de care are nevoie feedback-ul de noapte.
 - ``POST /feedback`` (agentia, intern): PPC-ul trimite cifrele din piata (hook rate, CTR,
   ROAS); ce a prezis gresit CCO-ul devine o corectie (``performancecalibration``).
-- ``POST``/``GET /trends`` (agentia): trends_db - ce merge acum pe Meta/TikTok.
+- ``POST``/``GET /trends`` (agentia): notele ei in trends_db - ce merge acum pe Meta/TikTok.
+  Trendurile automatizarii saptamanale intra prin ``POST /api/v1/trends/ingest``
+  (``routers/trends.py``).
 """
 
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
@@ -34,6 +36,7 @@ from ppc_agent_server.models import (
 from ppc_agent_server.rate_limit import CREATIVE_HOURLY, too_many_requests
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.services.creative_context import (
+    TREND_TTL_DAYS,
     AdPlatform,
     CalibrationLesson,
     PerformanceFeedback,
@@ -53,11 +56,13 @@ from ppc_agent_server.services.creative_evaluator import (
 )
 from ppc_agent_server.services.creative_memory import (
     FeedbackError,
+    add_agency_trend,
     build_context,
     link_ad,
     record_feedback,
     save_evaluation,
 )
+from ppc_agent_server.services.embeddings import embedder_from_settings
 from ppc_agent_server.settings import get_server_settings
 
 router = APIRouter(prefix="/api/v1/creative", tags=["creative"])
@@ -71,9 +76,9 @@ class AdLink(BaseModel):
 
 
 class TrendCreate(TrendInsight):
-    """O nota noua in trends_db; expira dupa ``valid_days`` (trendurile se schimba repede)."""
+    """O nota noua in trends_db; expira dupa ``valid_days`` (cel mult 30: date proaspete)."""
 
-    valid_days: int = Field(default=90, ge=1, le=365)
+    valid_days: int = Field(default=TREND_TTL_DAYS, ge=1, le=TREND_TTL_DAYS)
 
 
 class TrendRead(TrendInsight):
@@ -134,7 +139,8 @@ def upload_creative(
     account = session.get(ClientAccount, user.client_account_id)
     assert account is not None  # FK-ul garanteaza contul
     context = build_context(
-        session, account, purpose=purpose, platform=platform, alt_text=alt_text
+        session, account, purpose=purpose, platform=platform, alt_text=alt_text,
+        embedder=embedder_from_settings(settings),
     )
     try:
         result = evaluate_creative(
@@ -193,19 +199,14 @@ def add_trend(
     tenant: Annotated[Tenant, Depends(get_current_tenant)],
     session: Annotated[Session, Depends(get_session)],
 ) -> TrendRead:
-    """O nota in trends_db: ce merge acum pe o platforma, intr-o industrie."""
-    trend = CreativeTrend(
-        tenant_id=tenant.id or 0,
-        platform=body.platform,
-        industry=body.industry.strip(),
-        insight=body.insight.strip(),
-        source=body.source.strip(),
-        observed_at=body.observed_at,
-        expires_at=body.observed_at + timedelta(days=body.valid_days),
+    """O nota in trends_db: ce merge acum pe o platforma, intr-o industrie (cu vectorul ei)."""
+    trend = add_agency_trend(
+        session,
+        tenant.id or 0,
+        body,
+        valid_days=body.valid_days,
+        embedder=embedder_from_settings(get_server_settings()),
     )
-    session.add(trend)
-    session.commit()
-    session.refresh(trend)
     return TrendRead.model_validate(trend, from_attributes=True)
 
 

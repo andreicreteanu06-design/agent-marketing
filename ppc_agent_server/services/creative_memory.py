@@ -8,16 +8,21 @@
   corectiile - o lectie pe (evaluare, anunt, metrica), actualizata, nu dublata.
 - :func:`launch_feedback` e partea PPC-ului: din lansarile executate si cifrele de noapte
   ale anunturilor (``AdPerformanceRecord``), payload-urile pentru CCO.
+- :func:`ingest_trends` primeste trendurile automatizarii saptamanale, le da vectori
+  (``embeddings.py``) si sterge ce e mai vechi de 30 de zile (:func:`purge_old_trends`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import delete, func, or_
 from sqlmodel import Session, col, select
 
+from ppc_agent.errors import ProviderError
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.models import (
     AdPerformanceRecord,
@@ -36,14 +41,24 @@ from ppc_agent_server.services.avatar_builder import (
 )
 from ppc_agent_server.services.creative_context import (
     CALIBRATION_WINDOW_DAYS,
+    TREND_TTL_DAYS,
     AdPlatform,
     CalibrationLesson,
     CreativeEvaluationContext,
     PerformanceFeedback,
     PerformanceMetrics,
     Purpose,
+    TrendIngest,
+    TrendIngestResult,
     TrendInsight,
     calibrate,
+)
+from ppc_agent_server.services.embeddings import (
+    HASH_MODEL,
+    Embedder,
+    HashEmbedder,
+    cosine,
+    embed_or_fallback,
 )
 from ppc_agent_server.services.propensity import Experiment, design_experiment, score_propensity
 
@@ -53,6 +68,11 @@ MAX_TRENDS = 3
 _MIN_TERM = 4
 #: Cheia verdictului CCO-ului in ``before`` (aceeasi ca ``routers/campaigns.CREATIVE_KEY``).
 CREATIVE_KEY = "creative_review"
+#: De la ce cosinus un trend e "din industria clientului", pe model. Vectorii lexicali au
+#: cosinusuri mici intre texte de lungimi diferite; cei semantici, mari si intre straini.
+# ponytail: praguri fixe pe model; calibreaza-le pe trendurile reale, daca devine important.
+_MIN_SIMILARITY = {HASH_MODEL: 0.15}
+_DEFAULT_MIN_SIMILARITY = 0.5
 
 
 class FeedbackError(ValueError):
@@ -83,12 +103,22 @@ def account_lessons(
     """Ce a gresit CCO-ul pe acest cont, dupa cifrele din piata (cele mai noi intai)."""
     since = (now or _now()) - timedelta(days=CALIBRATION_WINDOW_DAYS)
     rows = session.exec(
-        select(PerformanceCalibration)
+        select(PerformanceCalibration, CreativeEvaluationRecord)
+        .join(
+            CreativeEvaluationRecord,
+            col(PerformanceCalibration.evaluation_id) == col(CreativeEvaluationRecord.id),
+        )
         .where(PerformanceCalibration.client_account_id == client_account_id)
         .where(PerformanceCalibration.created_at >= since)
         .order_by(col(PerformanceCalibration.created_at).desc())
     ).all()
-    return [CalibrationLesson.model_validate(row, from_attributes=True) for row in rows]
+    # Fiecare lectie stie si ce creativa a esuat: fisierul si conceptul (hook-ul).
+    return [
+        CalibrationLesson.model_validate(row, from_attributes=True).model_copy(
+            update={"asset_sha256": record.asset_sha256, "concept": record.concept}
+        )
+        for row, record in rows
+    ]
 
 
 def _terms(texts: Iterable[str]) -> set[str]:
@@ -101,6 +131,11 @@ def industry_terms(account: ClientAccount) -> set[str]:
     return _terms([account.name, account.brand_name, account.business_kind, *avatar_texts(avatar)])
 
 
+def _trend_text(industry: str, insight: str) -> str:
+    """Ce se transforma in vector: industria si trendul, impreuna."""
+    return f"{industry}. {insight}" if industry else insight
+
+
 def retrieve_trends(
     session: Session,
     tenant_id: int,
@@ -108,31 +143,142 @@ def retrieve_trends(
     *,
     platform: AdPlatform | None,
     today: date,
+    embedder: Embedder | None = None,
     limit: int = MAX_TRENDS,
 ) -> list[TrendInsight]:
-    """Notele din trends_db care se potrivesc industriei (RAG pe cuvinte, fara embeddings).
+    """RAG-ul CCO-ului: trendurile agentiei si ale automatizarii, potrivite industriei.
 
-    Doar cele neexpirate, de pe platforma creativei sau pentru toate. O nota cu industria
-    goala e generala: intra dupa cele potrivite. Ordinea: cate cuvinte au in comun, apoi
-    cele mai noi.
+    Un trend intra cand vectorul lui e aproape de industria clientului (acelasi model de
+    embeddings) sau cand au cuvinte in comun; unul cu industria goala e general si intra
+    dupa cele potrivite. Doar neexpirate, de pe platforma creativei sau pentru toate.
+    Ordinea: potrivite intai, apoi similaritatea, cuvintele comune, cele mai noi.
     """
     rows = session.exec(
         select(CreativeTrend)
-        .where(CreativeTrend.tenant_id == tenant_id)
+        .where(
+            or_(col(CreativeTrend.tenant_id) == tenant_id, col(CreativeTrend.tenant_id).is_(None))
+        )
         .where(CreativeTrend.expires_at >= today)
     ).all()
-    scored: list[tuple[int, date, CreativeTrend]] = []
+    query = " ".join(sorted(terms))
+    vectors: dict[str, list[float] | None] = {}
+
+    def query_vector(model: str) -> list[float] | None:
+        if model not in vectors:
+            vectors[model] = None
+            if model == HASH_MODEL:
+                vectors[model] = HashEmbedder().embed([query])[0]
+            elif embedder is not None and model == embedder.model:
+                # Ollama cazut: raman cuvintele comune.
+                with suppress(ProviderError):
+                    vectors[model] = embedder.embed([query])[0]
+        return vectors[model]
+
+    scored: list[tuple[tuple[int, float, int, date], CreativeTrend]] = []
     for row in rows:
         if platform is not None and row.platform not in (platform, "all"):
             continue
         overlap = len(_terms([row.industry]) & terms)
-        if row.industry.strip() and not overlap:
+        similarity = 0.0
+        vector = query_vector(row.embedding_model) if row.embedding and query else None
+        if vector is not None and row.embedding is not None:
+            similarity = cosine(vector, row.embedding)
+        threshold = _MIN_SIMILARITY.get(row.embedding_model, _DEFAULT_MIN_SIMILARITY)
+        matched = overlap > 0 or (vector is not None and similarity >= threshold)
+        if not matched and row.industry.strip():
             continue  # alta industrie
-        scored.append((overlap, row.observed_at, row))
-    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        scored.append(((int(matched), similarity, overlap, row.observed_at), row))
+    scored.sort(key=lambda item: item[0], reverse=True)
     return [
-        TrendInsight.model_validate(row, from_attributes=True) for _, _, row in scored[:limit]
+        TrendInsight.model_validate(row, from_attributes=True) for _, row in scored[:limit]
     ]
+
+
+def purge_old_trends(session: Session, today: date) -> int:
+    """Sterge trendurile mai vechi de ``TREND_TTL_DAYS`` sau expirate; intoarce cate."""
+    oldest = today - timedelta(days=TREND_TTL_DAYS)
+    result = session.exec(
+        delete(CreativeTrend).where(
+            or_(col(CreativeTrend.observed_at) < oldest, col(CreativeTrend.expires_at) < today)
+        )
+    )
+    session.commit()
+    return int(result.rowcount or 0)
+
+
+def ingest_trends(
+    session: Session, body: TrendIngest, *, embedder: Embedder, today: date
+) -> TrendIngestResult:
+    """Trendurile automatizarii saptamanale: curata ce e vechi, apoi le salveaza cu vectori.
+
+    Acelasi titlu pe aceeasi platforma se actualizeaza (cron-ul retrimite ce inca merge),
+    nu se dubleaza. Un trend mai vechi de 30 de zile nu mai intra deloc.
+    """
+    deleted = purge_old_trends(session, today)
+    oldest = today - timedelta(days=TREND_TTL_DAYS)
+    fresh = [trend for trend in body.trends if (trend.observed_at or today) >= oldest]
+    model, vectors = embed_or_fallback(
+        embedder, [_trend_text(trend.industry, trend.insight()) for trend in fresh]
+    )
+    created = updated = 0
+    for trend, vector in zip(fresh, vectors, strict=True):
+        observed = trend.observed_at or today
+        row = session.exec(
+            select(CreativeTrend)
+            .where(col(CreativeTrend.tenant_id).is_(None))
+            .where(CreativeTrend.platform == trend.platform)
+            .where(func.lower(CreativeTrend.title) == trend.title.strip().lower())
+        ).first()
+        if row is None:
+            row = CreativeTrend(insight="", observed_at=observed, expires_at=observed)
+            created += 1
+        else:
+            updated += 1
+        row.platform = trend.platform
+        row.industry = trend.industry.strip()
+        row.title = trend.title.strip()
+        row.hook = trend.hook.strip()
+        row.visual_format = trend.visual_format.strip()
+        row.virality_reason = trend.virality_reason.strip()
+        row.insight = trend.insight()
+        row.source = trend.source.strip()
+        row.observed_at = observed
+        row.expires_at = observed + timedelta(days=TREND_TTL_DAYS)
+        row.embedding = vector
+        row.embedding_model = model
+        session.add(row)
+    session.commit()
+    return TrendIngestResult(
+        received=len(body.trends),
+        created=created,
+        updated=updated,
+        expired_deleted=deleted,
+        embedding_model=model,
+    )
+
+
+def add_agency_trend(
+    session: Session, tenant_id: int, trend: TrendInsight, *, valid_days: int, embedder: Embedder
+) -> CreativeTrend:
+    """O nota a agentiei in trends_db, cu vectorul ei."""
+    model, [vector] = embed_or_fallback(
+        embedder, [_trend_text(trend.industry.strip(), trend.insight.strip())]
+    )
+    row = CreativeTrend(
+        tenant_id=tenant_id,
+        platform=trend.platform,
+        industry=trend.industry.strip(),
+        insight=trend.insight.strip(),
+        source=trend.source.strip(),
+        observed_at=trend.observed_at,
+        expires_at=trend.observed_at + timedelta(days=valid_days),
+        embedding=vector,
+        embedding_model=model,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
 
 
 def build_context(
@@ -143,8 +289,13 @@ def build_context(
     platform: AdPlatform | None = None,
     alt_text: str | None = None,
     now: datetime | None = None,
+    embedder: Embedder | None = None,
 ) -> CreativeEvaluationContext:
-    """Tot ce trebuie sa stie CCO-ul de la ceilalti agenti inainte de evaluare."""
+    """Tot ce trebuie sa stie CCO-ul de la ceilalti agenti inainte de evaluare.
+
+    ``embedder`` = modelul de embeddings de pe server (``embedder_from_settings``); fara
+    el, se folosesc doar trendurile cu vectori lexicali si cuvintele comune.
+    """
     moment = now or _now()
     return CreativeEvaluationContext(
         purpose=purpose,
@@ -158,6 +309,7 @@ def build_context(
             industry_terms(account),
             platform=platform,
             today=moment.date(),
+            embedder=embedder,
         )
         if purpose == "ad"
         else [],
@@ -181,6 +333,7 @@ def save_evaluation(
         platform=context.platform or "",
         decision=str(result["decision"]),
         scores=dict(result["scores"]),
+        concept=str(result.get("concept") or "")[:300],
     )
     session.add(record)
     session.commit()
@@ -214,6 +367,8 @@ def record_feedback(
         link_ad(session, record, platform=feedback.platform, ad_id=feedback.ad_id)
     lessons = calibrate(record.scores, record.asset_type, feedback)
     for lesson in lessons:
+        # Fisierul si conceptul stau pe evaluare, nu pe fiecare corectie.
+        fields = lesson.model_dump(exclude={"asset_sha256", "concept"})
         row = session.exec(
             select(PerformanceCalibration)
             .where(PerformanceCalibration.evaluation_id == feedback.evaluation_id)
@@ -224,9 +379,9 @@ def record_feedback(
             evaluation_id=feedback.evaluation_id,
             platform=feedback.platform,
             ad_id=feedback.ad_id,
-            **lesson.model_dump(),
+            **fields,
         )
-        for field, value in lesson.model_dump().items():
+        for field, value in fields.items():
             setattr(row, field, value)
         row.created_at = _now()
         session.add(row)

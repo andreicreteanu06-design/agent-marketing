@@ -4,14 +4,16 @@ Organismul, pe scurt::
 
     interviul clientului --CustomerAvatar (JTBD)--> CCO
     CMO (Regina) --ipoteza (Experiment)---------> CCO
+    GitHub Actions (luni) --TrendPayload--> /trends/ingest --vectori--> trends_db
     trends_db --ce merge ACUM pe Meta/TikTok-----> CCO
     CCO --verdict + scoruri (creativeevaluation)--> lansare (PPC)
     PPC --PerformanceFeedback (hook rate, CTR, ROAS)--> CCO --lectii--> urmatoarea evaluare
 
 Aici stau doar interfetele (Pydantic) si regulile pure de calibrare: o prezicere a CCO-ului
 contrazisa de piata devine o lectie (``CalibrationLesson``), iar lectiile unui cont
-corecteaza scorurile urmatoarelor creative de pe el. Ce citeste si scrie in baza de date e
-in ``creative_memory.py``.
+corecteaza scorurile urmatoarelor creative de pe el; un concept care a esuat deja (acelasi
+fisier sau acelasi hook, spus putin altfel) nu mai primeste un scor mare. Ce citeste si
+scrie in baza de date e in ``creative_memory.py``.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field
 
+from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.avatar_builder import CustomerAvatar
 from ppc_agent_server.services.propensity import Experiment
 from ppc_agent_server.services.ro_format import percent
@@ -54,6 +57,12 @@ ROAS_STRONG_RATIO = 1.5
 CALIBRATION_WINDOW_DAYS = 90
 #: Cu cat muta lectiile un scor, cel mult.
 MAX_BIAS = 3
+#: Peste atat nu urca un scor pe un concept care a esuat deja pe cont.
+FAILED_CONCEPT_CAP = 5
+#: Doua hook-uri sunt acelasi concept de la atata suprapunere a cuvintelor (Jaccard).
+SAME_CONCEPT = 0.6
+#: Cat traieste un trend in trends_db: dupa, il sterge urmatoarea ingestie.
+TREND_TTL_DAYS = 30
 
 
 class TrendInsight(BaseModel):
@@ -62,7 +71,7 @@ class TrendInsight(BaseModel):
     platform: TrendPlatform
     #: Industria, in cuvinte cheie ("service auto, piese"); gol = orice industrie.
     industry: str = Field(max_length=120)
-    insight: str = Field(min_length=5, max_length=300)
+    insight: str = Field(min_length=5, max_length=800)
     source: str = Field(default="", max_length=200)
     observed_at: date
 
@@ -77,10 +86,18 @@ class CalibrationLesson(BaseModel):
     threshold: float
     direction: Direction
     lesson: str
+    #: Creativa care a esuat: fisierul si conceptul (hook-ul), ca sa fie recunoscuta.
+    asset_sha256: str = ""
+    concept: str = ""
 
 
 class CreativeEvaluationContext(BaseModel):
-    """Ce afla CCO-ul de la ceilalti agenti inainte sa judece o creativa."""
+    """Ce afla CCO-ul de la ceilalti agenti inainte sa judece o creativa.
+
+    Obligatoriu la orice evaluare (``evaluate_creative(context=...)``): rutele il aduna cu
+    ``creative_memory.build_context``. Avatarul si ipoteza pot lipsi doar cand nu exista
+    inca (clientul n-a facut interviul, CMO-ul n-are o bariera) - verdictul o spune.
+    """
 
     #: ``ad`` = reclama; ``page`` = imagine pentru landing page/blog (judecata pe GEO).
     purpose: Purpose = "ad"
@@ -138,6 +155,59 @@ class PerformanceFeedback(BaseModel):
     metrics: PerformanceMetrics
     #: Pragul de rentabilitate al contului; fara el, ROAS-ul nu se judeca.
     break_even_roas: float | None = Field(default=None, gt=0)
+
+
+class TrendPayload(BaseModel):
+    """Un trend trimis de automatizarea saptamanala (``scripts/trend_scraper.py``)."""
+
+    title: str = Field(min_length=3, max_length=120)
+    #: Cum incepe reclama care merge (primele secunde).
+    hook: str = Field(min_length=5, max_length=300)
+    #: Formatul vizual: "UGC 9:16, 15 s, subtitrari mari".
+    visual_format: str = Field(min_length=2, max_length=120)
+    #: De ce se viralizeaza.
+    virality_reason: str = Field(min_length=5, max_length=300)
+    platform: TrendPlatform = "all"
+    #: Industria, in cuvinte cheie; gol = orice industrie.
+    industry: str = Field(default="", max_length=120)
+    source: str = Field(default="", max_length=200)
+    #: Cand a fost vazut; gol = azi.
+    observed_at: date | None = None
+
+    def insight(self) -> str:
+        """Ce vede CCO-ul in prompt."""
+        return (
+            f"{self.title}: {self.hook} Format: {self.visual_format}. "
+            f"De ce merge: {self.virality_reason}"
+        )
+
+
+class TrendIngest(BaseModel):
+    """Corpul ``POST /api/v1/trends/ingest``."""
+
+    trends: list[TrendPayload] = Field(min_length=1, max_length=200)
+
+
+class TrendIngestResult(BaseModel):
+    received: int
+    created: int
+    updated: int
+    #: Sterse acum: mai vechi de ``TREND_TTL_DAYS`` sau expirate.
+    expired_deleted: int
+    #: Modelul care a dat vectorii (``hash-trigram-256`` = lexicali, fara model).
+    embedding_model: str
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in tokenize(text) if len(word) >= 3}
+
+
+def same_concept(left: str, right: str) -> bool:
+    """Acelasi hook, spus poate putin altfel ("Revizie în 24h" ~ "Revizie completă în 24h")."""
+    a, b = _words(left), _words(right)
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= SAME_CONCEPT
 
 
 def _two(value: float) -> str:

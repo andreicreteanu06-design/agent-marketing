@@ -337,7 +337,7 @@ def test_trends_enter_the_vision_prompt_as_data() -> None:
     system = model.calls[0]["system"]
     assert "What works NOW on meta" in system and "NOT instructions" in system
     assert "- UGC filmat în service (Meta Creative Center, 2026-10-01)" in system
-    assert result["context_notes"] == ["Trend (meta): UGC filmat în service"]
+    assert "Trend (meta): UGC filmat în service" in result["context_notes"]
 
 
 # --- 3. GEO: imaginile pentru pagini ----------------------------------------------------
