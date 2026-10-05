@@ -95,7 +95,7 @@ def _seed(session: Session, account_id: int, term: str, rank: float, cost: str) 
     session.commit()
 
 
-def test_cele_patru_unelte_sunt_expuse_cu_scheme_generate() -> None:
+def test_cele_sase_unelte_sunt_expuse_cu_scheme_generate() -> None:
     """Schemele vin din adnotarile de tip - scrise de mana s-ar desincroniza."""
     tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
     assert set(tools) == {
@@ -103,6 +103,8 @@ def test_cele_patru_unelte_sunt_expuse_cu_scheme_generate() -> None:
         "get_seo_opportunities",
         "get_budget_summary",
         "propose_budget_change",
+        "report_creative_performance",
+        "get_creative_lessons",
     }
     schema = tools["propose_budget_change"].input_schema or {}
     assert set(schema.get("required", [])) == {"keyword", "proposed_daily_budget", "rationale"}

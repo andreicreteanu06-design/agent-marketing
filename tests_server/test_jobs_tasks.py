@@ -40,7 +40,10 @@ from ppc_agent_server.security import encrypt_secret
 from ppc_agent_server.services.queen_signals import DbFinancialSignals
 
 #: Pasii mentenantei de noapte per client, in ordine.
-STEPS = {"sync", "propose", "fatigue_check", "speed_check", "site_audit", "tracking_contract"}
+STEPS = {
+    "sync", "creative_feedback", "propose", "fatigue_check", "speed_check", "site_audit",
+    "tracking_contract",
+}
 
 def test_default_lead_value_feeds_budget_target_cpa() -> None:
     """default_lead_value alimenteaza target_cpa - activeaza sfatul de capacitate

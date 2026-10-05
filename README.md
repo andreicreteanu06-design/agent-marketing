@@ -1354,6 +1354,34 @@ sensibile. Scorurile si decizia le calculeaza codul:
   fenta 3 + re-agatarile 2; e un potential, nu opreste testul. Cu sunet netranscris,
   povestea nu se judeca (`virality` = null, hook-ul neplafonat): ar putea sta in voce.
 
+#### CCO-ul in consiliu: context, feedback din piata, GEO, trends_db
+
+Inainte de evaluare, CCO-ul afla de la ceilalti agenti (`services/creative_memory.py`,
+interfetele in `services/creative_context.py`): `CreativeEvaluationContext` = avatarul JTBD,
+ipoteza CMO-ului (publicata de directiva de noapte pe `clientaccount.cmo_hypothesis`; fara
+ea, calculata din interviu), lectiile din piata ale contului si trendurile. Raspunsul spune
+pe ce s-a sprijinit (`context_notes`) si poarta `evaluation_id`.
+
+- **Message Match** (`message_match`): Jev spune la ce grija a clientului ideal raspunde
+  reclama si daca face varianta ceruta de ipoteza CMO-ului. O nealiniere = 4, doua = 1:
+  reclama se respinge (`REVISE_BEFORE_TEST`, deci si lansarea), oricat de frumoasa ar fi.
+- **Feedback-ul PPC** (`PerformanceFeedback`): verdictele se pastreaza
+  (`creativeevaluation`); noaptea, dupa sincronizare, PPC-ul trimite cifrele anunturilor in
+  care au ajuns (lansate de platforma sau legate de client cu
+  `POST /api/v1/creative/evaluations/{id}/ad`). Intern: `POST /api/v1/creative/feedback`
+  (cheia agentiei) sau unealta MCP `report_creative_performance`. Hook 8+ cu hook rate sub
+  20% (video; CTR sub 0,8% la imagini) sau aliniere 8+ cu ROAS sub prag = supraestimare;
+  invers, subestimare - cate o corectie (`performancecalibration`), din 1.000 de afisari /
+  100 de click-uri. La urmatoarea evaluare pe cont, lectiile din 90 de zile muta hook-ul si
+  alinierea cu pana la 3 puncte (`get_creative_lessons` le arata).
+- **GEO** (`purpose=page`, cu `alt_text` din pagina): o imagine pentru landing page/blog se
+  judeca dupa cat de usor o citeaza un AI - cifre cu unitate (3), text lizibil (2),
+  diagrama/tabel (2), alt descriptiv (2), firma (1) = `geo_citability`; hook-ul si formatul
+  de feed nu conteaza acolo.
+- **trends_db** (`POST`/`GET /api/v1/creative/trends`, agentia): note "ce merge acum" pe
+  Meta/TikTok, pe industrie, cu expirare. Cautate dupa cuvintele industriei clientului (RAG
+  fara embeddings) si puse in promptul modelului cu vision, ca date.
+
 Vocea se transcrie cu ElevenLabs Scribe cand e setat `ELEVENLABS_API_KEY` (romana cea mai
 buna; pleaca doar sunetul, dar pleaca la ElevenLabs si costa pe minut), altfel local cu
 whisper.cpp din ffmpeg (`WHISPER_MODEL`, ex. `ggml-small-q5_1.bin`, ~190 MB de pe

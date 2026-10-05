@@ -26,6 +26,7 @@ from ppc_agent.errors import ProviderError, SetupRequiredError
 from ppc_agent_server.models import Tenant
 from ppc_agent_server.routers.creative import get_text_judge, get_vision_model
 from ppc_agent_server.services.avatar_builder import CustomerAvatar
+from ppc_agent_server.services.creative_context import CreativeEvaluationContext
 from ppc_agent_server.services.creative_evaluator import (
     MAX_IMAGE_BYTES,
     VISION_MAX_GENERATION_SECONDS,
@@ -51,7 +52,10 @@ from ppc_agent_server.services.llm_client import (
 from ppc_agent_server.settings import get_server_settings
 from tests_server.llm_fakes import FakeJev
 
-KEYS = {"asset_type", "decision", "scores", "detected_risks", "priority_fixes", "video_facts"}
+KEYS = {
+    "asset_type", "purpose", "decision", "scores", "detected_risks", "priority_fixes",
+    "video_facts", "context_notes", "evaluation_id",
+}
 #: Tesseract-ul adevarat (fixture-ul ``ocr`` il inlocuieste in toate celelalte teste).
 REAL_READ_TEXT = ce._read_text
 
@@ -109,6 +113,7 @@ def ocr(monkeypatch: pytest.MonkeyPatch) -> _FakeOcr:
 JUDGE_DEFAULTS: dict[str, float | str] = {
     "domain": "other", "brand": 0.9, "conditions": 0.9, "authentic": 0.1, "typos": 0,
     "hook": "line_0", "intro": 0.1, "captions": 0.1, "cta": 0.9, "scarcity": 0.1,
+    "worry": "worry_0", "hypothesis": 0.9,
     "avatar": 0.9, "at_stake": 0.9, "urgency": 0.9, "big_question": 0.9, "headfake": 0.1,
     "rehooks": 0.9,
 }
@@ -239,6 +244,8 @@ def test_o_creativa_curata_e_eligibila_pentru_test() -> None:
         "audio": None,  # doar la video
         "retention": None,
         "virality": None,
+        "message_match": None,  # fara avatar si fara ipoteza CMO
+        "geo_citability": None,  # doar la imaginile pentru pagini
     }
     assert result["detected_risks"] == []
     assert result["priority_fixes"] == ["Crește contrastul butonului"]
@@ -257,6 +264,8 @@ def test_anuntul_de_recrutare_fara_firma_cere_om_in_bucla() -> None:
         "audio": None,
         "retention": None,
         "virality": None,
+        "message_match": None,
+        "geo_citability": None,
     }
     risks = result["detected_risks"]
     assert risks[0] == "domeniu sensibil (recrutare): încrederea decide"
@@ -336,7 +345,7 @@ def test_jev_vede_clientul_ideal_spus_de_client() -> None:
     audience = CustomerAvatar(
         customer_situation="i s-a stricat mașina înainte de concediu", anxieties=["prețul"]
     )
-    _run(_png(), judge=judge, audience=audience)
+    _run(_png(), judge=judge, context=CreativeEvaluationContext(avatar=audience))
 
     state = judge.calls[0][0]
     assert state["ideal_customer"] == {

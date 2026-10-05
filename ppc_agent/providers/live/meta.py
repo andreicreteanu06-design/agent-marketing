@@ -136,6 +136,8 @@ class AdInsight:
     conversions: float = 0.0
     revenue: float = 0.0
     frequency_7d: float = 0.0
+    #: Vizionarile de 3 secunde (``video_view``), de la lansare; 0 la imagini.
+    video_views: int = 0
     days: tuple[AdDay, ...] = ()
 
 
@@ -163,6 +165,15 @@ def _counted(actions: list[dict[str, Any]] | None) -> float:
     return sum(
         next((by_type[kind] for kind in family if kind in by_type), 0.0)
         for family in _CONVERSION_FAMILIES
+    )
+
+
+def _video_views(row: dict[str, Any]) -> int:
+    """Vizionarile de 3 secunde dintr-un rand Insights (actiunea ``video_view``)."""
+    return sum(
+        round(float(action.get("value", 0)))
+        for action in row.get("actions") or []
+        if action.get("action_type") == "video_view"
     )
 
 
@@ -641,6 +652,7 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                         conversions=conversions,
                         revenue=revenue,
                         frequency_7d=float(week.get(ad_id, {}).get("frequency", 0.0)),
+                        video_views=_video_views(row),
                         days=tuple(sorted(by_day.get(ad_id, []), key=lambda day: day.day)),
                     )
                 )

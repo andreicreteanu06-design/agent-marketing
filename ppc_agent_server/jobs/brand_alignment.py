@@ -26,7 +26,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
-from ppc_agent_server.models import ChangeOp, ChangeStatus, ProposedChange
+from ppc_agent_server.models import ChangeOp, ChangeStatus, ClientAccount, ProposedChange
 from ppc_agent_server.services.propensity import SENSITIVE_LABELS
 from ppc_agent_server.services.queen_agent import (
     AdAlignment,
@@ -131,6 +131,23 @@ def to_rewrite_proposal(
     )
 
 
+def publish_hypothesis(
+    session: Session, client_account_id: int, directive: BrandStrategyDirective
+) -> None:
+    """CMO -> CCO: ipoteza de acum (experimentul pe bariera dominanta), pe contul clientului.
+
+    CCO-ul o citeste inainte de fiecare evaluare (``creative_memory.build_context``) si
+    respinge reclamele care nu o respecta. Fara experiment, ipoteza veche se sterge.
+    """
+    account = session.get(ClientAccount, client_account_id)
+    if account is None:
+        return
+    experiment = directive.experiment
+    account.cmo_hypothesis = experiment.model_dump(mode="json") if experiment else None
+    session.add(account)
+    session.commit()
+
+
 def apply_brand_directive(
     session: Session, client_account_id: int, *, strategist: BrandStrategist | None = None
 ) -> dict[str, Any]:
@@ -141,6 +158,7 @@ def apply_brand_directive(
         s-au creat. Nu aplica nimic pe vreo platforma.
     """
     directive = consult_queen(session, client_account_id, strategist=strategist)
+    publish_hypothesis(session, client_account_id, directive)
     misaligned = directive.misaligned_ads
     summary: dict[str, Any] = {
         "status": directive.status,

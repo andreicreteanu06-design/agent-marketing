@@ -109,6 +109,8 @@ def test_un_agent_extern_vorbeste_mcp_standard_si_vede_doar_clientul_cheii(
         "get_seo_opportunities",
         "get_budget_summary",
         "propose_budget_change",
+        "report_creative_performance",
+        "get_creative_lessons",
     }
     summary = _rpc(client, key, "tools/call", {"name": "get_budget_summary", "arguments": {}})
     assert summary["structuredContent"]["client"] == "Service Demo SRL"

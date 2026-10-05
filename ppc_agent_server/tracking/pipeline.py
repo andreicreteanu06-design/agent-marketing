@@ -134,6 +134,7 @@ def apply_platform_insight(
     record.ctr = _ctr(insight.clicks, insight.impressions)
     record.account_median_ctr = account_median_ctr
     record.frequency_7d = insight.frequency_7d
+    record.video_views = insight.video_views
     record.platform_conversions = round(insight.conversions)
     record.platform_revenue = Decimal(str(insight.revenue)).quantize(_CENT)
 

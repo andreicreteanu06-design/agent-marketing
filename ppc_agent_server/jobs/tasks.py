@@ -68,6 +68,7 @@ from ppc_agent_server.services.council_guard import (
     council_context,
     guard_changes,
 )
+from ppc_agent_server.services.creative_memory import launch_feedback, record_feedback
 from ppc_agent_server.services.memory import memory_line
 from ppc_agent_server.services.queen_signals import (
     DbFinancialSignals,
@@ -937,6 +938,28 @@ def run_site_audit_job(
         }
 
 
+def run_creative_feedback_job(*, client_account_id: int) -> dict[str, Any]:
+    """PPC -> CCO: cifrele de noapte ale anunturilor in care au ajuns creative judecate.
+
+    Dupa sincronizare (cifrele proaspete din Meta): fiecare anunt legat de o evaluare a
+    CCO-ului (lansat de platforma sau legat de client) devine un ``PerformanceFeedback``;
+    ce a prezis gresit CCO-ul se scrie ca o corectie, citita la urmatoarea evaluare.
+    """
+    with Session(get_engine()) as session:
+        account = _require_client(session, client_account_id)
+        sent = launch_feedback(session, account)
+        lessons = [
+            lesson
+            for feedback in sent
+            for lesson in record_feedback(session, client_account_id, feedback)
+        ]
+    return {
+        "feedback": len(sent),
+        "lessons": len(lessons),
+        "overestimated": sum(lesson.direction == "overestimated" for lesson in lessons),
+    }
+
+
 def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
     """Mentenanta de noapte pentru UN client: sincronizare, viteza, audit, E2E, propuneri, oboseala.
 
@@ -951,6 +974,7 @@ def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for step_name, job in (
         ("sync", run_metrics_sync_job),
+        ("creative_feedback", run_creative_feedback_job),
         ("speed_check", run_speed_check_job),
         ("site_audit", run_site_audit_job),
         ("tracking_contract", run_tracking_contract_job),

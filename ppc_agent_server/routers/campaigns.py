@@ -15,6 +15,7 @@ activarea in Ads Manager. Cu oprirea de urgenta activa, nu se depune nimic (423)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Annotated, Any
@@ -44,20 +45,18 @@ from ppc_agent_server.models import (
 from ppc_agent_server.routers import queen
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
-from ppc_agent_server.services.avatar_builder import (
-    CustomerAvatar,
-    avatar_from_answers,
-    profile_missing,
-)
+from ppc_agent_server.services.avatar_builder import profile_missing
 from ppc_agent_server.services.client_intake import launch_economics, open_intake
 from ppc_agent_server.services.council import CouncilReply
 from ppc_agent_server.services.council_guard import DECIDED_BY
+from ppc_agent_server.services.creative_context import CreativeEvaluationContext
 from ppc_agent_server.services.creative_evaluator import (
     MAX_IMAGE_BYTES,
     evaluate_creative,
     text_judge_from_settings,
     vision_model_from_settings,
 )
+from ppc_agent_server.services.creative_memory import build_context, save_evaluation
 from ppc_agent_server.services.emergency_stop import require_running
 from ppc_agent_server.services.launch_council import (
     REVIEW_KEY,
@@ -95,8 +94,9 @@ def get_launch_council() -> Council:
 
 #: CCO-ul pe imaginea unei lansari: verdictul (``CreativeEvaluation``) sau, cand nu poate
 #: rula, ``{"unavailable": motiv}``.
-#: Imaginea lansarii si clientul ideal (JTBD) -> verdictul CCO-ului.
-CreativeReview = Callable[[str, CustomerAvatar | None], dict[str, Any]]
+#: Imaginea lansarii si ce stiu ceilalti agenti (avatar, ipoteza CMO, lectii, trenduri)
+#: -> verdictul CCO-ului, cu ``asset_sha256`` cand evaluarea a rulat.
+CreativeReview = Callable[[str, CreativeEvaluationContext], dict[str, Any]]
 CREATIVE_KEY = "creative_review"
 #: Verdictul care opreste lansarea: o creativa slaba se repara inainte sa cheltuie bani.
 #: "HUMAN_REVIEW_REQUIRED" nu opreste - aprobarea e chiar acea verificare umana.
@@ -111,18 +111,19 @@ def get_creative_review() -> CreativeReview:
     opreste lansarea: avizul spune ca evaluarea lipseste, iar omul decide la aprobare.
     """
 
-    def evaluate(image_url: str, audience: CustomerAvatar | None) -> dict[str, Any]:
+    def evaluate(image_url: str, context: CreativeEvaluationContext) -> dict[str, Any]:
         settings = get_server_settings()
         try:
             image = asyncio.run(download_image(image_url, max_bytes=MAX_IMAGE_BYTES))
-            return evaluate_creative(
+            result = evaluate_creative(
                 image,
                 model=vision_model_from_settings(settings),
                 judge=text_judge_from_settings(settings),
                 whisper_model=settings.whisper_model,
                 elevenlabs_api_key=settings.elevenlabs_api_key,
-                audience=audience,
+                context=context,
             )
+            return {**result, "asset_sha256": hashlib.sha256(image).hexdigest()}
         except (PpcAgentError, ValueError) as exc:
             return {"unavailable": str(exc)[:300]}
 
@@ -304,7 +305,13 @@ def propose_launch(
         ) from exc
     # Dupa deliberare: o taietura a CFO-ului de acum e deja in memorie, deci conteaza.
     block = growth_block(session, client_id)
-    creative = creative_review(spec.image_url, avatar_from_answers(account.avatar_answers))
+    # CCO-ul afla de la ceilalti agenti pe ce sa judece: clientul ideal, ipoteza CMO-ului,
+    # lectiile din piata ale contului, ce merge acum pe Meta.
+    context = build_context(session, account, purpose="ad", platform="meta")
+    creative = creative_review(spec.image_url, context)
+    sha = str(creative.pop("asset_sha256", ""))
+    if creative.get("decision") is not None:  # verdictul se pastreaza: PPC-ul ii va raspunde
+        creative["evaluation_id"] = save_evaluation(session, client_id, sha, creative, context)
 
     proposal = ProposedChange(
         client_account_id=client_id,

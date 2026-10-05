@@ -285,6 +285,11 @@ class ClientAccount(SQLModel, table=True):
     avatar_answers: dict[str, Any] | None = Field(
         default=None, sa_column=Column(JSON, nullable=True)
     )
+    #: Ipoteza publicata de CMO (``propensity.Experiment``) la ultima directiva de noapte;
+    #: CCO-ul verifica pe ea daca o creativa respecta strategia.
+    cmo_hypothesis: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     created_at: datetime = Field(default_factory=_now)
 
     tenant: Tenant = Relationship(back_populates="client_accounts")
@@ -422,6 +427,75 @@ class CreativeArtifact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
 
     client_account: ClientAccount = Relationship(back_populates="creative_artifacts")
+
+
+class CreativeEvaluationRecord(SQLModel, table=True):
+    """Un verdict al CCO-ului, pastrat ca PPC-ul sa-i poata trimite inapoi cifrele din piata.
+
+    Legatura cu reclama (``ad_id``) vine la lansare (din propunerea executata) sau de la
+    client, pentru o creativa lansata direct din Ads Manager.
+    """
+
+    __tablename__ = "creativeevaluation"
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    #: SHA-256 al fisierului: aceeasi creativa se recunoaste si fara nume.
+    asset_sha256: str = Field(index=True)
+    asset_type: str
+    #: ``ad`` sau ``page`` (imagine pentru landing page/blog, judecata pe GEO).
+    purpose: str = "ad"
+    platform: str = ""
+    decision: str
+    scores: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    #: Platforma si anuntul in care a ajuns creativa (gol = nelansata inca).
+    ad_platform: str = ""
+    ad_id: str = Field(default="", index=True)
+    created_at: datetime = Field(default_factory=_now)
+
+
+class PerformanceCalibration(SQLModel, table=True):
+    """O corectie din piata (Performance Calibration): CCO-ul a promis X, platforma a dat Y.
+
+    O lectie pe (evaluare, anunt, metrica) - o noapte noua o actualizeaza, nu o dubleaza.
+    CCO-ul le citeste pe ale contului inainte de fiecare evaluare
+    (``services/creative_memory.py``).
+    """
+
+    __table_args__ = (UniqueConstraint("evaluation_id", "ad_id", "metric"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    evaluation_id: int = Field(foreign_key="creativeevaluation.id", index=True)
+    platform: str
+    ad_id: str
+    score: str
+    predicted: int
+    metric: str
+    actual: float
+    threshold: float
+    direction: str
+    lesson: str
+    created_at: datetime = Field(default_factory=_now)
+
+
+class CreativeTrend(SQLModel, table=True):
+    """trends_db: ce merge ACUM pe Meta/TikTok intr-o industrie - stiinta agentiei.
+
+    Notele le adauga agentia (``POST /api/v1/creative/trends``); CCO-ul le cauta dupa
+    industria clientului inainte de evaluare (RAG fara embeddings: suprapunere de
+    cuvinte, ca ``copywriter/swipe.py``) si le pune in prompt ca date.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: int = Field(foreign_key="tenant.id", index=True)
+    platform: str = "all"
+    industry: str = ""
+    insight: str
+    source: str = ""
+    observed_at: date
+    expires_at: date
+    created_at: datetime = Field(default_factory=_now)
 
 
 class McpAccessKey(SQLModel, table=True):
@@ -562,6 +636,8 @@ class AdPerformanceRecord(SQLModel, table=True):
     ctr: float = 0.0
     account_median_ctr: float = 0.0
     frequency_7d: float = 0.0
+    #: Vizionarile de 3 secunde de la lansare (Meta ``video_view``): hook rate-ul CCO-ului.
+    video_views: int = Field(default=0, ge=0)
     six_second_view_rate: float = 0.0
     cpa_3d: Decimal = Field(default=Decimal("0"), sa_column=_money_column())
     cpa_baseline_14d: Decimal = Field(default=Decimal("0"), sa_column=_money_column())

@@ -25,6 +25,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import ValidationError
 from sqlmodel import Session, select
 
 from ppc_agent.search_data.insights import CannibalizationDetector, SeoOpportunityFinder
@@ -35,6 +36,12 @@ from ppc_agent_server.hybrid_queries import (
     load_paid_terms,
 )
 from ppc_agent_server.models import ChangeOp, ChangeStatus, ClientAccount, ProposedChange
+from ppc_agent_server.services.creative_context import PerformanceFeedback
+from ppc_agent_server.services.creative_memory import (
+    FeedbackError,
+    account_lessons,
+    record_feedback,
+)
 from ppc_agent_server.settings import get_server_settings
 from ppc_agent_server.spend_guard import committed_daily_spend
 
@@ -81,7 +88,7 @@ def current_client_account_id() -> int:
 
 
 def build_server() -> MCPServer[None]:
-    """Construieste serverul MCP cu cele patru unelte.
+    """Construieste serverul MCP cu cele sase unelte.
 
     Functie, nu obiect global, din acelasi motiv ca ``create_app()``: se poate
     instantia izolat intr-un test, fara sa ramana stare intre ele.
@@ -265,5 +272,82 @@ def build_server() -> MCPServer[None]:
                 "asteapta aprobare umana in interfata."
             ),
         }
+
+    @server.tool(
+        name="report_creative_performance",
+        title="PPC -> CCO: cum a mers in piata o creativa evaluata",
+        description=(
+            "Trimite CCO-ului cifrele reale ale unei creative pe care a evaluat-o "
+            "(evaluation_id din verdict): afisari, click-uri, vizionari de 3 secunde (doar "
+            "video), cheltuiala, venit. Daca CCO-ul a promis mai mult (ex. hook 9/10, dar "
+            "hook rate sub 20%) sau mai putin decat a dat piata, se scrie o corectie pe care "
+            "o citeste inainte de urmatoarea evaluare pe acest cont. Nu schimba nimic in "
+            "contul de reclame."
+        ),
+    )
+    def report_creative_performance(
+        evaluation_id: int,
+        platform: str,
+        ad_id: str,
+        window_days: int,
+        impressions: int,
+        clicks: int,
+        spend: float,
+        revenue: float,
+        conversions: float,
+        video_views_3s: int | None = None,
+    ) -> dict[str, Any]:
+        """Args:
+        evaluation_id: Id-ul verdictului CCO (``evaluation_id``).
+        platform: ``meta`` sau ``tiktok``.
+        ad_id: Anuntul in care a rulat creativa.
+        window_days: De cate zile ruleaza.
+        video_views_3s: Vizionarile de 3 secunde; doar la video.
+        """
+        account_id = current_client_account_id()
+        with Session(get_engine()) as session:
+            account = session.get(ClientAccount, account_id)
+            if account is None:
+                raise ToolError("contul clientului nu mai exista")
+            try:
+                feedback = PerformanceFeedback.model_validate(
+                    {
+                        "evaluation_id": evaluation_id,
+                        "platform": platform,
+                        "ad_id": ad_id,
+                        "window_days": window_days,
+                        "metrics": {
+                            "impressions": impressions,
+                            "clicks": clicks,
+                            "video_views_3s": video_views_3s,
+                            "spend": str(spend),
+                            "revenue": str(revenue),
+                            "conversions": conversions,
+                        },
+                        "break_even_roas": float(account.break_even_roas),
+                    }
+                )
+                lessons = record_feedback(session, account_id, feedback)
+            except (ValidationError, FeedbackError) as exc:
+                raise ToolError(str(exc)) from exc
+        return {
+            "metrics": feedback.metrics.model_dump(mode="json"),
+            "lessons": [lesson.model_dump() for lesson in lessons],
+        }
+
+    @server.tool(
+        name="get_creative_lessons",
+        title="Ce a invatat CCO-ul din piata pe acest cont",
+        description=(
+            "Corectiile CCO-ului din ultimele 90 de zile: unde a supraestimat sau subestimat "
+            "hook-ul si alinierea mesajului, fata de hook rate, CTR si ROAS reale. CCO-ul "
+            "le aplica singur la fiecare evaluare; aici se pot doar citi."
+        ),
+    )
+    def get_creative_lessons() -> dict[str, Any]:
+        account_id = current_client_account_id()
+        with Session(get_engine()) as session:
+            lessons = account_lessons(session, account_id)
+        return {"count": len(lessons), "items": [lesson.model_dump() for lesson in lessons]}
 
     return server
