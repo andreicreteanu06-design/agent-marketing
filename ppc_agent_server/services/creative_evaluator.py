@@ -30,7 +30,13 @@ depinde de dispozitia unui model:
   whisper.cpp din ffmpeg cu ``WHISPER_MODEL``) - daca vocea are
   subtitrari; muzica/efectele = sunet fara voce;
 - **Retentie** (doar video, tot clipul): durata, pauzele moarte de dupa hook, ritmul
-  taieturilor (cand nu tine vocea atentia) si CTA-ul de la final.
+  taieturilor (cand nu tine vocea atentia) si CTA-ul de la final;
+- **Povestea** (doar video, "bucla dopaminei"): Jev citeste vocea si textul cadrelor -
+  **mizele** (un personaj in care publicul se recunoaste, ce risca privitorul, urgenta),
+  **Marea Intrebare** (deschiderea lasa o bucla deschisa), **fenta** (pare ca duce spre
+  banal, apoi intoarce) si **re-agatarile** (la 3-5 s ceva nou: un cadru - masurat de
+  ffmpeg - sau o intrebare, o dezvaluire). Fara mize sau fara Marea Intrebare, hook-ul nu
+  trece de 5, oricat de frumoase ar fi culorile; toate patru dau **virality**.
 
 Imaginea sta in memorie; video-ul se scrie temporar pe disc doar cat il citeste ffmpeg.
 """
@@ -46,7 +52,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from itertools import zip_longest
+from itertools import pairwise, zip_longest
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, cast
 
@@ -117,6 +123,12 @@ TEST_FLOOR = 5
 MAX_TEXT_BLOCKS = 3
 #: Greseli de scriere de la care sunt "masive".
 MASSIVE_TYPOS = 3
+#: Fara mize sau fara Marea Intrebare, hook-ul unui video nu trece de atat.
+NO_STORY_HOOK_CAP = 5
+#: De la atata durata, un clip are nevoie de re-agatari (sub ea, hook-ul il duce singur).
+REHOOK_FROM_SECONDS = 10.0
+#: Cel mai lung interval de dupa hook fara ceva nou, in care atentia inca tine.
+REHOOK_SECONDS = 5.0
 
 AssetType = Literal["image", "video"]
 Decision = Literal["ELIGIBLE_FOR_TEST", "REVISE_BEFORE_TEST", "HUMAN_REVIEW_REQUIRED"]
@@ -160,6 +172,19 @@ class _Look(BaseModel):
     fixes: list[_Sentence] = Field(min_length=1, max_length=3)
 
 
+@dataclass(frozen=True)
+class _Story:
+    """Povestea unui video, citita de Jev din voce si din textul cadrelor."""
+
+    avatar: bool
+    at_stake: bool
+    urgency: bool
+    big_question: bool
+    headfake: bool
+    #: Intrebari sau dezvaluiri noi dupa deschidere; ``None`` = clip scurt, neintrebat.
+    rehooks: bool | None
+
+
 @dataclass
 class _Facts:
     """Faptele unei creative, din OCR, Jev si modelul cu vision - din ele decide codul."""
@@ -182,6 +207,8 @@ class _Facts:
     cta_present: bool
     risks: list[str]
     fixes: list[str]
+    #: ``None`` = nejudecata: imagine, ori un video cu sunet si vocea netranscrisa.
+    story: _Story | None = None
 
 
 @dataclass(frozen=True)
@@ -201,6 +228,8 @@ class CreativeScores(BaseModel):
     #: Doar la video (``None`` la imagine).
     audio: int | None = Field(default=None, ge=0, le=10)
     retention: int | None = Field(default=None, ge=0, le=10)
+    #: Potentialul viral, din poveste (doar la video, cand vocea e cunoscuta).
+    virality: int | None = Field(default=None, ge=0, le=10)
 
 
 class VideoFacts(BaseModel):
@@ -292,6 +321,37 @@ _CTA = Noul(
     instructions="Does the ad tell the viewer what to do next (call, apply, buy, write), in "
     "`ending_text` or at the end of `speech`?",
 )
+# Povestea (doar video): ce tine privitorul pana la final.
+_AVATAR = Noul(
+    instructions="Is there a person or character in the ad (shown, speaking or described) "
+    "in whose situation its target viewer would recognize themselves?",
+)
+_AT_STAKE = Noul(
+    instructions="Does the ad make clear what the viewer personally stands to lose, or keeps "
+    "missing, without the offer - money, time, health, a chance?",
+    true="a concrete personal loss or missed gain for the viewer is named or shown",
+    false="it only presents the product or offer; nothing is at stake for the viewer",
+)
+_URGENCY = Noul(
+    instructions="Does the ad give the viewer a reason to act now rather than later - a "
+    "deadline, limited places, a cost that grows with every day?",
+)
+_BIG_QUESTION = Noul(
+    instructions="Do the first seconds (`opening_text`, `opening_speech`) open a loop: a "
+    "specific question or unresolved situation the viewer wants resolved (will she get the "
+    "job? what is the secret ingredient?) that the ad answers only later?",
+    true="the opening leaves the viewer wanting to know how it ends",
+    false="the opening states the offer outright, or raises nothing to find out",
+)
+_HEADFAKE = Noul(
+    instructions="Does the ad lead the viewer to expect an ordinary outcome, then turn to an "
+    "unexpected one (a twist, a reversal), in `speech` or `on_screen_text`?",
+)
+_REHOOKS = Noul(
+    instructions="After the opening, does the ad keep restarting attention every few seconds "
+    "- a new question, a new reveal, a new piece of information - instead of repeating one "
+    "message? Read `on_screen_text` (by second) and `speech`.",
+)
 
 
 # --- fisierul: tip, dimensiuni ----------------------------------------------------
@@ -373,7 +433,8 @@ class _Video:
     hook_dead_air: bool
     #: Inceputurile pauzelor moarte de dupa hook (negru >= 1 s, cadru static >= 4 s).
     dead_air_later: list[float]
-    cuts: int
+    #: Secundele taieturilor de scena (``scdet``).
+    cut_times: list[float]
     #: Prima secunda cu sunet; ``None`` = fara sunet deloc.
     sound_start: float | None
     sound_seconds: float
@@ -383,8 +444,23 @@ class _Video:
     speech: list[tuple[float, float, str]] | None
 
     @property
+    def cuts(self) -> int:
+        return len(self.cut_times)
+
+    @property
+    def longest_still(self) -> float:
+        """Cel mai lung interval de dupa hook fara un cadru nou (taietura de scena)."""
+        marks = [HOOK_SECONDS, *(t for t in self.cut_times if t > HOOK_SECONDS), self.duration]
+        return max(end - start for start, end in pairwise(marks))
+
+    @property
     def voice(self) -> bool | None:
         return None if self.speech is None else bool(self.speech)
+
+    @property
+    def story_known(self) -> bool:
+        """Povestea se poate judeca: vocea e transcrisa, ori nu e niciun sunet de transcris."""
+        return self.speech is not None or self.sound_start is None
 
     @property
     def music_or_effects(self) -> bool | None:
@@ -616,7 +692,7 @@ def _video_facts(data: bytes, transcribe: Transcriber | None) -> _Video:
         duration=duration,
         hook_dead_air=hook_dead_air,
         dead_air_later=sorted(later),
-        cuts=len(re.findall(rb"lavfi\.scd\.time", scan)),
+        cut_times=[float(t) for t in re.findall(rb"lavfi\.scd\.time:\s*([\d.]+)", scan)],
         sound_start=sound_start,
         sound_seconds=sound_seconds,
         loudness=_summary(sound, rb"Integrated loudness"),
@@ -768,6 +844,9 @@ def _observe(
     if video is not None:
         state["ending_text"] = _texts(read[-1])
         state["speech"] = speech
+        state["opening_speech"] = " ".join(
+            text for start, _, text in video.speech or () if start < HOOK_SECONDS
+        )
     if len(json.dumps(state, ensure_ascii=False)) > MAX_STATE_CHARS:
         state["speech"] = speech[:MAX_TRANSCRIPT_CHARS]
         state["on_screen_text"] = _texts(every)[:40]
@@ -792,6 +871,14 @@ def _observe(
             questions["intro"] = _INTRO
         if speech:
             questions["captions"] = _CAPTIONS
+        # Cu sunet netranscris, povestea poate sta in voce: nu o judecam pe jumatate.
+        if video.story_known:
+            questions |= {
+                "avatar": _AVATAR, "at_stake": _AT_STAKE, "urgency": _URGENCY,
+                "big_question": _BIG_QUESTION, "headfake": _HEADFAKE,
+            }
+            if video.duration > REHOOK_FROM_SECONDS:
+                questions["rehooks"] = _REHOOKS
     answers = _ask_jev(judge, state, questions)
 
     def yes(qid: str, threshold: float = 0.5) -> bool:
@@ -845,6 +932,14 @@ def _observe(
         # Vazut real: modelul mic scrie uneori in engleza, orice i-ai cere.
         risks=[risk for risk in seen.risks if _in_romanian(risk)],
         fixes=[fix for fix in seen.fixes if _in_romanian(fix)],
+        story=_Story(
+            avatar=yes("avatar"),
+            at_stake=yes("at_stake"),
+            urgency=yes("urgency"),
+            big_question=yes("big_question"),
+            headfake=yes("headfake"),
+            rehooks=yes("rehooks") if "rehooks" in questions else None,
+        ) if "big_question" in questions else None,
     )
 
 
@@ -919,6 +1014,22 @@ def _hook(
         if not seen.text_hook_present:
             score -= 2
             risks.append("niciun hook de text în primele 3 secunde")
+        story = seen.story
+        if story is not None and not (story.at_stake and story.big_question):
+            score = min(score, NO_STORY_HOOK_CAP)
+        if story is not None and not story.at_stake:
+            risks.append(
+                "reclamei tale îi lipsesc mizele: nu ai definit ce riscă privitorul dacă nu "
+                "folosește serviciul tău"
+            )
+            fixes.append(
+                "Spune din primele secunde ce pierde privitorul fără tine (bani, timp, o șansă)"
+            )
+        if story is not None and not story.big_question:
+            risks.append(
+                "deschiderea nu ridică nicio întrebare: privitorul nu are ce afla dacă rămâne"
+            )
+            fixes.append("Deschide cu o întrebare sau o situație nerezolvată, lămurită la final")
     return _clamp(score)
 
 
@@ -975,9 +1086,53 @@ def _retention(video: _Video, seen: _Facts, risks: list[str], fixes: list[str]) 
     return _clamp(max(score, 1))
 
 
+def _virality(
+    video: _Video, seen: _Facts, risks: list[str], fixes: list[str]
+) -> int | None:
+    """Potentialul viral, din poveste: Marea Intrebare 2, mizele 3 (ce risca privitorul,
+    personajul, urgenta - cate 1), fenta 3, re-agatarile 2.
+
+    Re-agatarea e un cadru nou (masurat) sau o intrebare, o dezvaluire noua (Jev).
+    """
+    story = seen.story
+    if story is None:
+        return None
+    long_clip = video.duration > REHOOK_FROM_SECONDS
+    still = video.longest_still if long_clip else 0.0
+    rehooked = not long_clip or bool(story.rehooks) or still <= REHOOK_SECONDS
+    missing = [
+        name
+        for present, name in (
+            (story.avatar, "un personaj în care publicul să se recunoască"),
+            (story.urgency, "urgența (de ce acum, nu mâine)"),
+        )
+        if not present
+    ]
+    if missing:
+        risks.append("din mize lipsește: " + "; ".join(missing))
+    if not story.avatar:
+        fixes.append("Arată un om ca publicul tău, prins în problema pe care o rezolvi")
+    if not story.urgency:
+        fixes.append("Dă un motiv să acționeze acum: un termen, locuri limitate")
+    if not story.headfake:
+        risks.append("nicio fentă: povestea merge exact unde se așteaptă privitorul")
+        fixes.append("Pornește spre concluzia banală, apoi întoarce povestea spre neașteptat")
+    if not rehooked:
+        risks.append(
+            f"după hook, atenția nu e reagățată: {still:.0f} s fără un cadru nou și nicio "
+            "întrebare sau informație nouă"
+        )
+        fixes.append("La fiecare 3-5 s adu ceva nou: un unghi, un b-roll, o mini-întrebare")
+    return (
+        2 * story.big_question + story.at_stake + story.avatar + story.urgency
+        + 3 * story.headfake + 2 * rehooked
+    )
+
+
 def _decide(scores: CreativeScores) -> Decision:
     if scores.trust < TRUST_FLOOR:
         return "HUMAN_REVIEW_REQUIRED"
+    # Virality nu opreste testul: e un potential, nu un defect (hook-ul plafonat, da).
     weakest = min(
         score
         for score in (
@@ -1055,11 +1210,12 @@ def evaluate_creative(
     trust = _trust(seen, risks, fixes)
     hierarchy = _hierarchy(seen, risks, fixes)
     hook = _hook(seen, video, risks, fixes)
-    audio = retention = None
+    audio = retention = virality = None
     facts = None
     if video is not None:
         audio = _audio(video, seen, risks, fixes)
         retention = _retention(video, seen, risks, fixes)
+        virality = _virality(video, seen, risks, fixes)
         facts = VideoFacts(
             duration_seconds=round(video.duration, 1),
             frames_seen=len(video.frames),
@@ -1079,9 +1235,10 @@ def evaluate_creative(
         format_suitability=format_score,
         audio=audio,
         retention=retention,
+        virality=virality,
     )
     # Regulile intai (sigure, in ordinea prioritatii: incredere, ierarhie, hook, audio,
-    # retentie, format), apoi ce a mai vazut modelul.
+    # retentie, poveste, format), apoi ce a mai vazut modelul.
     return CreativeEvaluation(
         asset_type=asset,
         decision=_decide(scores),

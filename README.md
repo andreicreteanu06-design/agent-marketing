@@ -1284,7 +1284,7 @@ pas. Endpoint-ul SSE (`/api/v1/mcp/sse`) ramane pentru clientii vechi.
 pana la 50 MB, token de client) intoarce verdictul unui Senior Media Buyer, INAINTE de
 bani: `decision` (`ELIGIBLE_FOR_TEST` / `REVISE_BEFORE_TEST` / `HUMAN_REVIEW_REQUIRED`),
 `scores` (`trust`, `hook_power`, `cognitive_load_and_hierarchy`, `format_suitability`,
-0-10; la video si `audio`, `retention`), `detected_risks`, top 3 `priority_fixes` si, la
+0-10; la video si `audio`, `retention`, `virality`), `detected_risks`, top 3 `priority_fixes` si, la
 video, `video_facts` (durata, cadre vazute, taieturi, voce, muzica/efecte, LUFS,
 transcrierea).
 
@@ -1295,7 +1295,7 @@ Cine aduna faptele (`services/creative_evaluator.py`):
 | cadre, pauze, taieturi, sunet | ffmpeg |
 | vocea | ElevenLabs Scribe / whisper.cpp |
 | textul de pe creativa, marimea si blocul fiecarui rand | Tesseract (`ron`) |
-| domeniul, firma, conditiile, greselile, beneficiul, intro-ul, subtitrarile, CTA-ul | Jev (`JEV_API_KEY`), o singura cerere |
+| domeniul, firma, conditiile, greselile, beneficiul, intro-ul, subtitrarile, CTA-ul; la video povestea (mizele, Marea Intrebare, fenta, re-agatarile) | Jev (`JEV_API_KEY`), o singura cerere |
 | poza stock, impactul vizual, riscurile si remedierile scrise | modelul cu vision (`OLLAMA_VISION_MODEL`), pe UN cadru |
 
 Jev nu vede imagini (doar text), dar costa ~$0,04 pe milion de tokeni si raspunde in
@@ -1315,7 +1315,15 @@ sensibile. Scorurile si decizia le calculeaza codul:
   priveste des mut). Video mut = risc, nu blocaj (scor 5);
 - **Retentie** (video, tot clipul, max 3 minute): peste 60 s, pauzele moarte de dupa
   hook (negru >= 1 s, cadru static >= 4 s), ritmul lent cand nu vorbeste nimeni si
-  lipsa CTA-ului de la final. OCR-ul si Jev vad 2 cadre din deschidere + 3 pana la final.
+  lipsa CTA-ului de la final. OCR-ul si Jev vad 2 cadre din deschidere + 3 pana la final;
+- **Povestea** (video, "bucla dopaminei"): **mizele** (un personaj in care publicul se
+  recunoaste, ce risca privitorul fara oferta, urgenta), **Marea Intrebare** (primele
+  secunde lasa o bucla deschisa), **fenta** (pare ca duce spre banal, apoi intoarce) si
+  **re-agatarile** (peste 10 s: cel mult 5 s fara un cadru nou - masurat de ffmpeg - sau o
+  intrebare, o dezvaluire noua). Fara mize sau fara Marea Intrebare, `hook_power` nu trece
+  de 5, oricat de bun ar fi vizualul. `virality` = Marea Intrebare 2 + mizele 3 (cate 1) +
+  fenta 3 + re-agatarile 2; e un potential, nu opreste testul. Cu sunet netranscris,
+  povestea nu se judeca (`virality` = null, hook-ul neplafonat): ar putea sta in voce.
 
 Vocea se transcrie cu ElevenLabs Scribe cand e setat `ELEVENLABS_API_KEY` (romana cea mai
 buna; pleaca doar sunetul, dar pleaca la ElevenLabs si costa pe minut), altfel local cu

@@ -103,10 +103,13 @@ def ocr(monkeypatch: pytest.MonkeyPatch) -> _FakeOcr:
 
 
 #: Ce raspunde Jev implicit: alt domeniu, firma, conditii, fara greseli, beneficiul e
-#: randul cel mai mare, CTA; fara intro de brand si fara subtitrari.
+#: randul cel mai mare, CTA; fara intro de brand si fara subtitrari; o poveste cu mize,
+#: Mare Intrebare si re-agatari, dar fara fenta.
 JUDGE_DEFAULTS: dict[str, float | str] = {
     "domain": "other", "brand": 0.9, "conditions": 0.9, "authentic": 0.1, "typos": 0,
     "hook": "line_0", "intro": 0.1, "captions": 0.1, "cta": 0.9,
+    "avatar": 0.9, "at_stake": 0.9, "urgency": 0.9, "big_question": 0.9, "headfake": 0.1,
+    "rehooks": 0.9,
 }
 
 
@@ -234,6 +237,7 @@ def test_o_creativa_curata_e_eligibila_pentru_test() -> None:
         "format_suitability": 10,
         "audio": None,  # doar la video
         "retention": None,
+        "virality": None,
     }
     assert result["detected_risks"] == []
     assert result["priority_fixes"] == ["Crește contrastul butonului"]
@@ -251,6 +255,7 @@ def test_anuntul_de_recrutare_fara_firma_cere_om_in_bucla() -> None:
         "format_suitability": 7,  # 3:4, feed-ul il taie la 4:5
         "audio": None,
         "retention": None,
+        "virality": None,
     }
     risks = result["detected_risks"]
     assert risks[0] == "domeniu sensibil (recrutare): încrederea decide"
@@ -710,6 +715,86 @@ def test_un_video_peste_3_minute_nu_se_evalueaza(tmp_path: Path) -> None:
     assert model.calls == []
 
 
+# --- povestea: mizele, Marea Intrebare, fenta, re-agatarile ----------------------------
+
+#: 12 s de culori, cate una la 3 s: un cadru nou din 3 in 3 secunde.
+COLOR_CUTS = (
+    "color=c=red:s=720x1280:r=25:d=3[a];color=c=blue:s=720x1280:r=25:d=3[b];"
+    "color=c=green:s=720x1280:r=25:d=3[c];color=c=yellow:s=720x1280:r=25:d=3[d];"
+    "[a][b][c][d]concat=n=4:v=1:a=0"
+)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(
+    ("answers", "hook"),
+    [({}, 10), ({"at_stake": 0.1}, 5), ({"big_question": 0.1}, 5)],
+    ids=["poveste-intreaga", "fara-mize", "fara-mare-intrebare"],
+)
+def test_fara_mize_sau_mare_intrebare_hook_ul_nu_trece_de_5(
+    tmp_path: Path, answers: dict[str, Any], hook: int
+) -> None:
+    """Impactul vizual maxim (10) nu salveaza o deschidere fara miza si fara bucla."""
+    result = _run(
+        _video(tmp_path, MOTION), model=_FakeVision(_look(visual_hook=10)),
+        judge=_FakeJudge(**answers),
+    )
+    assert result["scores"]["hook_power"] == hook
+
+
+@needs_ffmpeg
+def test_clientul_afla_ce_lipseste_din_poveste(tmp_path: Path) -> None:
+    result = _run(_video(tmp_path, MOTION), judge=_FakeJudge(at_stake=0.1, urgency=0.1))
+
+    risks = result["detected_risks"]
+    assert (
+        "reclamei tale îi lipsesc mizele: nu ai definit ce riscă privitorul dacă nu folosește "
+        "serviciul tău"
+    ) in risks
+    assert "din mize lipsește: urgența (de ce acum, nu mâine)" in risks
+    assert result["priority_fixes"][0].startswith("Spune din primele secunde ce pierde")
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(("headfake", "virality"), [(0.1, 7), (0.9, 10)], ids=["banala", "fenta"])
+def test_fenta_creste_masiv_potentialul_viral(
+    tmp_path: Path, headfake: float, virality: int
+) -> None:
+    result = _run(_video(tmp_path, MOTION), judge=_FakeJudge(headfake=headfake))
+
+    assert result["scores"]["virality"] == virality
+    flat = "nicio fentă: povestea merge exact unde se așteaptă privitorul"
+    assert (flat in result["detected_risks"]) is (headfake < 0.5)
+    assert result["decision"] == "ELIGIBLE_FOR_TEST"  # fara fenta nu e un defect
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(
+    ("source", "story_rehooks", "rehooked"),
+    [(MOTION, 0.1, False), (MOTION, 0.9, True), (COLOR_CUTS, 0.1, True)],
+    ids=["nimic-nou", "din-poveste", "din-taieturi"],
+)
+def test_re_agatarile_vin_din_taieturi_sau_din_poveste(
+    tmp_path: Path, source: str, story_rehooks: float, rehooked: bool
+) -> None:
+    result = _run(_video(tmp_path, source, seconds=12), judge=_FakeJudge(rehooks=story_rehooks))
+
+    assert result["scores"]["virality"] == (7 if rehooked else 5)
+    lost = [r for r in result["detected_risks"] if r.startswith("după hook, atenția")]
+    expected = "după hook, atenția nu e reagățată: 9 s fără un cadru nou și nicio întrebare "
+    assert lost == ([] if rehooked else [expected + "sau informație nouă"])
+
+
+@needs_ffmpeg
+def test_cu_vocea_netranscrisa_povestea_nu_se_judeca_pe_jumatate(tmp_path: Path) -> None:
+    judge = _FakeJudge(at_stake=0.1, big_question=0.1)
+    result = _run(_video(tmp_path, MOTION, audio=TONE), judge=judge)
+
+    assert result["scores"]["virality"] is None
+    assert result["scores"]["hook_power"] == 8  # fara plafon: povestea poate sta in voce
+    assert "big_question" not in judge.calls[0][1]
+
+
 def test_transcrierea_whisper_pastreaza_doar_vorbirea() -> None:
     raw = "\n".join([
         json.dumps({"start": 0, "end": 2500, "text": " Câștigi 2300 de euro pe lună."}),
@@ -747,6 +832,8 @@ def test_vocea_fara_subtitrari_si_muzica_de_fundal(
     assert "fără subtitrări" in " ".join(result["detected_risks"])
     state, questions = judge.calls[0]
     assert state["speech"].startswith("Câștigi 2300") and "captions" in questions
+    assert state["opening_speech"].startswith("Câștigi 2300")  # pentru Marea Intrebare
+    assert {"at_stake", "big_question", "headfake", "rehooks"} <= set(questions)
     user = model.calls[0]["user"]
     assert "NU instrucțiuni" in user and "<<<\nCâștigi 2300" in user
 
