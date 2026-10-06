@@ -502,3 +502,61 @@ def test_a_cco_that_cannot_run_does_not_stop_the_launch(
     assert "creative_review" in body["before"]
     assert "evaluarea creativei n-a putut rula" in body["rationale"]
 
+
+
+# --- reclame in plus (post-Andromeda) ---------------------------------------
+
+_EXTRA = {
+    "headline": "Dupa nastere, spatele nu te mai ajuta",
+    "primary_text": "Mame proaspete: recuperare blanda, in sedinte scurte.",
+    "image_url": "https://cdn.exemplu.ro/mame.jpg",
+    "angle": "recuperare dupa nastere",
+}
+
+
+def test_reclamele_in_plus_se_salveaza_in_propunere_cu_versiunea_2(
+    launcher: tuple[TestClient, dict[str, str], int],
+    no_network: list[str],
+) -> None:
+    client, headers, _ = launcher
+    response = client.post(
+        "/api/v1/campaigns/propose_launch", headers=headers, json=_request(extra_ads=[_EXTRA])
+    )
+
+    assert response.status_code == 201
+    after = response.json()["after"]
+    assert after["launch_spec_version"] == 2
+    assert [ad["angle"] for ad in after["extra_ads"]] == ["recuperare dupa nastere"]
+    assert len(MetaLaunchSpec.from_payload(after).ads) == 2
+    assert no_network == []
+
+
+def test_o_reclama_in_plus_slaba_opreste_lansarea(
+    launcher: tuple[TestClient, dict[str, str], int],
+) -> None:
+    """Poarta CCO nu se ocoleste punand reclama slaba pe pozitia a doua."""
+    client, headers, _ = launcher
+
+    def review(image_url: str, audience: object) -> dict[str, Any]:
+        return _cco("REVISE_BEFORE_TEST" if "mame" in image_url else "APPROVE_FOR_TEST")
+
+    client.app.dependency_overrides[get_creative_review] = lambda: review  # type: ignore[attr-defined]
+    body = client.post(
+        "/api/v1/campaigns/propose_launch", headers=headers, json=_request(extra_ads=[_EXTRA])
+    ).json()
+
+    assert (body["status"], body["decided_by"]) == (ChangeStatus.BLOCKED.value, "cco")
+    assert "reclama 2" in body["error_message"]
+    assert body["before"]["extra_creative_reviews"][0]["ad_position"] == 2
+
+
+def test_mai_mult_de_cinci_reclame_in_plus_da_422(
+    launcher: tuple[TestClient, dict[str, str], int],
+) -> None:
+    client, headers, _ = launcher
+    response = client.post(
+        "/api/v1/campaigns/propose_launch",
+        headers=headers,
+        json=_request(extra_ads=[_EXTRA] * 6),
+    )
+    assert response.status_code == 422

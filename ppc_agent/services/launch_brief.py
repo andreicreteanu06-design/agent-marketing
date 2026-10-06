@@ -41,6 +41,7 @@ from ppc_agent.alignment.meta_liquidity import (
     learning_exit_days,
 )
 from ppc_agent.config import AppConfig, ProviderMode
+from ppc_agent.decision.andromeda_rules import portfolio_findings
 from ppc_agent.decision.budget import ThompsonBudgetAllocator
 from ppc_agent.decision.budget_strategy import recommend_arm_capacity
 from ppc_agent.decision.kelly_sizing import size_daily_budget
@@ -198,6 +199,7 @@ def build_launch_brief(
     brief = LaunchBrief(mode=config.provider_mode.value)
     _landing_page(brief, sources, spec)
     _learning_phase(brief, config, spec)
+    _creative_portfolio(brief, config, spec)
     _budget_position(brief, sources, config, spec, ad_account, committed_daily_spend)
     _message_signals(brief, sources, config, spec)
     return brief
@@ -394,6 +396,19 @@ def _learning_phase(brief: LaunchBrief, config: AppConfig, spec: MetaLaunchSpec)
             f"optimizare pe un eveniment mai frecvent decat {spec.custom_event_type}. "
             "Altfel, trateaz-o explicit ca test."
         )
+
+
+def _creative_portfolio(brief: LaunchBrief, config: AppConfig, spec: MetaLaunchSpec) -> None:
+    """Regulile post-Andromeda pentru reclamele lansarii (``decision/andromeda_rules``)."""
+    target_cpa = config.budget.target_cpa
+    arms = (
+        recommend_arm_capacity(spec.daily_budget, target_cpa).recommended_max_concurrent_arms
+        if target_cpa is not None and target_cpa > 0
+        else None
+    )
+    findings = portfolio_findings(spec.ads, max_concurrent_arms=arms)
+    brief.warnings.extend(findings.warnings)
+    brief.suggestions.extend(findings.suggestions)
 
 
 # --- 3. pozitia in cont: Kelly si Thompson (agentul PPC) --------------------

@@ -908,18 +908,18 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
 
         Ordinea:
 
-        0. imaginea se descarca de la noi - INAINTE de orice apel Meta, ca un
-           URL stricat sa nu lase in urma o campanie de sters;
+        0. imaginile tuturor reclamelor se descarca de la noi - INAINTE de orice
+           apel Meta, ca un URL stricat sa nu lase in urma o campanie de sters;
         1. campania; 2. ad set-ul (bugetul se converteste in unitati minime
-           ABIA acum, dupa moneda contului); 3. imaginea urcata in Meta;
-           4. creative-ul; 5. anuntul.
+           ABIA acum, dupa moneda contului); apoi, pentru fiecare reclama:
+           3. imaginea urcata in Meta; 4. creative-ul; 5. anuntul.
 
         Daca pica ceva dupa pasul 1, campania se sterge - altfel fiecare
         incercare esuata ar lasa resturi in contul clientului.
         """
         account = normalize_ad_account_id(ad_account_id)
         try:
-            image = await self._download_image(spec.image_url)
+            images = [await self._download_image(ad.image_url) for ad in spec.ads]
         except ProviderError as exc:
             raise CampaignLaunchError(
                 stage="image_download", reason=str(exc), outcome=_NOTHING_CREATED
@@ -951,26 +951,32 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 ),
                 "setului de reclame",
             )
-            stage = "image_upload"
-            image_hash = _image_hash(
-                await self._mutate(
-                    f"{account}/adimages", {"bytes": base64.b64encode(image).decode("ascii")}
+            launched: list[tuple[str, str, str]] = []
+            for index, (ad, image) in enumerate(zip(spec.ads, images, strict=True)):
+                stage = "image_upload"
+                image_hash = _image_hash(
+                    await self._mutate(
+                        f"{account}/adimages",
+                        {"bytes": base64.b64encode(image).decode("ascii")},
+                    )
                 )
-            )
-            stage = "creative"
-            creative_id = _created_id(
-                await self._mutate(
-                    f"{account}/adcreatives", creative_fields(spec, image_hash=image_hash)
-                ),
-                "creative-ului",
-            )
-            stage = "ad"
-            ad_id = _created_id(
-                await self._mutate(
-                    f"{account}/ads", ad_fields(spec, adset_id=adset_id, creative_id=creative_id)
-                ),
-                "anuntului",
-            )
+                stage = "creative"
+                creative_id = _created_id(
+                    await self._mutate(
+                        f"{account}/adcreatives",
+                        creative_fields(spec, image_hash=image_hash, ad=ad, index=index),
+                    ),
+                    "creative-ului",
+                )
+                stage = "ad"
+                ad_id = _created_id(
+                    await self._mutate(
+                        f"{account}/ads",
+                        ad_fields(spec, adset_id=adset_id, creative_id=creative_id, index=index),
+                    ),
+                    "anuntului",
+                )
+                launched.append((image_hash, creative_id, ad_id))
         except Exception as exc:
             rolled_back, outcome = await self._rollback(campaign_id)
             raise CampaignLaunchError(
@@ -981,11 +987,13 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 rolled_back=rolled_back,
             ) from exc
 
+        image_hash, creative_id, ad_id = launched[0]
         logger.info(
-            "campanie lansata OPRITA in %s: campanie %s, set %s, anunt %s",
+            "campanie lansata OPRITA in %s: campanie %s, set %s, %d anunturi (primul %s)",
             account,
             campaign_id,
             adset_id,
+            len(launched),
             ad_id,
         )
         return LaunchResult(
@@ -994,4 +1002,5 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
             image_hash=image_hash,
             creative_id=creative_id,
             ad_id=ad_id,
+            extra_ad_ids=tuple(ad for _, _, ad in launched[1:]),
         )

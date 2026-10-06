@@ -440,3 +440,21 @@ def test_textul_care_foloseste_cautarile_reale_nu_primeste_sugestia() -> None:
 def test_rezumatul_numara_ce_contine_brief_ul() -> None:
     brief = _brief(crawler=_page("<html>nu exista</html>", status=404))
     assert brief.summary().startswith("Brief de lansare: blocata - 1 blocaje")
+
+
+# --- reguli post-Andromeda --------------------------------------------------
+
+
+def test_reclame_aproape_identice_ajung_in_avertismentele_brief_ului() -> None:
+    from ppc_agent.providers.meta_campaign import MetaAdCreative
+
+    twin = MetaAdCreative(
+        "Revizie completa in 24h", "Programeaza revizia online azi.", "https://cdn.exemplu.ro/b.jpg"
+    )
+    brief = _brief(spec=_spec(extra_ads=(twin,)))
+    assert any("aproape acelasi lucru" in warning for warning in brief.warnings)
+
+
+def test_o_singura_reclama_la_buget_mare_primeste_sugestia_de_diversitate() -> None:
+    brief = _brief(config=_config(target_cpa="5"), spec=_spec(daily_budget=Decimal("100")))
+    assert any("diversitate" in suggestion for suggestion in brief.suggestions)

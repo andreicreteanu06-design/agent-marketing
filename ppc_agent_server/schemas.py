@@ -188,6 +188,16 @@ class WeeklyReportListItem(BaseModel):
     summary_source: str
 
 
+class ExtraAdRequest(BaseModel):
+    """O reclama in plus in acelasi ad set (post-Andromeda: diversitate de mesaj)."""
+
+    headline: str = Field(min_length=1, max_length=255)
+    primary_text: str = Field(min_length=1, max_length=2200)
+    image_url: str = Field(min_length=9, max_length=2048)
+    #: Argumentul reclamei (de ce ar cumpara cineva); ajuta la detectarea duplicatelor.
+    angle: str = Field(default="", max_length=200)
+
+
 class CampaignLaunchRequest(BaseModel):
     """Corpul cererii ``POST /api/v1/campaigns/propose_launch``.
 
@@ -212,6 +222,8 @@ class CampaignLaunchRequest(BaseModel):
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     #: Implicit: SHOP_NOW la vanzari, LEARN_MORE la lead-uri.
     call_to_action: str | None = None
+    #: Reclame in plus in acelasi ad set; prima ramane cea din campurile de mai sus.
+    extra_ads: list[ExtraAdRequest] = Field(default_factory=list, max_length=5)
 
 
 class ExecuteProposalRequest(BaseModel):

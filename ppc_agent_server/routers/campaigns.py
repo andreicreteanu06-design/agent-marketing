@@ -28,6 +28,7 @@ from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.providers.live.meta import download_image
 from ppc_agent.providers.meta_campaign import (
     DEFAULT_CALL_TO_ACTION,
+    MetaAdCreative,
     MetaLaunchSpec,
     build_meta_campaign_payload,
     normalize_ad_account_id,
@@ -171,6 +172,15 @@ def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaL
             image_url=payload.image_url.strip(),
             country=payload.country or account.geo.strip().upper(),
             call_to_action=payload.call_to_action or DEFAULT_CALL_TO_ACTION[account.objective],
+            extra_ads=tuple(
+                MetaAdCreative(
+                    headline=ad.headline.strip(),
+                    primary_text=ad.primary_text.strip(),
+                    image_url=ad.image_url.strip(),
+                    angle=ad.angle.strip(),
+                )
+                for ad in payload.extra_ads
+            ),
             **_local_area(account),
         )
     except ValueError as exc:
@@ -316,6 +326,21 @@ def propose_launch(
     sha = str(creative.pop("asset_sha256", ""))
     if creative.get("decision") is not None:  # verdictul se pastreaza: PPC-ul ii va raspunde
         creative["evaluation_id"] = save_evaluation(session, client_id, sha, creative, context)
+    # Reclamele in plus trec prin aceeasi poarta: una slaba nu intra in cont doar
+    # fiindca nu e prima.
+    extra_creatives = []
+    for position, extra in enumerate(spec.extra_ads, start=2):
+        extra_review = dict(creative_review(extra.image_url, context))
+        extra_sha = str(extra_review.pop("asset_sha256", ""))
+        if extra_review.get("decision") is not None:
+            extra_review["evaluation_id"] = save_evaluation(
+                session, client_id, extra_sha, extra_review, context
+            )
+        extra_review["ad_position"] = position
+        extra_creatives.append(extra_review)
+    blocked_extra = next(
+        (item for item in extra_creatives if item.get("decision") == CREATIVE_BLOCKS), None
+    )
 
     proposal = ProposedChange(
         client_account_id=client_id,
@@ -329,6 +354,7 @@ def propose_launch(
             **brief.to_payload(),
             REVIEW_KEY: review(reply),
             CREATIVE_KEY: creative,
+            **({"extra_creative_reviews": extra_creatives} if extra_creatives else {}),
             "economics": economics,
         },
         after=spec.to_payload(),
@@ -348,14 +374,17 @@ def propose_launch(
         proposal.decided_by = DECIDED_BY
         proposal.error_message = stopped["message"]
         proposal.before = {**proposal.before, "council": stopped["context"]}
-    elif creative.get("decision") == CREATIVE_BLOCKS:
-        fixes = "; ".join(creative.get("priority_fixes", []))
+    elif creative.get("decision") == CREATIVE_BLOCKS or blocked_extra is not None:
+        weak = creative if creative.get("decision") == CREATIVE_BLOCKS else blocked_extra
+        assert weak is not None
+        position = 1 if weak is creative else weak["ad_position"]
+        fixes = "; ".join(weak.get("priority_fixes", []))
         proposal.status = ChangeStatus.BLOCKED
         proposal.decided_at = reply.generated_at
         proposal.decided_by = CREATIVE_DECIDED_BY
         proposal.error_message = (
-            f"Oprită de evaluarea creativă: {_creative_note(creative)} Repară: {fixes}. "
-            "Apoi propune lansarea din nou, cu imaginea nouă."
+            f"Oprită de evaluarea creativă (reclama {position}): {_creative_note(weak)} "
+            f"Repară: {fixes}. Apoi propune lansarea din nou, cu imaginea nouă."
         )
     session.add(proposal)
     session.commit()

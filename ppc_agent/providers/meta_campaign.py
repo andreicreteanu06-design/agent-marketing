@@ -139,6 +139,16 @@ LAUNCH_STATUS = "PAUSED"
 #: aprobata peste luni de zile trebuie sa se execute exact cum a fost aprobata,
 #: iar daca forma se schimba, vrem sa refuzam, nu sa ghicim.
 LAUNCH_SPEC_VERSION = 1
+#: Propunerile cu mai multe reclame se salveaza cu versiunea 2; cele cu o singura
+#: reclama raman la 1, deci propunerile deja salvate se citesc neschimbat.
+LAUNCH_SPEC_VERSION_MULTI_AD = 2
+_READABLE_SPEC_VERSIONS = (LAUNCH_SPEC_VERSION, LAUNCH_SPEC_VERSION_MULTI_AD)
+
+#: Post-Andromeda, Meta cere diversitate de creativ in acelasi ad set (experti: 20+
+#: la scara mare). La lansare prin API plafonam la 6: fiecare reclama aduce o
+#: imagine de descarcat si un creative de creat, iar bugetul mic nu hraneste mai multe
+#: (``decision/budget_strategy.recommend_arm_capacity``).
+MAX_ADS_PER_LAUNCH = 6
 
 _DIGITS = re.compile(r"^\d+$")
 _COUNTRY = re.compile(r"^[A-Z]{2}$")
@@ -172,6 +182,46 @@ def _require_https(name: str, value: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class MetaAdCreative:
+    """O reclama in plus in acelasi ad set: alt text, alta imagine, alt unghi.
+
+    ``angle`` e argumentul reclamei (de ce ar cumpara cineva), nu formatul. Meta
+    grupeaza reclamele cu acelasi mesaj intr-una singura (creative similarity),
+    deci o reclama care doar schimba imaginea nu aduce public nou.
+    """
+
+    headline: str
+    primary_text: str
+    image_url: str
+    angle: str = ""
+
+    def __post_init__(self) -> None:
+        _require_text("headline", self.headline)
+        _require_text("primary_text", self.primary_text)
+        _require_https("image_url", self.image_url)
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "headline": self.headline,
+            "primary_text": self.primary_text,
+            "image_url": self.image_url,
+            "angle": self.angle,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> MetaAdCreative:
+        try:
+            return cls(
+                headline=str(payload["headline"]),
+                primary_text=str(payload["primary_text"]),
+                image_url=str(payload["image_url"]),
+                angle=str(payload.get("angle", "")),
+            )
+        except KeyError as exc:
+            raise ValueError(f"reclama in plus nu are campul {exc}") from exc
+
+
+@dataclass(frozen=True, slots=True)
 class MetaLaunchSpec:
     """Tot ce trebuie ca sa lansezi o campanie Meta de conversii, de la zero.
 
@@ -201,9 +251,21 @@ class MetaLaunchSpec:
     latitude: Decimal | None = None
     longitude: Decimal | None = None
     radius_km: Decimal | None = None
+    #: Reclame in plus, in acelasi ad set; prima reclama ramane cea din campurile de sus.
+    extra_ads: tuple[MetaAdCreative, ...] = ()
+
+    @property
+    def ads(self) -> tuple[MetaAdCreative, ...]:
+        """Toate reclamele lansarii, prima fiind cea din campurile principale."""
+        first = MetaAdCreative(self.headline, self.primary_text, self.image_url)
+        return (first, *self.extra_ads)
 
     def __post_init__(self) -> None:
         _require_text("campaign_name", self.campaign_name)
+        if len(self.extra_ads) + 1 > MAX_ADS_PER_LAUNCH:
+            raise ValueError(
+                f"maxim {MAX_ADS_PER_LAUNCH} reclame per lansare ({len(self.extra_ads) + 1})"
+            )
         _require_text("headline", self.headline)
         _require_text("primary_text", self.primary_text)
         _require_https("target_url", self.target_url)
@@ -243,8 +305,9 @@ class MetaLaunchSpec:
         Bugetul pleaca SIR, nu float: ``25.10`` ca float ar deveni
         ``25.099999999999998`` dupa un drum prin JSON.
         """
-        return {
-            "launch_spec_version": LAUNCH_SPEC_VERSION,
+        multi = bool(self.extra_ads)
+        payload = {
+            "launch_spec_version": (LAUNCH_SPEC_VERSION_MULTI_AD if multi else LAUNCH_SPEC_VERSION),
             "campaign_name": self.campaign_name,
             "objective": self.objective.value,
             "daily_budget": str(self.daily_budget),
@@ -267,6 +330,9 @@ class MetaLaunchSpec:
                 else None
             ),
         }
+        if multi:
+            payload["extra_ads"] = [ad.to_payload() for ad in self.extra_ads]
+        return payload
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> MetaLaunchSpec:
@@ -276,10 +342,11 @@ class MetaLaunchSpec:
             ValueError: versiune necunoscuta, camp lipsa sau invalid.
         """
         version = payload.get("launch_spec_version")
-        if version != LAUNCH_SPEC_VERSION:
+        if version not in _READABLE_SPEC_VERSIONS:
             raise ValueError(
                 f"versiunea specificatiei de lansare e '{version}', asteptat "
-                f"{LAUNCH_SPEC_VERSION} - propunerea a fost salvata de alta versiune a codului"
+                f"{LAUNCH_SPEC_VERSION} sau {LAUNCH_SPEC_VERSION_MULTI_AD} - propunerea a "
+                "fost salvata de alta versiune a codului"
             )
         location = payload.get("location") or {}
         try:
@@ -299,6 +366,9 @@ class MetaLaunchSpec:
                 latitude=Decimal(location["latitude"]) if location else None,
                 longitude=Decimal(location["longitude"]) if location else None,
                 radius_km=Decimal(location["radius_km"]) if location else None,
+                extra_ads=tuple(
+                    MetaAdCreative.from_payload(ad) for ad in payload.get("extra_ads") or []
+                ),
             )
         except KeyError as exc:
             raise ValueError(f"specificatia de lansare nu are campul {exc}") from exc
@@ -315,15 +385,20 @@ class LaunchResult:
     image_hash: str
     creative_id: str
     ad_id: str
+    #: Reclamele in plus (``spec.extra_ads``), in ordinea lor; gol la o lansare cu o reclama.
+    extra_ad_ids: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, str]:
-        return {
+        created = {
             "campaign_id": self.campaign_id,
             "adset_id": self.adset_id,
             "image_hash": self.image_hash,
             "creative_id": self.creative_id,
             "ad_id": self.ad_id,
         }
+        if self.extra_ad_ids:
+            created["extra_ad_ids"] = ",".join(self.extra_ad_ids)
+        return created
 
 
 def _json(value: Any) -> str:
@@ -396,17 +471,29 @@ def _geo_locations(spec: MetaLaunchSpec) -> dict[str, Any]:
     }
 
 
-def creative_fields(spec: MetaLaunchSpec, *, image_hash: str) -> dict[str, str]:
-    """``POST /act_{id}/adcreatives`` - textul, imaginea si pagina care publica."""
+def creative_fields(
+    spec: MetaLaunchSpec,
+    *,
+    image_hash: str,
+    ad: MetaAdCreative | None = None,
+    index: int = 0,
+) -> dict[str, str]:
+    """``POST /act_{id}/adcreatives`` - textul, imaginea si pagina care publica.
+
+    Fara ``ad``, creative-ul e cel principal al specificatiei (``index`` 0).
+    """
+    headline = ad.headline if ad else spec.headline
+    primary_text = ad.primary_text if ad else spec.primary_text
+    suffix = "Creative" if index == 0 else f"Creative {index + 1}"
     return {
-        "name": f"{spec.campaign_name} - Creative",
+        "name": f"{spec.campaign_name} - {suffix}",
         "object_story_spec": _json(
             {
                 "page_id": spec.page_id,
                 "link_data": {
                     "link": spec.target_url,
-                    "message": spec.primary_text,
-                    "name": spec.headline,
+                    "message": primary_text,
+                    "name": headline,
                     "image_hash": image_hash,
                     "call_to_action": {
                         "type": spec.call_to_action,
@@ -418,10 +505,13 @@ def creative_fields(spec: MetaLaunchSpec, *, image_hash: str) -> dict[str, str]:
     }
 
 
-def ad_fields(spec: MetaLaunchSpec, *, adset_id: str, creative_id: str) -> dict[str, str]:
+def ad_fields(
+    spec: MetaLaunchSpec, *, adset_id: str, creative_id: str, index: int = 0
+) -> dict[str, str]:
     """``POST /act_{id}/ads`` - anuntul, legat de ad set si de creative."""
+    suffix = "Ad" if index == 0 else f"Ad {index + 1}"
     return {
-        "name": f"{spec.campaign_name} - Ad",
+        "name": f"{spec.campaign_name} - {suffix}",
         "adset_id": adset_id,
         "creative": _json({"creative_id": creative_id}),
         "status": LAUNCH_STATUS,
