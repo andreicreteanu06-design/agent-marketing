@@ -7,13 +7,14 @@ simplu, ``transport`` injectabil pentru teste deterministe. Fara SDK-ul oficial
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pandas as pd
@@ -29,6 +30,7 @@ from ppc_agent.providers.meta_campaign import (
     campaign_fields,
     creative_fields,
     normalize_ad_account_id,
+    video_fields,
 )
 from seo_geo_agent.audit import url_policy
 from seo_geo_agent.audit.types import CRAWL_USER_AGENT
@@ -43,6 +45,9 @@ _MAX_PAGES = 20
 #: imagine de reclama are rar peste cativa MB - iar descarcarea o facem noi, in
 #: memorie, dintr-un URL venit din datele clientului.
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
+#: Cat asteptam ca Meta sa termine procesarea unui video urcat (intervale x incercari).
+_VIDEO_POLL_SECONDS = 5.0
+_VIDEO_POLL_ATTEMPTS = 24
 
 # error.code 190 = OAuthException (token expirat/revocat/invalid) - documentat
 # de Meta ca eroare de autentificare, nu de continut al cererii.
@@ -260,7 +265,22 @@ async def download_image(
     transport: httpx.AsyncBaseTransport | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> bytes:
-    """Imaginea anuntului, descarcata de noi si verificata.
+    """Imaginea anuntului, descarcata de noi si verificata - vezi :func:`download_media`."""
+    return await download_media(
+        image_url, kind="image", max_bytes=max_bytes, transport=transport, timeout=timeout
+    )
+
+
+async def download_media(
+    url: str,
+    *,
+    kind: Literal["image", "video", "any"],
+    max_bytes: int,
+    transport: httpx.AsyncBaseTransport | None = None,
+    timeout: float = _DEFAULT_TIMEOUT,
+    probe: bool = False,
+) -> bytes:
+    """Un fisier al anuntului (imagine sau video), descarcat de noi si verificat.
 
     URL-ul vine din datele clientului, deci se valideaza ca orice tinta
     nesigura: fara adrese interne, nici directe, nici prin DNS (acelasi
@@ -271,18 +291,24 @@ async def download_image(
     validare si inca o data la cerere, deci un DNS ostil ar putea raspunde
     diferit intre ele.
 
+    Args:
+        kind: Ce tip de continut se accepta (``any`` = imagine sau video).
+        probe: Doar verifica (raspuns 200, tipul corect) si returneaza ``b""`` fara
+            sa citeasca fisierul - pentru un video pe care Meta il descarca singura.
+
     Raises:
-        ProviderError: URL refuzat, raspuns ne-200, continut care nu e
-            imagine, sau peste plafon.
+        ProviderError: URL refuzat, raspuns ne-200, alt tip de continut, sau peste plafon.
     """
+    noun = {"image": "imaginea", "video": "video-ul", "any": "fisierul"}[kind]
+    accepted = {"image": ("image/",), "video": ("video/",), "any": ("image/", "video/")}[kind]
     try:
         # Rezultatul (URL-ul normalizat) se arunca DELIBERAT: normalizarea
         # sorteaza parametrii din query, ceea ce strica URL-urile semnate
         # ale CDN-urilor. Validam gazda, dar cerem URL-ul exact.
-        await url_policy.normalize_and_validate_start_url(image_url)
+        await url_policy.normalize_and_validate_start_url(url)
     except (ValueError, url_policy.CrawlTargetBlockedError) as exc:
         raise ProviderError(
-            f"imaginea nu se poate descarca de la '{image_url}': adresa refuzata ({exc})"
+            f"{noun} nu se poate descarca de la '{url}': adresa refuzata ({exc})"
         ) from exc
 
     chunks: list[bytes] = []
@@ -293,42 +319,36 @@ async def download_image(
                 timeout=timeout,
                 follow_redirects=False,
             ) as client,
-            client.stream(
-                "GET", image_url, headers={"User-Agent": CRAWL_USER_AGENT}
-            ) as response,
+            client.stream("GET", url, headers={"User-Agent": CRAWL_USER_AGENT}) as response,
         ):
             if 300 <= response.status_code < 400:
                 raise ProviderError(
-                    f"URL-ul imaginii redirectioneaza ({response.status_code}) - "
-                    "foloseste adresa finala a imaginii"
+                    f"URL-ul pentru {noun} redirectioneaza ({response.status_code}) - "
+                    "foloseste adresa finala a fisierului"
                 )
             if response.status_code != 200:
-                raise ProviderError(
-                    f"imaginea de la '{image_url}' a raspuns {response.status_code}"
-                )
+                raise ProviderError(f"{noun} de la '{url}' a raspuns {response.status_code}")
             content_type = response.headers.get("content-type", "").lower()
-            if not content_type.startswith("image/"):
+            if not content_type.startswith(accepted):
+                what = {"image": "o imagine", "video": "un video", "any": "o imagine sau un video"}
                 raise ProviderError(
-                    f"'{image_url}' nu e o imagine "
-                    f"(content-type '{content_type or 'lipsa'}')"
+                    f"'{url}' nu e {what[kind]} (content-type '{content_type or 'lipsa'}')"
                 )
+            if probe:
+                return b""
             total = 0
             async for chunk in response.aiter_bytes():
                 total += len(chunk)
                 if total > max_bytes:
-                    raise ProviderError(
-                        f"imaginea depaseste {max_bytes // (1024 * 1024)} MB"
-                    )
+                    raise ProviderError(f"{noun} depaseste {max_bytes // (1024 * 1024)} MB")
                 chunks.append(chunk)
     except httpx.HTTPError as exc:
-        raise ProviderError(
-            f"imaginea de la '{image_url}' nu a putut fi descarcata: {exc}"
-        ) from exc
+        raise ProviderError(f"{noun} de la '{url}' nu a putut fi descarcat: {exc}") from exc
 
-    image = b"".join(chunks)
-    if not image:
-        raise ProviderError(f"imaginea de la '{image_url}' e goala")
-    return image
+    data = b"".join(chunks)
+    if not data:
+        raise ProviderError(f"{noun} de la '{url}' e gol")
+    return data
 
 
 class LiveMetaMarketingProvider(MetaMarketingProvider):
@@ -349,6 +369,8 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         timeout: float = _DEFAULT_TIMEOUT,
         transport: httpx.BaseTransport | None = None,
         async_transport: httpx.AsyncBaseTransport | None = None,
+        video_poll_seconds: float = _VIDEO_POLL_SECONDS,
+        video_poll_attempts: int = _VIDEO_POLL_ATTEMPTS,
     ) -> None:
         """
         Args:
@@ -367,6 +389,8 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         if async_transport is None and isinstance(transport, httpx.AsyncBaseTransport):
             async_transport = transport
         self._async_transport = async_transport
+        self._video_poll_seconds = video_poll_seconds
+        self._video_poll_attempts = video_poll_attempts
 
     @property
     def access_token_configured(self) -> bool:
@@ -720,6 +744,42 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
             ) from exc
         return self._checked(response)
 
+    async def _get(self, object_id: str, params: dict[str, str]) -> dict[str, Any]:
+        """``GET /{object_id}`` asincron - folosit de lansare (starea unui video urcat)."""
+        headers = self._headers()
+        url = f"{_BASE_URL}/{object_id}"
+        try:
+            async with httpx.AsyncClient(
+                transport=self._async_transport, timeout=self._timeout
+            ) as client:
+                response = await client.get(url, params=params, headers=headers)
+        except httpx.ConnectError as exc:
+            raise SetupRequiredError(f"Meta Graph API nu raspunde la {_BASE_URL}.") from exc
+        except httpx.TimeoutException as exc:
+            raise SetupRequiredError(
+                f"Meta Graph API nu a raspuns in {self._timeout:.0f}s."
+            ) from exc
+        return self._checked(response)
+
+    async def _wait_video_ready(self, video_id: str) -> None:
+        """Asteapta pana cand Meta termina procesarea video-ului urcat.
+
+        Raises:
+            ProviderError: Meta raporteaza eroare, sau video-ul nu e gata dupa
+                ``video_poll_attempts`` verificari.
+        """
+        for attempt in range(self._video_poll_attempts):
+            data = await self._get(video_id, {"fields": "status"})
+            status = str((data.get("status") or {}).get("video_status", ""))
+            if status == "ready":
+                return
+            if status == "error":
+                raise ProviderError(f"Meta nu a putut procesa video-ul {video_id}")
+            if attempt + 1 < self._video_poll_attempts:
+                await asyncio.sleep(self._video_poll_seconds)
+        waited = self._video_poll_seconds * self._video_poll_attempts
+        raise ProviderError(f"video-ul {video_id} nu s-a procesat in {waited:.0f} s")
+
     async def _delete(self, object_id: str) -> None:
         """``DELETE /{object_id}`` - folosit doar de rollback-ul lansarii."""
         headers = self._headers()
@@ -908,11 +968,13 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
 
         Ordinea:
 
-        0. imaginile tuturor reclamelor se descarca de la noi - INAINTE de orice
-           apel Meta, ca un URL stricat sa nu lase in urma o campanie de sters;
+        0. imaginile tuturor reclamelor se descarca de la noi, iar URL-urile video
+           se verifica - INAINTE de orice apel Meta, ca un URL stricat sa nu lase in
+           urma o campanie de sters;
         1. campania; 2. ad set-ul (bugetul se converteste in unitati minime
            ABIA acum, dupa moneda contului); apoi, pentru fiecare reclama:
-           3. imaginea urcata in Meta; 4. creative-ul; 5. anuntul.
+           3. imaginea (la video, coperta) urcata in Meta; la video, si video-ul,
+           asteptat pana e procesat; 4. creative-ul; 5. anuntul.
 
         Daca pica ceva dupa pasul 1, campania se sterge - altfel fiecare
         incercare esuata ar lasa resturi in contul clientului.
@@ -920,6 +982,17 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         account = normalize_ad_account_id(ad_account_id)
         try:
             images = [await self._download_image(ad.image_url) for ad in spec.ads]
+            for ad in spec.ads:
+                if ad.video_url:
+                    # Meta descarca video-ul singura; noi verificam doar ca exista si e video.
+                    await download_media(
+                        ad.video_url,
+                        kind="video",
+                        max_bytes=0,
+                        transport=self._async_transport,
+                        timeout=self._timeout,
+                        probe=True,
+                    )
         except ProviderError as exc:
             raise CampaignLaunchError(
                 stage="image_download", reason=str(exc), outcome=_NOTHING_CREATED
@@ -960,11 +1033,24 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                         {"bytes": base64.b64encode(image).decode("ascii")},
                     )
                 )
+                video_id: str | None = None
+                if ad.video_url:
+                    stage = "video_upload"
+                    video_id = _created_id(
+                        await self._mutate(
+                            f"{account}/advideos", video_fields(spec, ad, index=index)
+                        ),
+                        "video-ului",
+                    )
+                    stage = "video_processing"
+                    await self._wait_video_ready(video_id)
                 stage = "creative"
                 creative_id = _created_id(
                     await self._mutate(
                         f"{account}/adcreatives",
-                        creative_fields(spec, image_hash=image_hash, ad=ad, index=index),
+                        creative_fields(
+                            spec, image_hash=image_hash, ad=ad, index=index, video_id=video_id
+                        ),
                     ),
                     "creative-ului",
                 )

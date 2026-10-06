@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent.creative.concepts import ConceptTemplate
 from ppc_agent_server.models import KeywordIntent, SerpSource
 from seo_geo_agent.audit.url_policy import is_blocked_host
 
@@ -196,6 +197,10 @@ class ExtraAdRequest(BaseModel):
     image_url: str = Field(min_length=9, max_length=2048)
     #: Argumentul reclamei (de ce ar cumpara cineva); ajuta la detectarea duplicatelor.
     angle: str = Field(default="", max_length=200)
+    #: Reclama video: ``image_url`` devine coperta.
+    video_url: str | None = Field(default=None, min_length=9, max_length=2048)
+    #: Sablonul de concept (poveste de fondator, noi vs. ei, inainte/dupa...).
+    concept_template: ConceptTemplate | None = None
 
 
 class CampaignLaunchRequest(BaseModel):
@@ -222,6 +227,10 @@ class CampaignLaunchRequest(BaseModel):
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     #: Implicit: SHOP_NOW la vanzari, LEARN_MORE la lead-uri.
     call_to_action: str | None = None
+    #: Prima reclama ca video: ``image_url`` devine coperta.
+    video_url: str | None = Field(default=None, min_length=9, max_length=2048)
+    #: Implicit: sablonul cerut de CMO pentru bariera clientului.
+    concept_template: ConceptTemplate | None = None
     #: Reclame in plus in acelasi ad set; prima ramane cea din campurile de mai sus.
     extra_ads: list[ExtraAdRequest] = Field(default_factory=list, max_length=5)
 

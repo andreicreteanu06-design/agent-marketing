@@ -25,6 +25,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field
 
+from ppc_agent.creative.concepts import ConceptTemplate
 from ppc_agent.texttools import tokenize
 from ppc_agent_server.services.avatar_builder import CustomerAvatar
 from ppc_agent_server.services.propensity import Experiment
@@ -106,6 +107,9 @@ class CreativeEvaluationContext(BaseModel):
     avatar: CustomerAvatar | None = None
     #: Ipoteza CMO-ului (experimentul pe bariera dominanta): ce trebuie sa faca reclama.
     cmo_hypothesis: Experiment | None = None
+    #: Sablonul de concept pe care trebuie sa-l respecte ACEASTA reclama. ``None`` = cel
+    #: din ipoteza CMO-ului (daca exista); o reclama de diversitate isi aduce sablonul ei.
+    concept_template: ConceptTemplate | None = None
     #: Ce a gresit CCO-ul pe acest cont, dupa cifrele din piata.
     lessons: list[CalibrationLesson] = Field(default_factory=list)
     #: Ce merge ACUM pe platforma, in industria clientului (trends_db).

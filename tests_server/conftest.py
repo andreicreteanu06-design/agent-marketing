@@ -169,10 +169,10 @@ def _no_real_cco(monkeypatch: pytest.MonkeyPatch) -> None:
     verdict anume inlocuiesc ``get_creative_review`` (vezi ``test_campaign_launch``).
     """
 
-    async def offline(image_url: str, **_: object) -> bytes:
+    async def offline(media_url: str, **_: object) -> bytes:
         raise ProviderError("CCO-ul nu ruleaza in teste")
 
-    monkeypatch.setattr(campaigns_router, "download_image", offline)
+    monkeypatch.setattr(campaigns_router, "download_media", offline)
 
 
 @pytest.fixture

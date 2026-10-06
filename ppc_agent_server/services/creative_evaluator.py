@@ -47,6 +47,10 @@ CCO-ul nu judeca in vid (``creative_context.CreativeEvaluationContext``, adunat 
   la o grija a clientului ideal sau ii arata treaba pe care o vrea facuta, si daca face ce
   cere ipoteza. Daca nu, ``message_match`` cade sub 5 si reclama se respinge - oricat de
   buna ar fi estetic;
+- **Conceptul**: sablonul post-Andromeda ales de CMO (sau adus de o reclama de
+  diversitate, ``context.concept_template``) - Jev verifica daca imaginea arata ce cere
+  sablonul (``image_cues``), iar video-ul ii urmeaza pasii (``video_beats``). Nerespectat,
+  conteaza ca o nealiniere la ``message_match``;
 - **lectiile din piata**: ce a supraestimat (sau subestimat) CCO-ul pe acest cont, dupa
   hook rate, CTR si ROAS trimise de PPC, muta scorul hook-ului si al alinierii; un concept
   care a esuat deja (acelasi fisier sau acelasi hook) nu trece de 5;
@@ -78,6 +82,7 @@ from typing import Annotated, Any, Literal, Protocol, cast
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from ppc_agent.creative.concepts import CONCEPTS, ConceptTemplate
 from ppc_agent.errors import ProviderError, SetupRequiredError
 from ppc_agent_server.services.creative_context import (
     FAILED_CONCEPT_CAP,
@@ -255,6 +260,8 @@ class _Facts:
     job_shown: bool | None = None
     #: Face ce cere ipoteza CMO-ului; ``None`` = nu exista ipoteza.
     follows_hypothesis: bool | None = None
+    #: Respecta sablonul de concept ales (``creative/concepts.py``); ``None`` = niciun sablon.
+    follows_concept: bool | None = None
     #: Conceptul: hook-ul principal (sau primul rand din deschidere).
     concept: str = ""
     shows_data: bool = False
@@ -317,6 +324,10 @@ class CreativeEvaluation(BaseModel):
     evaluation_id: int | None = None
     #: Hook-ul principal citit pe creativa: dupa el se recunoaste un concept care a esuat.
     concept: str = ""
+    #: Sablonul de concept dupa care s-a judecat reclama (``None`` = niciunul).
+    concept_template: str | None = None
+    #: Respecta sablonul; ``None`` = niciun sablon de verificat.
+    follows_concept: bool | None = None
 
 
 _SYSTEM = (
@@ -410,6 +421,12 @@ _HYPOTHESIS = Noul(
     instructions="Does the ad do what `cmo_hypothesis.test_variant` asks for?",
     true="the ad clearly does it, so it can run as the variant of this test",
     false="the ad does something else, or only part of it",
+)
+_CONCEPT = Noul(
+    instructions="Does the ad follow the concept template in `concept` - does it show what "
+    "`concept.must_show` lists, in its pictures, `on_screen_text` or `speech`?",
+    true="the ad clearly follows that structure",
+    false="the ad uses another structure, or shows only part of what the template needs",
 )
 _CTA = Noul(
     instructions="Does the ad tell the viewer what to do next (call, apply, buy, write), in "
@@ -929,6 +946,7 @@ def _observe(
     ad = context.purpose == "ad"
     audience = context.avatar
     hypothesis = context.cmo_hypothesis if ad else None
+    concept = concept_for(context)
     worries = list(audience.anxieties) if audience is not None and ad else []
     read = [_read_text(frame) for frame in frames]
     times = video.frame_times if video is not None else [0.0]
@@ -960,6 +978,12 @@ def _observe(
             "test_variant": hypothesis.change,
             "hypothesis": hypothesis.hypothesis,
         }
+    if concept is not None:
+        spec = CONCEPTS[concept]
+        state["concept"] = {
+            "template": spec.label,
+            "must_show": list(spec.video_beats if video is not None else spec.image_cues),
+        }
     if video is not None:
         state["ending_text"] = _texts(read[-1])
         state["speech"] = speech
@@ -988,6 +1012,8 @@ def _observe(
         questions["job"] = _JOB
     if hypothesis is not None:
         questions["hypothesis"] = _HYPOTHESIS
+    if concept is not None:
+        questions["concept"] = _CONCEPT
     if candidates and ad:
         options: dict[str, str | None] = {
             f"line_{index}": line.text for index, line in enumerate(candidates)
@@ -1073,6 +1099,7 @@ def _observe(
         worry_answered=worry,
         job_shown=yes("job") if "job" in questions else None,
         follows_hypothesis=yes("hypothesis") if hypothesis is not None else None,
+        follows_concept=yes("concept") if concept is not None else None,
         concept=main_hook or next(iter(_texts(opening)), ""),
         shows_data=seen.shows_data,
         metrics_shown=list(
@@ -1094,6 +1121,16 @@ def _observe(
 
 
 # --- decizia (cod, nu model) ---------------------------------------------------------
+
+
+def concept_for(context: CreativeEvaluationContext) -> ConceptTemplate | None:
+    """Sablonul dupa care se judeca reclama: al ei, altfel al ipotezei CMO-ului."""
+    if context.purpose != "ad":
+        return None
+    if context.concept_template is not None:
+        return context.concept_template
+    hypothesis = context.cmo_hypothesis
+    return hypothesis.concept_template if hypothesis is not None else None
 
 
 def _clamp(value: int) -> int:
@@ -1301,7 +1338,7 @@ def _message_match(
     """
     hypothesis = context.cmo_hypothesis
     avatar_known = seen.worry_answered is not None or seen.job_shown is not None
-    if not avatar_known and seen.follows_hypothesis is None:
+    if not avatar_known and seen.follows_hypothesis is None and seen.follows_concept is None:
         return None
     misses = 0
     avatar = context.avatar
@@ -1329,7 +1366,13 @@ def _message_match(
             f"({hypothesis.change[:1].lower()}{hypothesis.change[1:]})"
         )
         fixes.append(f"Fă varianta cerută de CMO: {hypothesis.change}")
-    return (10, 4, 1)[misses]
+    concept = concept_for(context)
+    if concept is not None and seen.follows_concept is False:
+        misses += 1
+        spec = CONCEPTS[concept]
+        risks.append(f"reclama nu respectă conceptul ales («{spec.label}»): {spec.solves}")
+        fixes.append(f"Construiește reclama pe «{spec.label}»: {spec.image_cues[0]}")
+    return (10, 4, 1)[min(misses, 2)]
 
 
 _CALIBRATED_LABELS: dict[CalibratedScore, str] = {
@@ -1464,6 +1507,9 @@ def _context_notes(context: CreativeEvaluationContext) -> list[str]:
         )
     if context.cmo_hypothesis is not None:
         notes.append(f"Ipoteza CMO-ului: {context.cmo_hypothesis.hypothesis}")
+    concept = concept_for(context)
+    if concept is not None:
+        notes.append(f"Conceptul cerut: {CONCEPTS[concept].label} ({CONCEPTS[concept].solves}).")
     elif context.purpose == "ad":
         notes.append("Fără ipoteză CMO (nicio barieră dominantă încă): strategia nu s-a verificat.")
     if context.lessons:
@@ -1606,6 +1652,8 @@ def evaluate_creative(
         video_facts=facts,
         context_notes=_context_notes(context),
         concept=seen.concept,
+        concept_template=concept_for(context),
+        follows_concept=seen.follows_concept,
     ).model_dump()
 
 

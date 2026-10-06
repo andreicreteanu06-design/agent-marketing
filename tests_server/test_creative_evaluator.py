@@ -54,7 +54,8 @@ from tests_server.llm_fakes import FakeJev
 
 KEYS = {
     "asset_type", "purpose", "decision", "scores", "detected_risks", "priority_fixes",
-    "video_facts", "context_notes", "evaluation_id", "concept",
+    "video_facts", "context_notes", "evaluation_id", "concept", "concept_template",
+    "follows_concept",
 }
 #: Tesseract-ul adevarat (fixture-ul ``ocr`` il inlocuieste in toate celelalte teste).
 REAL_READ_TEXT = ce._read_text
@@ -113,7 +114,7 @@ def ocr(monkeypatch: pytest.MonkeyPatch) -> _FakeOcr:
 JUDGE_DEFAULTS: dict[str, float | str] = {
     "domain": "other", "brand": 0.9, "conditions": 0.9, "authentic": 0.1, "typos": 0,
     "hook": "line_0", "intro": 0.1, "captions": 0.1, "cta": 0.9, "scarcity": 0.1,
-    "worry": "worry_0", "hypothesis": 0.9, "job": 0.9,
+    "worry": "worry_0", "hypothesis": 0.9, "concept": 0.9, "job": 0.9,
     "avatar": 0.9, "at_stake": 0.9, "urgency": 0.9, "big_question": 0.9, "headfake": 0.1,
     "rehooks": 0.9,
 }
@@ -1137,3 +1138,59 @@ def test_fara_jev_configurat_da_503(
     response = _upload(client, login, _png())
     assert response.status_code == 503
     assert "JEV_API_KEY" in response.json()["detail"]
+
+
+# --- sablonul de concept (CMO -> CCO) --------------------------------------------------
+
+
+def _concept_context(**overrides: Any) -> CreativeEvaluationContext:
+    from ppc_agent_server.services.propensity import PropensityScore, design_experiment
+
+    score = PropensityScore(
+        relevance=5, value=5, trust=2, risk=5, friction=5, p_action=5,
+        dominant_barrier="lack_of_trust", evidence=[],
+    )
+    return CreativeEvaluationContext(cmo_hypothesis=design_experiment(score, None), **overrides)
+
+
+def test_cco_primeste_conceptul_cmo_si_intreaba_daca_e_respectat(ocr: _FakeOcr) -> None:
+    ocr.lines = [ce._Line("Sunt Mihai, mecanic de 20 de ani", 80, "1")]
+    judge = _FakeJudge()
+    result = _run(_png(), judge=judge, context=_concept_context())
+
+    state, questions = judge.calls[0]
+    assert state["concept"]["template"] == "Povestea fondatorului"
+    assert state["concept"]["must_show"][0].startswith("fondatorul sau echipa reală")
+    assert "concept" in questions
+    assert (result["concept_template"], result["follows_concept"]) == ("founder_story", True)
+
+
+def test_o_reclama_care_nu_respecta_conceptul_e_respinsa(ocr: _FakeOcr) -> None:
+    ocr.lines = [ce._Line("Reducere 20% la revizie", 80, "1")]
+    result = _run(_png(), judge=_FakeJudge(concept=0.1), context=_concept_context())
+
+    assert result["follows_concept"] is False
+    assert result["scores"]["message_match"] == 4
+    assert result["decision"] == "REVISE_BEFORE_TEST"
+    assert any("Povestea fondatorului" in risk for risk in result["detected_risks"])
+
+
+def test_reclama_de_diversitate_se_judeca_pe_conceptul_ei(ocr: _FakeOcr) -> None:
+    ocr.lines = [ce._Line("Andrei: cutia reparată în două zile", 80, "1")]
+    judge = _FakeJudge()
+    context = CreativeEvaluationContext(concept_template="testimonial")
+    result = _run(_png(), judge=judge, context=context)
+
+    state, questions = judge.calls[0]
+    assert "hypothesis" not in questions and "cmo_hypothesis" not in state
+    assert state["concept"]["template"] == "Mărturia unui client"
+    assert result["concept_template"] == "testimonial"
+
+
+def test_fara_ipoteza_si_fara_concept_nu_se_intreaba_nimic(ocr: _FakeOcr) -> None:
+    ocr.lines = [ce._Line("Revizie completă", 80, "1")]
+    judge = _FakeJudge()
+    result = _run(_png(), judge=judge)
+
+    assert "concept" not in judge.calls[0][1]
+    assert result["concept_template"] is None and result["follows_concept"] is None

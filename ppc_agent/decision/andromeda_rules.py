@@ -11,7 +11,9 @@ de structura (campanie unica, targetare larga - acelea sunt deja corecte):
    mic efect.
 2. **Hook specific.** Un inceput generic ("Hey, trebuie sa vezi asta") nu da
    algoritmului nicio problema sau persoana de care sa se agate.
-3. **Numar de reclame pe masura bugetului.** Mai multe reclame decat poate hrani
+3. **Formate diferite.** Imaginea si video-ul intra in licitatii diferite; doar imagini
+   inseamna ca o parte din public nu vede niciodata reclama.
+4. **Numar de reclame pe masura bugetului.** Mai multe reclame decat poate hrani
    bugetul raman nediagnosticate (``budget_strategy.recommend_arm_capacity``);
    mai putine decat poate hrani inseamna diversitate lasata pe masa.
 
@@ -53,6 +55,8 @@ class AdText(Protocol):
     def primary_text(self) -> str: ...
     @property
     def angle(self) -> str: ...
+    @property
+    def format(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +132,13 @@ def portfolio_findings(
                 "e targetarea: numeste problema sau persoana (ex. durerea concreta, rolul, "
                 "situatia), altfel algoritmul nu are de ce sa se agate."
             )
+
+    if len(ads) >= 2 and all(ad.format == "image" for ad in ads):
+        result.suggestions.append(
+            "toate reclamele sunt imagini. Imaginea si video-ul intra in licitatii diferite: "
+            "un video (chiar simplu, filmat cu telefonul) ajunge la oameni pe care imaginile "
+            "nu-i prind."
+        )
 
     if max_concurrent_arms is not None:
         count = len(ads)
