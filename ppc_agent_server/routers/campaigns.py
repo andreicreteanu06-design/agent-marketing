@@ -23,9 +23,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
+from ppc_agent.decision.budget_strategy import recommend_arm_capacity
 from ppc_agent.errors import PpcAgentError
 from ppc_agent.providers.factory import ProviderFactory
-from ppc_agent.providers.live.meta import download_image
+from ppc_agent.providers.live.meta import download_media
 from ppc_agent.providers.meta_campaign import (
     DEFAULT_CALL_TO_ACTION,
     MetaAdCreative,
@@ -47,17 +48,30 @@ from ppc_agent_server.routers import queen
 from ppc_agent_server.routers.client_auth import get_current_client_user
 from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
 from ppc_agent_server.services.avatar_builder import profile_missing
+from ppc_agent_server.services.campaign_orders import (
+    ORDERS_KEY,
+    CampaignOrders,
+    orders_summary,
+    request_violations,
+    strategy_orders,
+    with_council,
+    with_creative,
+)
 from ppc_agent_server.services.client_intake import launch_economics, open_intake
 from ppc_agent_server.services.council import CouncilReply
 from ppc_agent_server.services.council_guard import DECIDED_BY
 from ppc_agent_server.services.creative_context import CreativeEvaluationContext
 from ppc_agent_server.services.creative_evaluator import (
-    MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
     evaluate_creative,
     text_judge_from_settings,
     vision_model_from_settings,
 )
-from ppc_agent_server.services.creative_memory import build_context, save_evaluation
+from ppc_agent_server.services.creative_memory import (
+    build_context,
+    cmo_hypothesis,
+    save_evaluation,
+)
 from ppc_agent_server.services.embeddings import embedder_from_settings
 from ppc_agent_server.services.emergency_stop import require_running
 from ppc_agent_server.services.launch_council import (
@@ -113,19 +127,20 @@ def get_creative_review() -> CreativeReview:
     opreste lansarea: avizul spune ca evaluarea lipseste, iar omul decide la aprobare.
     """
 
-    def evaluate(image_url: str, context: CreativeEvaluationContext) -> dict[str, Any]:
+    def evaluate(media_url: str, context: CreativeEvaluationContext) -> dict[str, Any]:
         settings = get_server_settings()
         try:
-            image = asyncio.run(download_image(image_url, max_bytes=MAX_IMAGE_BYTES))
+            # Imagine sau video: plafonul per tip il aplica evaluate_creative.
+            media = asyncio.run(download_media(media_url, kind="any", max_bytes=MAX_VIDEO_BYTES))
             result = evaluate_creative(
-                image,
+                media,
                 model=vision_model_from_settings(settings),
                 judge=text_judge_from_settings(settings),
                 whisper_model=settings.whisper_model,
                 elevenlabs_api_key=settings.elevenlabs_api_key,
                 context=context,
             )
-            return {**result, "asset_sha256": hashlib.sha256(image).hexdigest()}
+            return {**result, "asset_sha256": hashlib.sha256(media).hexdigest()}
         except (PpcAgentError, ValueError) as exc:
             return {"unavailable": str(exc)[:300]}
 
@@ -148,23 +163,29 @@ def _creative_note(creative: dict[str, Any]) -> str:
     return "CCO: creativa e eligibila pentru test."
 
 
-def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaLaunchSpec:
-    """Specificatia de lansare: cererea, completata cu setarile clientului.
+def _build_spec(
+    payload: CampaignLaunchRequest, account: ClientAccount, orders: CampaignOrders
+) -> MetaLaunchSpec:
+    """Specificatia de lansare: cererea, construita dupa ordinele consiliului si ale CMO-ului.
+
+    Evenimentul de optimizare e cel din ordine (al contului, trimis prin CAPI), iar prima
+    reclama primeste sablonul de concept al CMO-ului cand cererea nu aduce altul.
 
     Raises:
-        HTTPException: 422 cand specificatia nu trece validarea.
+        HTTPException: 422 cand cererea incalca ordinele sau specificatia nu e valida.
     """
-    defaults = build_meta_campaign_payload(account.objective)
+    problems = request_violations(
+        orders, custom_event_type=payload.custom_event_type, pixel_id=payload.pixel_id
+    )
+    if problems:
+        raise HTTPException(status_code=422, detail="ordinele consiliului: " + "; ".join(problems))
     try:
         return MetaLaunchSpec(
             campaign_name=payload.campaign_name.strip(),
             objective=account.objective,
             daily_budget=payload.daily_budget,
             pixel_id=payload.pixel_id,
-            custom_event_type=(
-                payload.custom_event_type
-                or defaults["ad_set"]["promoted_object"]["custom_event_type"]
-            ),
+            custom_event_type=orders.optimization_event,
             page_id=payload.page_id,
             target_url=payload.target_url.strip(),
             headline=payload.headline.strip(),
@@ -172,12 +193,16 @@ def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaL
             image_url=payload.image_url.strip(),
             country=payload.country or account.geo.strip().upper(),
             call_to_action=payload.call_to_action or DEFAULT_CALL_TO_ACTION[account.objective],
+            video_url=(payload.video_url or "").strip(),
+            concept_template=payload.concept_template or orders.concept_template or "",
             extra_ads=tuple(
                 MetaAdCreative(
                     headline=ad.headline.strip(),
                     primary_text=ad.primary_text.strip(),
                     image_url=ad.image_url.strip(),
                     angle=ad.angle.strip(),
+                    video_url=(ad.video_url or "").strip(),
+                    concept_template=ad.concept_template or "",
                 )
                 for ad in payload.extra_ads
             ),
@@ -185,6 +210,21 @@ def _build_spec(payload: CampaignLaunchRequest, account: ClientAccount) -> MetaL
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _ad_context(
+    context: CreativeEvaluationContext, ad: MetaAdCreative, *, cmo_variant: bool
+) -> CreativeEvaluationContext:
+    """Ce trebuie sa respecte o reclama anume.
+
+    Prima reclama e varianta testului CMO-ului: se judeca pe ipoteza si pe conceptul ei.
+    O reclama in plus e diversitate (Andromeda): se judeca doar pe conceptul ei - altfel
+    ar fi respinsa fiindca nu testeaza ipoteza, desi nici nu trebuie.
+    """
+    update: dict[str, Any] = {"concept_template": ad.concept_template or None}
+    if not cmo_variant:
+        update["cmo_hypothesis"] = None
+    return context.model_copy(update=update)
 
 
 def _local_area(account: ClientAccount) -> dict[str, Decimal]:
@@ -282,7 +322,19 @@ def propose_launch(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    spec = _build_spec(payload, account)
+    # Ordinele vin inaintea specificatiei: evenimentul CAPI, pixelul, conceptul CMO-ului,
+    # cate reclame hraneste bugetul.
+    target_cpa = config.budget.target_cpa
+    orders = strategy_orders(
+        account,
+        cmo_hypothesis(account),
+        max_ads=(
+            recommend_arm_capacity(payload.daily_budget, target_cpa).recommended_max_concurrent_arms
+            if target_cpa is not None and target_cpa > 0
+            else None
+        ),
+    )
+    spec = _build_spec(payload, account, orders)
     check_spend_limit(session, account, spec.daily_budget)
 
     brief = build_launch_brief(
@@ -314,6 +366,7 @@ def propose_launch(
             status_code=503,
             detail="consiliul nu a putut delibera acum - fără avizul lui nu se lansează nimic",
         ) from exc
+    orders = with_council(orders, reply)
     # Dupa deliberare: o taietura a CFO-ului de acum e deja in memorie, deci conteaza.
     block = growth_block(session, client_id)
     # CCO-ul afla de la ceilalti agenti pe ce sa judece: clientul ideal, ipoteza CMO-ului,
@@ -322,7 +375,9 @@ def propose_launch(
         session, account, purpose="ad", platform="meta",
         embedder=embedder_from_settings(get_server_settings()),
     )
-    creative = creative_review(spec.image_url, context)
+    creative = dict(creative_review(spec.ads[0].media_url, _ad_context(
+        context, spec.ads[0], cmo_variant=True
+    )))
     sha = str(creative.pop("asset_sha256", ""))
     if creative.get("decision") is not None:  # verdictul se pastreaza: PPC-ul ii va raspunde
         creative["evaluation_id"] = save_evaluation(session, client_id, sha, creative, context)
@@ -330,7 +385,9 @@ def propose_launch(
     # fiindca nu e prima.
     extra_creatives = []
     for position, extra in enumerate(spec.extra_ads, start=2):
-        extra_review = dict(creative_review(extra.image_url, context))
+        extra_review = dict(
+            creative_review(extra.media_url, _ad_context(context, extra, cmo_variant=False))
+        )
         extra_sha = str(extra_review.pop("asset_sha256", ""))
         if extra_review.get("decision") is not None:
             extra_review["evaluation_id"] = save_evaluation(
@@ -341,6 +398,7 @@ def propose_launch(
     blocked_extra = next(
         (item for item in extra_creatives if item.get("decision") == CREATIVE_BLOCKS), None
     )
+    orders = with_creative(orders, spec, [creative, *extra_creatives])
 
     proposal = ProposedChange(
         client_account_id=client_id,
@@ -355,6 +413,7 @@ def propose_launch(
             REVIEW_KEY: review(reply),
             CREATIVE_KEY: creative,
             **({"extra_creative_reviews": extra_creatives} if extra_creatives else {}),
+            ORDERS_KEY: orders.model_dump(mode="json"),
             "economics": economics,
         },
         after=spec.to_payload(),
@@ -362,7 +421,8 @@ def propose_launch(
         rationale=(
             f"{_rationale(spec, ad_account)} {brief.summary()} "
             + (f"{economics['note']} " if economics else "")
-            + f"Consiliul: {reply.ruling.decision} {_creative_note(creative)}"
+            + f"Consiliul: {reply.ruling.decision} {_creative_note(creative)} "
+            + orders_summary(orders)
         ),
         source_module=SOURCE_MODULE,
         status=ChangeStatus.PENDING,

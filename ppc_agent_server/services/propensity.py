@@ -16,7 +16,16 @@ dovada, scrisa in ``evidence``:
 
 Bariera dominanta e factorul cel mai departe de neutru, in directia rea. Pentru ea,
 CMO-ul nu arunca texte de reclama: propune UN experiment, cu ipoteza falsificabila -
-varianta, controlul, metrica, pragul de succes, esantionul si ce o infirma.
+varianta, controlul, metrica, pragul de succes, esantionul si ce o infirma. Experimentul
+primeste si un sablon de concept post-Andromeda (``ppc_agent/creative/concepts.py``): o
+structura de reclama dovedita pentru bariera respectiva, pe care o urmeaza copywriterul,
+o verifica CCO-ul si o eticheteaza PPC-ul:
+
+- lipsa de incredere -> povestea fondatorului;
+- prea multe pachete (choice overload) sau pretul greu de judecat -> noi vs. ei;
+- treaba clientului (functional job) cunoscuta, pe risc sau relevanta -> inainte/dupa;
+- risc sau relevanta fara functional job -> marturia unui client;
+- fricțiune fara choice overload -> demonstratie.
 
 Garda etica ``fear_manipulation_risk``: in domeniile sensibile (sanatate, financiar,
 recrutare - ca la CCO), Regina nu foloseste frica: declansatorii de frica nu ajung la
@@ -29,8 +38,9 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from ppc_agent.creative.concepts import CONCEPTS, ConceptTemplate
 from ppc_agent.texttools import normalize, tokenize
 from ppc_agent_server.services.avatar_builder import CustomerAvatar, OfferFacts
 from ppc_agent_server.services.cognitive import BarrierKind
@@ -126,6 +136,53 @@ class Experiment(BaseModel):
     min_sample: str
     #: Ce rezultat infirma ipoteza.
     falsified_if: str
+    #: Structura de reclama post-Andromeda aleasa pentru bariera (``creative/concepts.py``).
+    concept_template: ConceptTemplate
+    #: De ce acest sablon, in cuvintele CMO-ului.
+    concept_reason: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _concept_for_saved_hypotheses(cls, data: object) -> object:
+        """Ipotezele publicate inainte de sabloane primesc sablonul implicit al barierei."""
+        if isinstance(data, dict) and not data.get("concept_template"):
+            barrier = data.get("barrier")
+            if barrier in DEFAULT_CONCEPT:
+                return {**data, "concept_template": DEFAULT_CONCEPT[barrier]}
+        return data
+
+
+#: Sablonul fiecarei bariere cand nu stim nimic in plus despre client sau oferta.
+DEFAULT_CONCEPT: dict[str, ConceptTemplate] = {
+    "lack_of_trust": "founder_story",
+    "price_uncertainty": "us_vs_them",
+    "perceived_risk": "testimonial",
+    "friction": "product_demo",
+    "low_relevance": "testimonial",
+}
+
+
+def choose_concept(
+    barrier: Barrier, avatar: CustomerAvatar | None, offer: OfferFacts | None
+) -> tuple[ConceptTemplate, str]:
+    """Sablonul de concept pentru bariera, cu motivul (determinist, fara model)."""
+    job = avatar.functional_job if avatar is not None else None
+    overloaded = offer is not None and offer.options is not None and offer.options > MAX_OPTIONS
+    if barrier == "lack_of_trust":
+        return "founder_story", "un om real, cu nume și motiv, construiește încredere mai repede"
+    if barrier == "friction" and overloaded:
+        assert offer is not None and offer.options is not None
+        return "us_vs_them", (
+            f"{offer.options} pachete de ales (choice overload): o comparație simplă alege "
+            "în locul clientului"
+        )
+    if barrier == "price_uncertainty":
+        return "us_vs_them", "comparația cu alternativa obișnuită arată ce primește pe bani"
+    if barrier in ("perceived_risk", "low_relevance") and job:
+        return "before_after", f"arată treaba făcută («{job}»), nu procesul"
+    if barrier in ("perceived_risk", "low_relevance"):
+        return "testimonial", "un client ca el spune ce a primit"
+    return "product_demo", "arată cât de scurt e drumul până la rezultat"
 
 
 def _mentions(texts: Iterable[str], markers: Sequence[str]) -> str | None:
@@ -254,11 +311,16 @@ _PLAYBOOK: dict[Barrier, tuple[str, str]] = {
 }
 
 
-def design_experiment(score: PropensityScore, avatar: CustomerAvatar | None) -> Experiment | None:
+def design_experiment(
+    score: PropensityScore,
+    avatar: CustomerAvatar | None,
+    offer: OfferFacts | None = None,
+) -> Experiment | None:
     """Experimentul pe bariera dominanta; ``None`` fara bariera (nimic de testat inca)."""
     barrier = score.dominant_barrier
     if barrier is None:
         return None
+    concept, reason = choose_concept(barrier, avatar, offer)
     change, mechanism = _PLAYBOOK[barrier]
     if barrier == "low_relevance" and avatar is not None and avatar.customer_situation:
         change += f" («{avatar.customer_situation}»)"
@@ -283,6 +345,8 @@ def design_experiment(score: PropensityScore, avatar: CustomerAvatar | None) -> 
             f"varianta nu bate controlul cu {MIN_LIFT_PCT}% după eșantion: atunci {label} nu "
             "era bariera, iar următorul test merge pe a doua barieră"
         ),
+        concept_template=concept,
+        concept_reason=reason,
     )
 
 
@@ -290,6 +354,7 @@ def experiment_line(experiment: Experiment) -> str:
     """Experimentul intr-o fraza, pentru client si pentru consiliu."""
     return (
         f"Bariera dominantă e {BARRIER_LABELS[experiment.barrier]}. Experimentul: "
-        f"{experiment.hypothesis} Testăm pe {experiment.min_sample}; ipoteza cade dacă "
-        f"{experiment.falsified_if}."
+        f"{experiment.hypothesis} Conceptul reclamei: "
+        f"{CONCEPTS[experiment.concept_template].label}. Testăm pe {experiment.min_sample}; "
+        f"ipoteza cade dacă {experiment.falsified_if}."
     )

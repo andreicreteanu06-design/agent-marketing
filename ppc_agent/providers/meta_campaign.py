@@ -17,6 +17,12 @@ eroare dura la creare, verificate in documentatia Meta pentru v24-v25:
   (obligatoriu din v24, altfel eroarea 4834011);
 - ``special_ad_categories`` pe campanie, chiar si gol;
 - ``targeting_automation.advantage_audience`` pe ad set (obligatoriu din v23).
+
+Optimizarea e fortata pe conversie: orice ad set construit aici are
+``optimization_goal=OFFSITE_CONVERSIONS`` si ``promoted_object`` cu pixelul si un
+eveniment pe care il trimitem si prin Conversions API (``CAPI_EVENT_TYPES``) - niciodata
+click-uri pe link, vizualizari de pagina sau afisari. ``adset_fields`` verifica asta
+inainte sa returneze, ca o schimbare viitoare sa nu poata strecura alt obiectiv.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, TypedDict
 
 from ppc_agent.campaign_objective import CampaignObjective
+from ppc_agent.creative.concepts import CONCEPT_TEMPLATES
 
 MetaObjective = Literal["OUTCOME_SALES", "OUTCOME_LEADS"]
 MetaOptimizationGoal = Literal["OFFSITE_CONVERSIONS"]
@@ -107,6 +114,15 @@ STANDARD_EVENT_TYPES = frozenset(
         "OTHER",
     }
 )
+
+#: Evenimentele pe care le trimite si serverul nostru, calificate, prin Conversions API
+#: (``ppc_agent_server/tracking/meta_capi.py``: Purchase, Lead, Contact). Campania
+#: optimizeaza DOAR pe unul dintre ele: pe un eveniment pe care CAPI nu-l trimite, Meta ar
+#: invata doar din pixel, fara filtrul nostru de calificare.
+CAPI_EVENT_TYPES = frozenset({"PURCHASE", "LEAD", "CONTACT"})
+
+#: Singura optimizare acceptata: conversii urmarite prin pixel + CAPI.
+CONVERSION_OPTIMIZATION_GOAL = "OFFSITE_CONVERSIONS"
 
 #: Butoanele de call-to-action acceptate. Lista e deliberat scurta - doar cele
 #: pe care le folosim; Meta are mai multe, iar adaugarea uneia e o linie aici.
@@ -192,21 +208,47 @@ class MetaAdCreative:
 
     headline: str
     primary_text: str
+    #: Imaginea reclamei; la video, coperta (Meta cere una pentru orice reclama video).
     image_url: str
     angle: str = ""
+    #: Gol = reclama cu imagine; altfel reclama video (``image_url`` devine coperta).
+    video_url: str = ""
+    #: Sablonul de concept (``creative/concepts.py``); gol = neetichetata.
+    concept_template: str = ""
 
     def __post_init__(self) -> None:
         _require_text("headline", self.headline)
         _require_text("primary_text", self.primary_text)
         _require_https("image_url", self.image_url)
+        if self.video_url:
+            _require_https("video_url", self.video_url)
+        if self.concept_template and self.concept_template not in CONCEPT_TEMPLATES:
+            raise ValueError(
+                f"sablon de concept necunoscut '{self.concept_template}' - "
+                f"accepta: {', '.join(sorted(CONCEPT_TEMPLATES))}"
+            )
+
+    @property
+    def format(self) -> Literal["image", "video"]:
+        return "video" if self.video_url else "image"
+
+    @property
+    def media_url(self) -> str:
+        """Ce se evalueaza: video-ul, cand exista; altfel imaginea."""
+        return self.video_url or self.image_url
 
     def to_payload(self) -> dict[str, str]:
-        return {
+        payload = {
             "headline": self.headline,
             "primary_text": self.primary_text,
             "image_url": self.image_url,
             "angle": self.angle,
         }
+        if self.video_url:
+            payload["video_url"] = self.video_url
+        if self.concept_template:
+            payload["concept_template"] = self.concept_template
+        return payload
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> MetaAdCreative:
@@ -216,6 +258,8 @@ class MetaAdCreative:
                 primary_text=str(payload["primary_text"]),
                 image_url=str(payload["image_url"]),
                 angle=str(payload.get("angle", "")),
+                video_url=str(payload.get("video_url", "")),
+                concept_template=str(payload.get("concept_template", "")),
             )
         except KeyError as exc:
             raise ValueError(f"reclama in plus nu are campul {exc}") from exc
@@ -251,17 +295,28 @@ class MetaLaunchSpec:
     latitude: Decimal | None = None
     longitude: Decimal | None = None
     radius_km: Decimal | None = None
+    #: Prima reclama ca video (``image_url`` devine coperta); gol = imagine.
+    video_url: str = ""
+    #: Sablonul de concept al primei reclame - de regula cel cerut de CMO.
+    concept_template: str = ""
     #: Reclame in plus, in acelasi ad set; prima reclama ramane cea din campurile de sus.
     extra_ads: tuple[MetaAdCreative, ...] = ()
 
     @property
     def ads(self) -> tuple[MetaAdCreative, ...]:
         """Toate reclamele lansarii, prima fiind cea din campurile principale."""
-        first = MetaAdCreative(self.headline, self.primary_text, self.image_url)
+        first = MetaAdCreative(
+            self.headline,
+            self.primary_text,
+            self.image_url,
+            video_url=self.video_url,
+            concept_template=self.concept_template,
+        )
         return (first, *self.extra_ads)
 
     def __post_init__(self) -> None:
         _require_text("campaign_name", self.campaign_name)
+        _ = self.ads  # valideaza si prima reclama (video, concept), nu doar cele in plus
         if len(self.extra_ads) + 1 > MAX_ADS_PER_LAUNCH:
             raise ValueError(
                 f"maxim {MAX_ADS_PER_LAUNCH} reclame per lansare ({len(self.extra_ads) + 1})"
@@ -280,6 +335,12 @@ class MetaLaunchSpec:
             raise ValueError(
                 f"eveniment necunoscut '{self.custom_event_type}' - "
                 f"accepta: {', '.join(sorted(STANDARD_EVENT_TYPES))}"
+            )
+        if self.custom_event_type not in CAPI_EVENT_TYPES:
+            raise ValueError(
+                f"campania nu poate optimiza pe '{self.custom_event_type}': serverul trimite "
+                f"prin CAPI doar {', '.join(sorted(CAPI_EVENT_TYPES))}, iar fara CAPI Meta ar "
+                "invata din conversii necalificate"
             )
         if self.call_to_action not in CALL_TO_ACTION_TYPES:
             raise ValueError(
@@ -305,9 +366,11 @@ class MetaLaunchSpec:
         Bugetul pleaca SIR, nu float: ``25.10`` ca float ar deveni
         ``25.099999999999998`` dupa un drum prin JSON.
         """
-        multi = bool(self.extra_ads)
+        extended = bool(self.extra_ads or self.video_url or self.concept_template)
         payload = {
-            "launch_spec_version": (LAUNCH_SPEC_VERSION_MULTI_AD if multi else LAUNCH_SPEC_VERSION),
+            "launch_spec_version": (
+                LAUNCH_SPEC_VERSION_MULTI_AD if extended else LAUNCH_SPEC_VERSION
+            ),
             "campaign_name": self.campaign_name,
             "objective": self.objective.value,
             "daily_budget": str(self.daily_budget),
@@ -330,7 +393,11 @@ class MetaLaunchSpec:
                 else None
             ),
         }
-        if multi:
+        if self.video_url:
+            payload["video_url"] = self.video_url
+        if self.concept_template:
+            payload["concept_template"] = self.concept_template
+        if self.extra_ads:
             payload["extra_ads"] = [ad.to_payload() for ad in self.extra_ads]
         return payload
 
@@ -366,6 +433,8 @@ class MetaLaunchSpec:
                 latitude=Decimal(location["latitude"]) if location else None,
                 longitude=Decimal(location["longitude"]) if location else None,
                 radius_km=Decimal(location["radius_km"]) if location else None,
+                video_url=str(payload.get("video_url", "")),
+                concept_template=str(payload.get("concept_template", "")),
                 extra_ads=tuple(
                     MetaAdCreative.from_payload(ad) for ad in payload.get("extra_ads") or []
                 ),
@@ -430,7 +499,7 @@ def adset_fields(
             apelant in momentul trimiterii (2500 = 25,00 RON).
     """
     optimization = build_meta_campaign_payload(spec.objective)["ad_set"]
-    return {
+    fields = {
         "name": f"{spec.campaign_name} - Ad set",
         "campaign_id": campaign_id,
         "status": LAUNCH_STATUS,
@@ -453,6 +522,30 @@ def adset_fields(
             }
         ),
     }
+    require_conversion_optimization(fields)
+    return fields
+
+
+def require_conversion_optimization(fields: dict[str, str]) -> None:
+    """Ad set-ul optimizeaza pe conversia trimisa prin CAPI, sau nu pleaca la Meta.
+
+    Raises:
+        ValueError: alt ``optimization_goal`` (click-uri, vizualizari de pagina,
+            afisari), pixel lipsa, sau un eveniment pe care CAPI nu-l trimite.
+    """
+    goal = fields.get("optimization_goal")
+    if goal != CONVERSION_OPTIMIZATION_GOAL:
+        raise ValueError(
+            f"ad set-ul trebuie sa optimizeze pe {CONVERSION_OPTIMIZATION_GOAL}, nu pe '{goal}'"
+        )
+    promoted = json.loads(fields.get("promoted_object") or "{}")
+    if not promoted.get("pixel_id"):
+        raise ValueError("ad set-ul nu are pixelul pe care trimitem conversiile (promoted_object)")
+    if promoted.get("custom_event_type") not in CAPI_EVENT_TYPES:
+        raise ValueError(
+            f"evenimentul '{promoted.get('custom_event_type')}' nu e trimis prin CAPI - "
+            f"accepta: {', '.join(sorted(CAPI_EVENT_TYPES))}"
+        )
 
 
 def _geo_locations(spec: MetaLaunchSpec) -> dict[str, Any]:
@@ -471,38 +564,48 @@ def _geo_locations(spec: MetaLaunchSpec) -> dict[str, Any]:
     }
 
 
+def video_fields(spec: MetaLaunchSpec, ad: MetaAdCreative, *, index: int = 0) -> dict[str, str]:
+    """``POST /act_{id}/advideos`` - Meta descarca singura video-ul de la ``file_url``."""
+    suffix = "Video" if index == 0 else f"Video {index + 1}"
+    return {"name": f"{spec.campaign_name} - {suffix}", "file_url": ad.video_url}
+
+
 def creative_fields(
     spec: MetaLaunchSpec,
     *,
     image_hash: str,
     ad: MetaAdCreative | None = None,
     index: int = 0,
+    video_id: str | None = None,
 ) -> dict[str, str]:
-    """``POST /act_{id}/adcreatives`` - textul, imaginea si pagina care publica.
+    """``POST /act_{id}/adcreatives`` - textul, imaginea (sau video-ul) si pagina.
 
-    Fara ``ad``, creative-ul e cel principal al specificatiei (``index`` 0).
+    Fara ``ad``, creative-ul e cel principal al specificatiei (``index`` 0). Cu
+    ``video_id``, creative-ul e video: ``image_hash`` e coperta, iar link-ul sta in
+    call-to-action (forma ceruta de Meta pentru ``video_data``).
     """
     headline = ad.headline if ad else spec.headline
     primary_text = ad.primary_text if ad else spec.primary_text
     suffix = "Creative" if index == 0 else f"Creative {index + 1}"
-    return {
-        "name": f"{spec.campaign_name} - {suffix}",
-        "object_story_spec": _json(
-            {
-                "page_id": spec.page_id,
-                "link_data": {
-                    "link": spec.target_url,
-                    "message": primary_text,
-                    "name": headline,
-                    "image_hash": image_hash,
-                    "call_to_action": {
-                        "type": spec.call_to_action,
-                        "value": {"link": spec.target_url},
-                    },
-                },
-            }
-        ),
-    }
+    call_to_action = {"type": spec.call_to_action, "value": {"link": spec.target_url}}
+    story: dict[str, Any] = {"page_id": spec.page_id}
+    if video_id is not None:
+        story["video_data"] = {
+            "video_id": video_id,
+            "image_hash": image_hash,
+            "message": primary_text,
+            "title": headline,
+            "call_to_action": call_to_action,
+        }
+    else:
+        story["link_data"] = {
+            "link": spec.target_url,
+            "message": primary_text,
+            "name": headline,
+            "image_hash": image_hash,
+            "call_to_action": call_to_action,
+        }
+    return {"name": f"{spec.campaign_name} - {suffix}", "object_story_spec": _json(story)}
 
 
 def ad_fields(

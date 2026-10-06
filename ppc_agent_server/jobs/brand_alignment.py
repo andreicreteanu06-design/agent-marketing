@@ -26,6 +26,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from ppc_agent.creative.concepts import concept_brief
 from ppc_agent_server.models import ChangeOp, ChangeStatus, ClientAccount, ProposedChange
 from ppc_agent_server.services.propensity import SENSITIVE_LABELS
 from ppc_agent_server.services.queen_agent import (
@@ -95,6 +96,8 @@ def to_rewrite_proposal(
     if directive.experiment is not None:
         # Rescrierea e varianta unui test, nu un text aruncat: ipoteza si cum se judeca.
         brief["experiment"] = directive.experiment.model_dump()
+        # Si structura reclamei: sablonul de concept ales de CMO pentru bariera.
+        brief["concept"] = concept_brief(directive.experiment.concept_template)
     if directive.sensitive_domain is not None:
         brief["guardrails"] = {
             "fear_manipulation_risk": (

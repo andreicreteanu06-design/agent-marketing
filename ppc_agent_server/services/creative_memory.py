@@ -88,13 +88,9 @@ def cmo_hypothesis(account: ClientAccount) -> Experiment | None:
     if account.cmo_hypothesis:
         return Experiment.model_validate(account.cmo_hypothesis)
     avatar = avatar_from_answers(account.avatar_answers)
-    score = score_propensity(
-        avatar=avatar,
-        offer=offer_from_answers(account.avatar_answers),
-        measured_barrier=None,
-        alignment=[],
-    )
-    return design_experiment(score, avatar)
+    offer = offer_from_answers(account.avatar_answers)
+    score = score_propensity(avatar=avatar, offer=offer, measured_barrier=None, alignment=[])
+    return design_experiment(score, avatar, offer)
 
 
 def account_lessons(

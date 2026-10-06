@@ -1165,7 +1165,7 @@ def build_directive(
             notes=notes,
             organic_context=organic,
             propensity=propensity,
-            experiment=design_experiment(propensity, jtbd),
+            experiment=design_experiment(propensity, jtbd, signals.offer),
             # Ce a spus clientul in interviu intra in directiva si fara date de cont.
             customer_avatar=jtbd,
             offer=signals.offer,
@@ -1212,7 +1212,7 @@ def build_directive(
         notes=notes,
         organic_context=organic,
         propensity=propensity,
-        experiment=design_experiment(propensity, jtbd),
+        experiment=design_experiment(propensity, jtbd, signals.offer),
         customer_avatar=jtbd,
         offer=signals.offer,
         sensitive_domain=domain,
