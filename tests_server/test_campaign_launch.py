@@ -304,7 +304,7 @@ def test_obiectivul_si_evenimentul_vin_din_contul_clientului(
     session: Session,
     no_network: list[str],
 ) -> None:
-    """Niciodata ghicit: LEAD_GEN pe client inseamna OUTCOME_LEADS + LEAD."""
+    """Niciodata ghicit: LEAD_GEN pe client inseamna OUTCOME_LEADS + lead-ul calificat."""
     client, headers, account_id = launcher
     account = session.get(ClientAccount, account_id)
     assert account is not None
@@ -316,7 +316,7 @@ def test_obiectivul_si_evenimentul_vin_din_contul_clientului(
         "/api/v1/campaigns/propose_launch", headers=headers, json=_request()
     ).json()
     assert body["after"]["objective"] == CampaignObjective.LEAD_GEN.value
-    assert body["after"]["custom_event_type"] == "LEAD"
+    assert body["after"]["custom_event_type"] == "SUBMIT_APPLICATION"
     assert body["after"]["call_to_action"] == "LEARN_MORE"
     assert "OUTCOME_LEADS" in body["rationale"]
 

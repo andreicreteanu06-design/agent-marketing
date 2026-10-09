@@ -302,3 +302,38 @@ def test_un_pixel_invalid_e_refuzat_la_configurare(
         "/api/v1/clients", headers=auth_headers, json={"name": "X", "meta_pixel_id": "../me"}
     )
     assert response.status_code == 422
+
+
+# --- lead-ul calificat: eveniment separat, trimis doar de server ----------------------
+
+_LEAD = {
+    "event_id": "web_lead_7",
+    "event_type": "lead",
+    "customer_email": "a@b.ro",
+    "source_platform": "custom_web",
+}
+
+
+def test_un_lead_calificat_pleaca_si_ca_eveniment_trimis_doar_de_server(
+    client: TestClient, auth_headers: dict[str, str], meta_live: None, capi: _CapiStub
+) -> None:
+    client_id = _client_with_pixel(client, auth_headers)
+    body = _post(client, auth_headers, client_id, _LEAD, source="custom_web")
+
+    assert body["meta_capi"] == "sent"
+    names = [(call["payload"]["event_name"], call["payload"]["event_id"]) for call in capi.sent]
+    assert names == [("Lead", "web_lead_7"), ("SubmitApplication", "web_lead_7")]
+
+
+def test_un_lead_marcat_necalificat_de_client_nu_ajunge_la_meta(
+    client: TestClient, auth_headers: dict[str, str], meta_live: None, capi: _CapiStub
+) -> None:
+    client_id = _client_with_pixel(client, auth_headers)
+    body = _post(
+        client, auth_headers, client_id, {**_LEAD, "lead_status": "Unqualified"},
+        source="custom_web",
+    )
+
+    assert body["qualified"] is False
+    assert body["reason"] == "marcat de client: unqualified"
+    assert capi.sent == []

@@ -38,7 +38,7 @@ from ppc_agent.creative.concepts import CONCEPT_TEMPLATES
 
 MetaObjective = Literal["OUTCOME_SALES", "OUTCOME_LEADS"]
 MetaOptimizationGoal = Literal["OFFSITE_CONVERSIONS"]
-MetaCustomEventType = Literal["PURCHASE", "LEAD"]
+MetaCustomEventType = Literal["PURCHASE", "SUBMIT_APPLICATION"]
 
 
 class MetaPromotedObject(TypedDict):
@@ -59,9 +59,10 @@ def build_meta_campaign_payload(objective: CampaignObjective) -> MetaCampaignPay
     """Payload-ul Meta (campanie + ad set) pentru un ``CampaignObjective`` dat.
 
     Ambele obiective optimizeaza pe conversii urmarite prin pixel/CAPI
-    (``OFFSITE_CONVERSIONS``) - diferenta e evenimentul tinta:
-    ``PURCHASE`` pentru SALES, ``LEAD`` pentru LEAD_GEN (ambele nume de
-    evenimente standard Meta Pixel/CAPI).
+    (``OFFSITE_CONVERSIONS``) - diferenta e evenimentul tinta: ``PURCHASE``
+    pentru SALES; pentru LEAD_GEN, ``SUBMIT_APPLICATION`` - lead-ul calificat,
+    trimis DOAR de server (``tracking/meta_capi.QUALIFIED_LEAD_EVENT``). Nu
+    ``LEAD``: pe acela il trimite si pixelul, la orice formular completat.
 
     Args:
         objective: Obiectivul clientului (citit din ``ClientAccount.objective``,
@@ -76,7 +77,7 @@ def build_meta_campaign_payload(objective: CampaignObjective) -> MetaCampaignPay
     if objective == CampaignObjective.SALES:
         meta_objective, event_type = "OUTCOME_SALES", "PURCHASE"
     else:
-        meta_objective, event_type = "OUTCOME_LEADS", "LEAD"
+        meta_objective, event_type = "OUTCOME_LEADS", "SUBMIT_APPLICATION"
 
     return {
         "objective": meta_objective,
@@ -116,10 +117,11 @@ STANDARD_EVENT_TYPES = frozenset(
 )
 
 #: Evenimentele pe care le trimite si serverul nostru, calificate, prin Conversions API
-#: (``ppc_agent_server/tracking/meta_capi.py``: Purchase, Lead, Contact). Campania
+#: (``ppc_agent_server/tracking/meta_capi.py``: Purchase, Lead, Contact si
+#: SubmitApplication, lead-ul calificat trimis doar de server). Campania
 #: optimizeaza DOAR pe unul dintre ele: pe un eveniment pe care CAPI nu-l trimite, Meta ar
 #: invata doar din pixel, fara filtrul nostru de calificare.
-CAPI_EVENT_TYPES = frozenset({"PURCHASE", "LEAD", "CONTACT"})
+CAPI_EVENT_TYPES = frozenset({"PURCHASE", "LEAD", "CONTACT", "SUBMIT_APPLICATION"})
 
 #: Singura optimizare acceptata: conversii urmarite prin pixel + CAPI.
 CONVERSION_OPTIMIZATION_GOAL = "OFFSITE_CONVERSIONS"
