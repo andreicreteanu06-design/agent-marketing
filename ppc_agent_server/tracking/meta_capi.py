@@ -9,7 +9,10 @@ dublate. Pe site, pixelul trebuie sa trimita deci exact id-ul nostru:
 
 Ce pleaca: doar conversiile CALIFICATE (un apel de 10 secunde nu e un lead -
 Meta n-are ce invata din el), cu PII-ul deja hash-uit (SHA-256) din baza de
-date. Semnalele de browser (IP, user-agent, ``fbp``/``fbc``) vin din cererea
+date. Un lead calificat pleaca de doua ori: ``Lead`` (contopit cu pixelul, care il
+trimite la ORICE formular) si :data:`QUALIFIED_LEAD_EVENT`, trimis doar de aici -
+pe el optimizeaza campaniile de lead-uri, deci Meta invata doar din cei calificati.
+Semnalele de browser (IP, user-agent, ``fbp``/``fbc``) vin din cererea
 curenta si nu se salveaza nicaieri.
 
 Un esec Meta nu pierde conversia: ea e deja salvata la noi, cu motivul in
@@ -48,6 +51,12 @@ _EVENT_NAMES = {
     "phone_call": "Contact",
     "contact": "Contact",
 }
+
+#: Evenimentul lead-urilor calificate, trimis DOAR de server. Un eveniment standard Meta
+#: (``SUBMIT_APPLICATION`` in ``promoted_object``), ca ad set-ul sa optimizeze direct pe el,
+#: fara conversie personalizata. Pixelul de pe site NU trebuie sa-l trimita niciodata.
+QUALIFIED_LEAD_EVENT = "SubmitApplication"
+_QUALIFIED_LEAD_TYPES = frozenset({"lead", "phone_call", "contact"})
 
 CapiStatus = Literal["sent", "failed"]
 
@@ -167,13 +176,19 @@ def forward_conversion(
         token = config.settings.meta_access_token
         if not token:
             raise ProviderError("contul Meta nu e conectat (lipseste token-ul de acces)")
-        send_event(
-            build_event(event, conversion),
-            pixel_id=account.meta_pixel_id,
-            access_token=token,
-            test_event_code=get_server_settings().meta_capi_test_event_code,
-            transport=transport,
-        )
+        payload = build_event(event, conversion)
+        payloads = [payload]
+        if event.event_type.value in _QUALIFIED_LEAD_TYPES:
+            payloads.append({**payload, "event_name": QUALIFIED_LEAD_EVENT})
+        # ponytail: un POST per eveniment; la retrimitere, Meta le contopeste pe event_id.
+        for item in payloads:
+            send_event(
+                item,
+                pixel_id=account.meta_pixel_id,
+                access_token=token,
+                test_event_code=get_server_settings().meta_capi_test_event_code,
+                transport=transport,
+            )
     except ProviderError as exc:
         event.meta_capi_error = str(exc)[:500]
         session.add(event)

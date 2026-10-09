@@ -13,11 +13,12 @@ def test_sales_maps_to_outcome_sales_and_purchase_event() -> None:
     assert payload["ad_set"]["promoted_object"]["custom_event_type"] == "PURCHASE"
 
 
-def test_lead_gen_maps_to_outcome_leads_and_lead_event() -> None:
+def test_lead_gen_maps_to_outcome_leads_and_the_server_only_qualified_event() -> None:
     payload = build_meta_campaign_payload(CampaignObjective.LEAD_GEN)
     assert payload["objective"] == "OUTCOME_LEADS"
     assert payload["ad_set"]["optimization_goal"] == "OFFSITE_CONVERSIONS"
-    assert payload["ad_set"]["promoted_object"]["custom_event_type"] == "LEAD"
+    # Nu LEAD: pe acela il trimite si pixelul, la orice formular.
+    assert payload["ad_set"]["promoted_object"]["custom_event_type"] == "SUBMIT_APPLICATION"
 
 
 def test_payload_is_a_fresh_dict_each_call_not_a_shared_reference() -> None:

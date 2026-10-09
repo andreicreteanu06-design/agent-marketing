@@ -145,7 +145,7 @@ def test_ordinele_de_strategie_vin_din_cont_si_din_ipoteza() -> None:
     orders = strategy_orders(_account(), _experiment(), max_ads=3)
 
     assert orders.optimization_goal == "OFFSITE_CONVERSIONS"
-    assert orders.optimization_event == "LEAD"
+    assert orders.optimization_event == "SUBMIT_APPLICATION"
     assert orders.objective == "OUTCOME_LEADS"
     assert (orders.pixel_id, orders.capi_ready) == ("1234567890", True)
     assert orders.concept_template == "founder_story"
@@ -228,12 +228,12 @@ def test_propunerea_poarta_ordinele_si_prima_reclama_primeste_conceptul_cmo(
     body = response.json()
     assert body["after"]["concept_template"] == "founder_story"
     orders = body["before"]["campaign_orders"]
-    assert orders["optimization_event"] == "LEAD"  # contul e pe lead-uri
+    assert orders["optimization_event"] == "SUBMIT_APPLICATION"  # lead calificat, doar server
     assert orders["optimization_goal"] == "OFFSITE_CONVERSIONS"
     assert orders["concept_template"] == "founder_story"
     assert orders["issued_by"] == ["cmo", "consiliu", "cco"]
     assert orders["ads"][0]["status"] == "cleared"
-    assert "Ordine PPC: optimizare pe LEAD" in body["rationale"]
+    assert "Ordine PPC: optimizare pe SUBMIT_APPLICATION" in body["rationale"]
     assert seen[0][1].cmo_hypothesis is not None
     assert seen[0][1].concept_template == "founder_story"
 

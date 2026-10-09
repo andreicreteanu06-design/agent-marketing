@@ -9,6 +9,9 @@
    se calculeaza din ea, fara proxy).
 2. Poarta de durata a apelului - un "phone_call" sub pragul minim (sau fara
    durata cunoscuta) e descalificat: NU se numara ca o conversie reusita.
+3. ``lead_status`` - backend-ul clientului poate marca un lead necalificat (ex. a
+   raspuns la intrebarea de calificare din formular sub pragul de buget):
+   ``unqualified``, ``disqualified`` sau ``spam``. Fara status, lead-ul ramane calificat.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent_server.tracking.models import StandardizedConversion
 
 _MIN_CALL_DURATION_SECONDS = 60
+_UNQUALIFIED_STATUSES = frozenset({"unqualified", "disqualified", "spam"})
 
 
 class QualificationResult(BaseModel):
@@ -60,6 +64,12 @@ class ConversionQualifier:
         resolved = conversion
         if resolved.value is None and self._objective == CampaignObjective.LEAD_GEN:
             resolved = resolved.model_copy(update={"value": self._default_lead_value})
+
+        status = (resolved.lead_status or "").strip().lower()
+        if status in _UNQUALIFIED_STATUSES:
+            return QualificationResult(
+                conversion=resolved, qualified=False, reason=f"marcat de client: {status}"
+            )
 
         if resolved.event_type == "phone_call":
             duration = resolved.call_duration_seconds
