@@ -24,11 +24,13 @@ from ppc_agent.config import AppConfig, BudgetConfig, ProviderMode, Settings
 from ppc_agent.copywriter.engine import AdCopyGenerator
 from ppc_agent.creative.creative_pipeline import generate_full_ad_creative
 from ppc_agent.creative.factory import CreativeFactory
+from ppc_agent.decision.learning_guard import LearningState
 from ppc_agent.decision.pipeline import (
     arms_from_performance,
     run_plan,
     value_unreported_conversions,
 )
+from ppc_agent.errors import PpcAgentError
 from ppc_agent.guardrails.models import ProposedChange as CliProposedChange
 from ppc_agent.guardrails.pipeline import build_fatigue_changes, build_proposed_changes
 from ppc_agent.guardrails.spend_limiter import AbsoluteSpendLimiter
@@ -70,6 +72,7 @@ from ppc_agent_server.services.council_guard import (
 )
 from ppc_agent_server.services.creative_memory import launch_feedback, record_feedback
 from ppc_agent_server.services.memory import memory_line
+from ppc_agent_server.services.optimization_upgrade import propose_upgrades
 from ppc_agent_server.services.queen_signals import (
     DbFinancialSignals,
     DbMemory,
@@ -960,6 +963,22 @@ def run_creative_feedback_job(*, client_account_id: int) -> dict[str, Any]:
     }
 
 
+def run_optimization_upgrade_job(*, client_account_id: int) -> dict[str, Any]:
+    """Scara de evenimente, noaptea: campaniile pe LEAD cu volum stabil primesc propunerea
+    de upgrade pe lead-ul calificat (``services/optimization_upgrade.py``)."""
+    with Session(get_engine()) as session:
+        account = _require_client(session, client_account_id)
+        meta = ProviderFactory(_app_config_for(account)).meta()
+
+        def learning(adset_id: str) -> LearningState | None:
+            try:
+                return asyncio.run(meta.learning_state(adset_id))
+            except PpcAgentError:
+                return None  # necitita: garda nu blocheaza
+
+        return propose_upgrades(session, account, learning=learning, now=datetime.now(tz=UTC))
+
+
 def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
     """Mentenanta de noapte pentru UN client: sincronizare, viteza, audit, E2E, propuneri, oboseala.
 
@@ -979,6 +998,7 @@ def run_client_maintenance_job(*, client_account_id: int) -> dict[str, Any]:
         ("site_audit", run_site_audit_job),
         ("tracking_contract", run_tracking_contract_job),
         ("propose", run_propose_job),
+        ("optimization_upgrade", run_optimization_upgrade_job),
         ("fatigue_check", run_fatigue_check_job),
     ):
         try:

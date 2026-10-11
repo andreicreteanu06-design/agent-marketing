@@ -333,6 +333,8 @@ def propose_launch(
             if target_cpa is not None and target_cpa > 0
             else None
         ),
+        daily_budget=payload.daily_budget,
+        target_cpa=target_cpa,
     )
     spec = _build_spec(payload, account, orders)
     check_spend_limit(session, account, spec.daily_budget)

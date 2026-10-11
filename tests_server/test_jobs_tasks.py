@@ -42,7 +42,7 @@ from ppc_agent_server.services.queen_signals import DbFinancialSignals
 #: Pasii mentenantei de noapte per client, in ordine.
 STEPS = {
     "sync", "creative_feedback", "propose", "fatigue_check", "speed_check", "site_audit",
-    "tracking_contract",
+    "tracking_contract", "optimization_upgrade",
 }
 
 def test_default_lead_value_feeds_budget_target_cpa() -> None:

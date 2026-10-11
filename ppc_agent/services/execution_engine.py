@@ -42,9 +42,11 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
+from ppc_agent.decision.learning_guard import LearningState, learning_hold
 from ppc_agent.errors import CampaignLaunchError, PpcAgentError, SpendLimitExceeded
 from ppc_agent.providers.meta_campaign import LaunchResult, MetaLaunchSpec
 
@@ -87,6 +89,7 @@ class MetaMutationProvider(Protocol):
     async def update_budget(self, object_id: str, new_daily_budget: Decimal) -> None: ...
     async def current_daily_budget(self, object_id: str) -> Decimal | None: ...
     async def launch_campaign(self, ad_account_id: str, spec: MetaLaunchSpec) -> LaunchResult: ...
+    async def learning_state(self, adset_id: str) -> LearningState | None: ...
 
 
 class GoogleAdsMutationProvider(Protocol):
@@ -520,12 +523,50 @@ def _enforce_spend_cap(
         raise SpendLimitExceeded(reason)
 
 
+class LearningPhaseHold(NoExecutorError):
+    """Schimbarea ar reporni invatarea Meta: se amana, propunerea ramane in asteptare."""
+
+
+def _hold_if_learning(
+    provider: MutationProvider,
+    proposal: ExecutableProposal,
+    target: ResourceTarget,
+    target_cpa: Decimal | None,
+) -> None:
+    """Garda fazei de invatare (``decision/learning_guard.py``) pe bugetul unui ad set Meta.
+
+    Raises:
+        LearningPhaseHold: ad set-ul invata, iar schimbarea de buget e majora.
+    """
+    if (target.platform, target.kind, proposal.op) != (PLATFORM_META, "ad_set", "UPDATE"):
+        return  # ponytail: doar bugetul ad set-ului; la CBO invatarea e tot pe ad set-uri
+    meta = cast(MetaMutationProvider, provider)
+    try:
+        state = asyncio.run(meta.learning_state(target.object_id))
+        current = asyncio.run(meta.current_daily_budget(target.object_id))
+    except PpcAgentError:
+        return  # fara citire, garda nu blocheaza - ca inainte de ea
+    change = (
+        abs(proposal.projected_daily_spend - current) / current if current else None
+    )
+    reason = learning_hold(
+        state,
+        change="budget",
+        budget_change=change,
+        target_cpa=target_cpa,
+        now=datetime.now(tz=UTC),
+    )
+    if reason:
+        raise LearningPhaseHold(f"{reason} Propunerea ramane in asteptare.")
+
+
 def execute_proposal(
     proposal: ExecutableProposal,
     provider: MutationProvider,
     *,
     current_status: str,
     max_daily_spend: Decimal,
+    target_cpa: Decimal | None = None,
 ) -> ExecutionResult:
     """Aplica ``proposal`` pe platforma reala si spune ce s-a intamplat.
 
@@ -538,6 +579,8 @@ def execute_proposal(
             explicit ca motorul sa nu depinda de enum-ul de persistenta.
         max_daily_spend: plafonul zilnic peste care nicio schimbare nu pleaca
             spre platforma (vezi regula 4 din docstring-ul modulului).
+        target_cpa: CPA-ul tinta al contului: un ad set in Learning Limited cu CPA la
+            tinta nu mai e tratat ca in invatare (``decision/learning_guard.py``).
 
     Returns:
         :class:`ExecutionResult` - ``executed=False`` cu ``error`` completat
@@ -546,7 +589,8 @@ def execute_proposal(
     Raises:
         ProposalNotExecutableError: propunerea nu e in ``pending``.
         NoExecutorError: resursa nu se poate adresa, perechea (platforma, tip)
-            nu are executor, sau specificatia unei lansari nu e valida.
+            nu are executor, specificatia unei lansari nu e valida, sau ad set-ul
+            e in faza de invatare (:class:`LearningPhaseHold`).
         SpendLimitExceeded: schimbarea ar trece de ``max_daily_spend``.
 
     Cele trei exceptii sunt RIDICATE, nu intoarse ca rezultat: amandoua inseamna
@@ -573,6 +617,7 @@ def execute_proposal(
             "asteptare - aplic-o manual in platforma."
         )
     _enforce_spend_cap(proposal, target, max_daily_spend, provider)
+    _hold_if_learning(provider, proposal, target, target_cpa)
 
     try:
         result = asyncio.run(executor(provider, proposal, target))

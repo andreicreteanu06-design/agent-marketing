@@ -8,7 +8,7 @@ agenti isi dadeau avizul la final. Acum ordinele vin INAINTE si se aplica:
     CCO (verdict)  --pe fiecare reclama: format, concept-----/
 
 1. **Strategia** (:func:`strategy_orders`, inainte de specificatie): obiectivul si
-   evenimentul de optimizare din contul clientului (cel trimis prin CAPI), pixelul pe
+   evenimentul de optimizare (scara de evenimente, :func:`optimization_event`), pixelul pe
    care pleaca conversiile, structura (o campanie, un ad set, targetare larga), cate
    reclame hraneste bugetul si sablonul de concept cerut de CMO pentru bariera.
    Agentul PPC (``routers/campaigns._build_spec``) le aplica: un eveniment sau un
@@ -24,13 +24,18 @@ aproba sa vada cine a cerut ce si unde lansarea se abate de la ordine.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
+from ppc_agent.alignment.meta_liquidity import LEARNING_EVENTS, LEARNING_WINDOW_DAYS
+from ppc_agent.campaign_objective import CampaignObjective
 from ppc_agent.creative.concepts import CONCEPTS, ConceptTemplate, concept_label
 from ppc_agent.providers.meta_campaign import (
     CONVERSION_OPTIMIZATION_GOAL,
+    QUALIFIED_LEAD_EVENT,
+    STANDARD_LEAD_EVENT,
     MetaLaunchSpec,
     build_meta_campaign_payload,
 )
@@ -75,6 +80,9 @@ class CampaignOrders(BaseModel):
     objective: str
     optimization_goal: str = CONVERSION_OPTIMIZATION_GOAL
     optimization_event: str
+    #: Evenimente pe saptamana estimate (buget saptamanal / CPA tinta); ``None`` = CPA necunoscut.
+    expected_weekly_events: float | None = None
+    optimization_reason: str = ""
     #: Pixelul pe care pleaca si conversiile calificate prin CAPI; ``None`` = neconfigurat.
     pixel_id: str | None = None
     capi_ready: bool = False
@@ -92,17 +100,56 @@ class CampaignOrders(BaseModel):
     deviations: list[str] = Field(default_factory=list)
 
 
+def optimization_event(
+    objective: CampaignObjective, *, daily_budget: Decimal, target_cpa: Decimal | None
+) -> tuple[str, float | None, str]:
+    """Scara de evenimente: pe ce optimizeaza campania, cate evenimente pe saptamana, de ce.
+
+    La vanzari, mereu ``PURCHASE``. La lead-uri, lead-ul calificat doar cand bugetul
+    saptamanal hraneste cel putin ``LEARNING_EVENTS`` la CPA-ul tinta; altfel ``LEAD``,
+    ca Meta sa iasa din invatare. Cu CPA necunoscut, ``LEAD`` (volumul e sigur mai mare).
+    """
+    default = build_meta_campaign_payload(objective)["ad_set"]["promoted_object"]
+    weekly = (
+        float(daily_budget * Decimal(str(LEARNING_WINDOW_DAYS)) / target_cpa)
+        if target_cpa is not None and target_cpa > 0
+        else None
+    )
+    if objective != CampaignObjective.LEAD_GEN:
+        return default["custom_event_type"], weekly, "vanzarile optimizeaza pe achizitie"
+    if weekly is None:
+        return STANDARD_LEAD_EVENT, None, "CPA tinta necunoscut: LEAD, care aduce volum sigur"
+    if weekly >= LEARNING_EVENTS:
+        return QUALIFIED_LEAD_EVENT, weekly, (
+            f"~{weekly:.0f} evenimente/saptamana, peste {LEARNING_EVENTS:.0f}: lead-ul calificat"
+        )
+    return STANDARD_LEAD_EVENT, weekly, (
+        f"~{weekly:.0f} evenimente/saptamana, sub {LEARNING_EVENTS:.0f}: LEAD, ca Meta sa "
+        "iasa din invatare; lead-ul calificat cand volumul o permite"
+    )
+
+
 def strategy_orders(
-    account: ClientAccount, hypothesis: Experiment | None, *, max_ads: int | None
+    account: ClientAccount,
+    hypothesis: Experiment | None,
+    *,
+    max_ads: int | None,
+    daily_budget: Decimal,
+    target_cpa: Decimal | None,
 ) -> CampaignOrders:
     """Ordinele de dinaintea specificatiei: din contul clientului si din ipoteza CMO-ului."""
     payload = build_meta_campaign_payload(account.objective)
+    event, weekly, reason = optimization_event(
+        account.objective, daily_budget=daily_budget, target_cpa=target_cpa
+    )
     pixel = account.meta_pixel_id or None
     orders = CampaignOrders(
         issued_by=["cmo"] if hypothesis is not None else [],
         objective=payload["objective"],
         optimization_goal=payload["ad_set"]["optimization_goal"],
-        optimization_event=payload["ad_set"]["promoted_object"]["custom_event_type"],
+        optimization_event=event,
+        expected_weekly_events=weekly,
+        optimization_reason=reason,
         pixel_id=pixel,
         capi_ready=pixel is not None,
         max_ads=max_ads,
@@ -214,6 +261,7 @@ def orders_summary(orders: CampaignOrders) -> str:
     parts = [
         f"Ordine PPC: optimizare pe {orders.optimization_event} ({orders.optimization_goal})"
         + (" prin pixel + CAPI" if orders.capi_ready else ", fara CAPI")
+        + (f" - {orders.optimization_reason}" if orders.optimization_reason else "")
     ]
     if orders.concept_template is not None:
         parts.append(f"concept cerut de CMO: {CONCEPTS[orders.concept_template].label}")

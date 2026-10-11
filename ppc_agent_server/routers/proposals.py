@@ -365,6 +365,7 @@ def approve_proposal(
             max_daily_spend=min(
                 account.max_daily_spend, get_server_settings().max_daily_spend_ron
             ),
+            target_cpa=account.default_lead_value,
         )
     except (SpendLimitExceeded, ProposalNotExecutableError, NoExecutorError) as exc:
         # Nimic n-a plecat spre platforma: rezervarea se elibereaza.

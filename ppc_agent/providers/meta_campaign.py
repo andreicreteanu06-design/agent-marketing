@@ -123,6 +123,12 @@ STANDARD_EVENT_TYPES = frozenset(
 #: invata doar din pixel, fara filtrul nostru de calificare.
 CAPI_EVENT_TYPES = frozenset({"PURCHASE", "LEAD", "CONTACT", "SUBMIT_APPLICATION"})
 
+#: Scara de evenimente la lead-uri: ``LEAD`` (trimis si de pixel, la orice formular) cat
+#: timp bugetul nu hraneste ~50 de evenimente pe saptamana; peste, lead-ul calificat,
+#: trimis doar de server (``ppc_agent_server/services/campaign_orders.optimization_event``).
+STANDARD_LEAD_EVENT = "LEAD"
+QUALIFIED_LEAD_EVENT = "SUBMIT_APPLICATION"
+
 #: Singura optimizare acceptata: conversii urmarite prin pixel + CAPI.
 CONVERSION_OPTIMIZATION_GOAL = "OFFSITE_CONVERSIONS"
 

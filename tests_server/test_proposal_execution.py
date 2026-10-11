@@ -77,6 +77,9 @@ class _FakeMetaProvider:
     async def current_daily_budget(self, object_id: str) -> Decimal | None:
         return self.current_budget
 
+    async def learning_state(self, adset_id: str) -> None:
+        return None
+
     @property
     def touched(self) -> bool:
         """Adevarat daca providerul a fost chemat in vreun fel."""
