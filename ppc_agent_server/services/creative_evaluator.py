@@ -34,8 +34,9 @@ depinde de dispozitia unui model:
 - **Retentie** (doar video, tot clipul): durata, pauzele moarte de dupa hook, ritmul
   taieturilor (cand nu tine vocea atentia) si CTA-ul de la final;
 - **Predictia retentiei** (doar video): ``visual_pacing_score`` - in primele 10 s, cel mai
-  lung interval fara ceva nou pe ecran (taietura de scena masurata de ``scdet`` sau text
-  nou citit pe cadre); ideal o schimbare la 2-3 s, iar un "talking head" fara taieturi
+  lung interval fara ceva nou pe ecran (taietura de scena masurata de ``scdet``, miscare de
+  camera - zoom, panoramare, B-roll - masurata pe cadrele la 0,5 s, sau text nou citit pe
+  cadre); ideal o schimbare la 2-3 s, iar un "talking head" fara taieturi
   si fara text nou e penalizat grav; sub 6, reclama se repara inainte de test.
   ``first_frame_impact`` - ce se intampla in secunda zero (miscare, textul primului
   cadru). ``predicted_dropoff_second`` - prima secunda cu un motiv masurat de abandon
@@ -177,6 +178,18 @@ PACING_GAP_SECONDS = 3.0
 PACING_FLOOR = 6
 #: Remedierea pentru un ritm slab (prima in lista, cand opreste lansarea).
 PACING_FIX = "Adaugă tăieturi rapide sau text pe ecran pentru a menține ritmul"
+#: Miscarea de camera (zoom, panoramare): cadre la 0,5 s, cat din imagine s-a schimbat.
+#: Masurat pe clipuri sintetice: un zoom (chiar lent) schimba ~40% din pixeli, un tipar cu
+#: un element in miscare 3-5%, un cadru static 0.
+MOTION_SAMPLE_FPS = 2
+MOTION_SHARE = 0.20
+#: Un pixel conteaza ca schimbat peste atata diferenta de luminozitate (0-255).
+_MOTION_PIXEL_DELTA = 24
+_MOTION_FILTER = (
+    f"fps={MOTION_SAMPLE_FPS},format=gray,tblend=all_mode=difference,"
+    f"lutyuv=y='if(gt(val,{_MOTION_PIXEL_DELTA}),255,0)',signalstats,"
+    "metadata=mode=print:key=lavfi.signalstats.YAVG"
+)
 #: O pauza de atata in voce, fara un cadru nou, pierde privitorul.
 SPEECH_PAUSE_SECONDS = 1.5
 #: GEO: de la atatea cuvinte citite pe imagine, un AI intelege ce arata.
@@ -588,6 +601,9 @@ class _Video:
     speech: list[tuple[float, float, str]] | None
     #: Primul cadru e inghetat sau negru (nicio miscare in secunda zero).
     opening_still: bool = False
+    #: Secundele cu miscare de camera (zoom, panoramare, B-roll) sau taietura - vezi
+    #: ``MOTION_SHARE``.
+    motion_times: list[float] = field(default_factory=list)
 
     @property
     def cuts(self) -> int:
@@ -759,6 +775,8 @@ def _video_facts(data: bytes, transcribe: Transcriber | None) -> _Video:
     - timpul mort: ``freezedetect`` (cadru neschimbat) si ``blackdetect`` (negru); in
       primele 3 secunde conteaza orice secunda, dupa hook doar pauzele lungi;
     - taieturile de scena: ``scdet``;
+    - miscarea de camera (zoom, panoramare): cadre la 0,5 s, cat din imagine se schimba
+      intre ele (``tblend`` + ``signalstats``) - ``scdet`` nu vede un zoom;
     - sunetul: ``silencedetect`` (cand porneste, cat dureaza) si ``ebur128`` (loudness,
       varf real);
     - vocea: ElevenLabs Scribe sau ``whisper`` (doar daca exista sunet).
@@ -800,6 +818,11 @@ def _video_facts(data: bytes, transcribe: Transcriber | None) -> _Video:
             scan = subprocess.run(
                 [ffmpeg, "-v", "info", "-i", str(path), "-an", "-vf",
                  "freezedetect=n=-60dB:d=1,blackdetect=d=1:pix_th=0.10,scdet=t=10",
+                 "-f", "null", "-"],
+                capture_output=True, timeout=180, check=True,
+            ).stderr
+            motion = subprocess.run(
+                [ffmpeg, "-v", "info", "-i", str(path), "-an", "-vf", _MOTION_FILTER,
                  "-f", "null", "-"],
                 capture_output=True, timeout=180, check=True,
             ).stderr
@@ -846,7 +869,22 @@ def _video_facts(data: bytes, transcribe: Transcriber | None) -> _Video:
         true_peak=_summary(sound, rb"True peak"),
         speech=speech,
         opening_still=opening_still,
+        motion_times=_motion_times(motion),
     )
+
+
+def _motion_times(log: bytes) -> list[float]:
+    """Secundele in care o parte mare din imagine s-a schimbat fata de acum 0,5 s."""
+    times: list[float] = []
+    second = 0.0
+    for line in log.splitlines():
+        if found := re.search(rb"pts_time:([\d.]+)", line):
+            second = float(found.group(1))
+        elif (found := re.search(rb"lavfi\.signalstats\.YAVG=([\d.]+)", line)) and (
+            float(found.group(1)) / 255 >= MOTION_SHARE
+        ):
+            times.append(second)
+    return times
 
 
 # --- textul de pe creativa: Tesseract -----------------------------------------------
@@ -1329,15 +1367,14 @@ def _retention(video: _Video, seen: _Facts, risks: list[str], fixes: list[str]) 
 def _pacing(video: _Video, seen: _Facts) -> tuple[int, float | None]:
     """Ritmul vizual in primele secunde si inceputul primei stagnari (``None`` = niciuna).
 
-    Ceva nou pe ecran = o taietura de scena (``scdet``) sau text nou citit pe cadre.
+    Ceva nou pe ecran = o taietura de scena (``scdet``), miscare de camera (zoom,
+    panoramare, B-roll) sau text nou citit pe cadre.
     """
     window = min(PACING_WINDOW_SECONDS, video.duration)
     if window <= PACING_GAP_SECONDS:
         return 10, None  # clipul se termina inainte sa poata stagna
-    # ponytail: scdet prinde taieturile, nu zoom-urile subtile; un prag mic de "scene"
-    # (select='gt(scene,0.02)') le-ar prinde, cu o trecere ffmpeg in plus.
-    cuts = [t for t in video.cut_times if 0 < t < window]
-    events = sorted({*cuts, *(t for t in seen.text_change_times if 0 < t < window)})
+    changes = [*video.cut_times, *video.motion_times, *seen.text_change_times]
+    events = sorted({t for t in changes if 0 < t < window})
     marks = [0.0, *events, window]
     gap, start = max((end - begin, begin) for begin, end in pairwise(marks))
     score = (
@@ -1392,7 +1429,7 @@ def _dropoff(video: _Video, seen: _Facts, stall: float | None) -> tuple[int, str
         candidates.append((
             stall + PACING_GAP_SECONDS,
             f"de la secunda {stall:.0f} nu se mai schimbă nimic pe ecran "
-            "(nicio tăietură, niciun text nou)",
+            "(nicio tăietură, niciun zoom, niciun text nou)",
             PACING_FIX,
         ))
     pause = _speech_pause(video)
