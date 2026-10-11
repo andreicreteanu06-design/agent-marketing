@@ -142,10 +142,14 @@ def _launch_spec(*extra: MetaAdCreative, concept: str = "founder_story") -> Meta
 
 
 def test_ordinele_de_strategie_vin_din_cont_si_din_ipoteza() -> None:
-    orders = strategy_orders(_account(), _experiment(), max_ads=3)
+    orders = strategy_orders(
+        _account(), _experiment(), max_ads=3, daily_budget=Decimal("100"), target_cpa=Decimal("10")
+    )
 
     assert orders.optimization_goal == "OFFSITE_CONVERSIONS"
+    # 100 lei/zi x 7 / 10 lei = 70 pe saptamana, peste 50: lead-ul calificat.
     assert orders.optimization_event == "SUBMIT_APPLICATION"
+    assert orders.expected_weekly_events == 70
     assert orders.objective == "OUTCOME_LEADS"
     assert (orders.pixel_id, orders.capi_ready) == ("1234567890", True)
     assert orders.concept_template == "founder_story"
@@ -154,7 +158,9 @@ def test_ordinele_de_strategie_vin_din_cont_si_din_ipoteza() -> None:
 
 
 def test_fara_pixel_in_cont_ordinele_noteaza_ca_lipseste_capi() -> None:
-    orders = strategy_orders(_account(pixel=None), None, max_ads=None)
+    orders = strategy_orders(
+        _account(pixel=None), None, max_ads=None, daily_budget=Decimal("25"), target_cpa=None
+    )
     assert not orders.capi_ready
     assert "CAPI" in orders.deviations[0]
 
@@ -168,7 +174,13 @@ def test_cco_completeaza_ordinele_pe_fiecare_reclama() -> None:
         concept_template="testimonial",
     )
     orders = with_creative(
-        strategy_orders(_account(), _experiment(), max_ads=3),
+        strategy_orders(
+            _account(),
+            _experiment(),
+            max_ads=3,
+            daily_budget=Decimal("50"),
+            target_cpa=Decimal("30"),
+        ),
         _launch_spec(video),
         [
             {"decision": "ELIGIBLE_FOR_TEST", "follows_concept": True},
@@ -185,7 +197,13 @@ def test_cco_completeaza_ordinele_pe_fiecare_reclama() -> None:
 
 def test_abaterea_cand_nicio_reclama_nu_foloseste_conceptul_cmo() -> None:
     orders = with_creative(
-        strategy_orders(_account(), _experiment(), max_ads=3),
+        strategy_orders(
+            _account(),
+            _experiment(),
+            max_ads=3,
+            daily_budget=Decimal("50"),
+            target_cpa=Decimal("30"),
+        ),
         _launch_spec(concept="product_demo"),
         [{"decision": "ELIGIBLE_FOR_TEST"}],
     )
@@ -228,12 +246,12 @@ def test_propunerea_poarta_ordinele_si_prima_reclama_primeste_conceptul_cmo(
     body = response.json()
     assert body["after"]["concept_template"] == "founder_story"
     orders = body["before"]["campaign_orders"]
-    assert orders["optimization_event"] == "SUBMIT_APPLICATION"  # lead calificat, doar server
+    assert orders["optimization_event"] == "LEAD"  # 25 lei/zi: sub 50 de lead-uri pe saptamana
     assert orders["optimization_goal"] == "OFFSITE_CONVERSIONS"
     assert orders["concept_template"] == "founder_story"
     assert orders["issued_by"] == ["cmo", "consiliu", "cco"]
     assert orders["ads"][0]["status"] == "cleared"
-    assert "Ordine PPC: optimizare pe SUBMIT_APPLICATION" in body["rationale"]
+    assert "Ordine PPC: optimizare pe LEAD" in body["rationale"]
     assert seen[0][1].cmo_hypothesis is not None
     assert seen[0][1].concept_template == "founder_story"
 

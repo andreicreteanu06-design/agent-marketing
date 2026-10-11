@@ -316,7 +316,7 @@ def test_obiectivul_si_evenimentul_vin_din_contul_clientului(
         "/api/v1/campaigns/propose_launch", headers=headers, json=_request()
     ).json()
     assert body["after"]["objective"] == CampaignObjective.LEAD_GEN.value
-    assert body["after"]["custom_event_type"] == "SUBMIT_APPLICATION"
+    assert body["after"]["custom_event_type"] == "LEAD"  # buget mic: scara porneste pe LEAD
     assert body["after"]["call_to_action"] == "LEARN_MORE"
     assert "OUTCOME_LEADS" in body["rationale"]
 

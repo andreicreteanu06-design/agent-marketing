@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pandas as pd
 
+    from ppc_agent.decision.learning_guard import LearningState
+
 
 @dataclass(frozen=True, slots=True)
 class FetchResult:
@@ -195,6 +197,10 @@ class MetaMarketingProvider(ABC):
             Lista de parcursuri; fiecare este ``[canal1, canal2, ...,
             "conversion" | "null"]``.
         """
+
+    async def learning_state(self, adset_id: str) -> LearningState | None:
+        """Starea de invatare a unui ad set; ``None`` = necunoscuta (garda nu blocheaza)."""
+        return None
 
 
 class TikTokAdsProvider(ABC):

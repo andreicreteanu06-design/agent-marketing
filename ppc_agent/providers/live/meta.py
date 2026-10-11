@@ -12,13 +12,14 @@ import base64
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
 
 import httpx
 import pandas as pd
 
+from ppc_agent.decision.learning_guard import LearningState
 from ppc_agent.errors import CampaignLaunchError, ProviderError, SetupRequiredError
 from ppc_agent.providers.base import MetaMarketingProvider
 from ppc_agent.providers.live.daily import DAILY_COLUMNS, daily_window
@@ -760,6 +761,34 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 f"Meta Graph API nu a raspuns in {self._timeout:.0f}s."
             ) from exc
         return self._checked(response)
+
+    async def learning_state(self, adset_id: str) -> LearningState | None:
+        """Faza de invatare a ad set-ului, de cand invata si CPA-ul ultimelor 7 zile."""
+        data = await self._get(
+            adset_id,
+            {
+                "fields": "learning_stage_info,created_time,"
+                "insights.date_preset(last_7d){spend,actions}"
+            },
+        )
+        info = data.get("learning_stage_info") or {}
+        status = str(info.get("status", ""))
+        if not status:
+            return None
+        since: datetime | None = None
+        if info.get("last_sig_edit_ts"):
+            since = datetime.fromtimestamp(int(info["last_sig_edit_ts"]), tz=UTC)
+        elif data.get("created_time"):
+            since = datetime.strptime(str(data["created_time"]), "%Y-%m-%dT%H:%M:%S%z")
+        rows = (data.get("insights") or {}).get("data") or []
+        row = rows[0] if rows else {}
+        conversions, _ = _conversion_totals(row)
+        return LearningState(
+            status=status,
+            since=since,
+            spend=Decimal(str(row.get("spend", "0"))),
+            conversions=conversions,
+        )
 
     async def _wait_video_ready(self, video_id: str) -> None:
         """Asteapta pana cand Meta termina procesarea video-ului urcat.
