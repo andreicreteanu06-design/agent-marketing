@@ -90,6 +90,7 @@ class MetaMutationProvider(Protocol):
     async def current_daily_budget(self, object_id: str) -> Decimal | None: ...
     async def launch_campaign(self, ad_account_id: str, spec: MetaLaunchSpec) -> LaunchResult: ...
     async def learning_state(self, adset_id: str) -> LearningState | None: ...
+    async def campaign_learning_states(self, campaign_id: str) -> list[LearningState]: ...
 
 
 class GoogleAdsMutationProvider(Protocol):
@@ -533,31 +534,38 @@ def _hold_if_learning(
     target: ResourceTarget,
     target_cpa: Decimal | None,
 ) -> None:
-    """Garda fazei de invatare (``decision/learning_guard.py``) pe bugetul unui ad set Meta.
+    """Garda fazei de invatare (``decision/learning_guard.py``) pe bugetul Meta.
+
+    La un ad set, starea lui. La o campanie (buget CBO), bugetul se imparte intre ad
+    set-urile ei: schimbarea se amana daca oricare ad set activ invata.
 
     Raises:
-        LearningPhaseHold: ad set-ul invata, iar schimbarea de buget e majora.
+        LearningPhaseHold: un ad set invata, iar schimbarea de buget e majora.
     """
-    if (target.platform, target.kind, proposal.op) != (PLATFORM_META, "ad_set", "UPDATE"):
-        return  # ponytail: doar bugetul ad set-ului; la CBO invatarea e tot pe ad set-uri
+    if target.platform != PLATFORM_META or proposal.op != "UPDATE":
+        return
+    if target.kind not in ("ad_set", "campaign"):
+        return
     meta = cast(MetaMutationProvider, provider)
     try:
-        state = asyncio.run(meta.learning_state(target.object_id))
+        if target.kind == "ad_set":
+            states = [asyncio.run(meta.learning_state(target.object_id))]
+        else:
+            states = list(asyncio.run(meta.campaign_learning_states(target.object_id)))
         current = asyncio.run(meta.current_daily_budget(target.object_id))
     except PpcAgentError:
         return  # fara citire, garda nu blocheaza - ca inainte de ea
     change = (
         abs(proposal.projected_daily_spend - current) / current if current else None
     )
-    reason = learning_hold(
-        state,
-        change="budget",
-        budget_change=change,
-        target_cpa=target_cpa,
-        now=datetime.now(tz=UTC),
-    )
-    if reason:
-        raise LearningPhaseHold(f"{reason} Propunerea ramane in asteptare.")
+    now = datetime.now(tz=UTC)
+    for state in states:
+        reason = learning_hold(
+            state, change="budget", budget_change=change, target_cpa=target_cpa, now=now
+        )
+        if reason:
+            where = "" if target.kind == "ad_set" else "Bugetul campaniei (CBO): "
+            raise LearningPhaseHold(f"{where}{reason} Propunerea ramane in asteptare.")
 
 
 def execute_proposal(

@@ -202,6 +202,10 @@ class MetaMarketingProvider(ABC):
         """Starea de invatare a unui ad set; ``None`` = necunoscuta (garda nu blocheaza)."""
         return None
 
+    async def campaign_learning_states(self, campaign_id: str) -> list[LearningState]:
+        """Starea ad set-urilor active ale unei campanii; gol = necunoscuta (nu blocheaza)."""
+        return []
+
 
 class TikTokAdsProvider(ABC):
     """Acces la performanta grupurilor de anunturi si parcursurile de conversie TikTok.
