@@ -157,3 +157,9 @@ def test_copywriterul_primeste_pasii_si_ce_sa_evite() -> None:
     assert brief["template"] == "founder_story"
     assert brief["label"] == "Povestea fondatorului"
     assert isinstance(brief["copy_beats"], list) and brief["copy_beats"]
+
+
+def test_link_ul_reclamei_poarta_id_ul_ei_pentru_site() -> None:
+    fields = creative_fields(_spec(), image_hash="h")
+    assert "ad_id={{ad.id}}" in fields["url_tags"]
+    assert "utm_source=facebook" in fields["url_tags"]

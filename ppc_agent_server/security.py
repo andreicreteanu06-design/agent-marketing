@@ -14,6 +14,7 @@ parola):
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import secrets
@@ -109,6 +110,41 @@ def _oauth_state_key() -> str:
     return hmac.new(
         settings.jwt_secret_key.encode("utf-8"), b"oauth-state", hashlib.sha256
     ).hexdigest()
+
+
+#: Cheile de webhook per client incep asa (cheile agentiei incep cu ``pk_``).
+WEBHOOK_KEY_PREFIX = "whk_"
+#: Schimbata, invalideaza toate cheile de webhook deodata (fara sa delogheze pe nimeni).
+_WEBHOOK_KEY_VERSION = 1
+
+
+def webhook_key(client_account_id: int) -> str:
+    """Cheia de webhook a unui client, DERIVATA din ``JWT_SECRET_KEY`` (HMAC).
+
+    Fara stocare: aceeasi cheie se poate arata oricand agentiei, iar o cheie nu poate fi
+    ghicita fara secretul serverului. Merge DOAR pe webhook-ul clientului ei - spre
+    deosebire de cheia agentiei, care deschide toti clientii.
+
+    Raises:
+        RuntimeError: ``JWT_SECRET_KEY`` nu e configurat in mediu.
+    """
+    settings = get_server_settings()
+    if not settings.jwt_secret_key:
+        raise RuntimeError("JWT_SECRET_KEY nu e configurat - vezi create_client_token")
+    # ponytail: fara rotire per client; o cheie scursa se schimba (pentru toti) prin
+    # _WEBHOOK_KEY_VERSION. Rotirea per client cere o versiune salvata pe ClientAccount.
+    message = f"webhook-key:v{_WEBHOOK_KEY_VERSION}:{client_account_id}".encode()
+    digest = hmac.new(settings.jwt_secret_key.encode("utf-8"), message, hashlib.sha256)
+    return WEBHOOK_KEY_PREFIX + base64.urlsafe_b64encode(digest.digest()).decode().rstrip("=")
+
+
+def verify_webhook_key(raw_key: str, client_account_id: int) -> bool:
+    """Adevarat daca ``raw_key`` e cheia de webhook a clientului ``client_account_id``.
+
+    Raises:
+        RuntimeError: ``JWT_SECRET_KEY`` nu e configurat in mediu.
+    """
+    return hmac.compare_digest(raw_key.encode(), webhook_key(client_account_id).encode())
 
 
 def create_oauth_state(client_account_id: int, integration: str) -> str:
