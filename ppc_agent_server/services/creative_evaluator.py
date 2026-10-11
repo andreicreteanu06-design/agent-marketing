@@ -33,6 +33,14 @@ depinde de dispozitia unui model:
   subtitrari; muzica/efectele = sunet fara voce;
 - **Retentie** (doar video, tot clipul): durata, pauzele moarte de dupa hook, ritmul
   taieturilor (cand nu tine vocea atentia) si CTA-ul de la final;
+- **Predictia retentiei** (doar video): ``visual_pacing_score`` - in primele 10 s, cel mai
+  lung interval fara ceva nou pe ecran (taietura de scena masurata de ``scdet`` sau text
+  nou citit pe cadre); ideal o schimbare la 2-3 s, iar un "talking head" fara taieturi
+  si fara text nou e penalizat grav; sub 6, reclama se repara inainte de test.
+  ``first_frame_impact`` - ce se intampla in secunda zero (miscare, textul primului
+  cadru). ``predicted_dropoff_second`` - prima secunda cu un motiv masurat de abandon
+  (timp mort, intro de logo, nicio intrebare, ecran neschimbat, pauza in voce), cu
+  motivul si remedierea (``retention_fix_advice``);
 - **Povestea** (doar video, "bucla dopaminei"): Jev citeste vocea si textul cadrelor -
   **mizele** (un personaj in care publicul se recunoaste, ce risca privitorul, urgenta),
   **Marea Intrebare** (deschiderea lasa o bucla deschisa), **fenta** (pare ca duce spre
@@ -161,6 +169,16 @@ NO_STORY_HOOK_CAP = 5
 REHOOK_FROM_SECONDS = 10.0
 #: Cel mai lung interval de dupa hook fara ceva nou, in care atentia inca tine.
 REHOOK_SECONDS = 5.0
+#: Fereastra in care se judeca ritmul vizual (primele secunde decid scroll-ul).
+PACING_WINDOW_SECONDS = 10.0
+#: Ritmul ideal: ceva nou pe ecran cel putin o data la atatea secunde.
+PACING_GAP_SECONDS = 3.0
+#: Sub atat, ritmul opreste testul.
+PACING_FLOOR = 6
+#: Remedierea pentru un ritm slab (prima in lista, cand opreste lansarea).
+PACING_FIX = "Adaugă tăieturi rapide sau text pe ecran pentru a menține ritmul"
+#: O pauza de atata in voce, fara un cadru nou, pierde privitorul.
+SPEECH_PAUSE_SECONDS = 1.5
 #: GEO: de la atatea cuvinte citite pe imagine, un AI intelege ce arata.
 GEO_READABLE_WORDS = 8
 #: ...iar un alt de atatea cuvinte o descrie cu adevarat.
@@ -268,6 +286,9 @@ class _Facts:
     #: GEO: cifrele cu unitate citite pe imagine si cate cuvinte se citesc.
     metrics_shown: list[str] = field(default_factory=list)
     readable_words: int = 0
+    #: Video: textul primului cadru si secundele in care textul de pe ecran se schimba.
+    first_frame_text: list[str] = field(default_factory=list)
+    text_change_times: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -328,6 +349,12 @@ class CreativeEvaluation(BaseModel):
     concept_template: str | None = None
     #: Respecta sablonul; ``None`` = niciun sablon de verificat.
     follows_concept: bool | None = None
+    #: Predictia retentiei (doar video; ``None`` la imagini).
+    visual_pacing_score: int | None = Field(default=None, ge=1, le=10)
+    first_frame_impact: str | None = None
+    predicted_dropoff_second: int | None = Field(default=None, ge=0)
+    dropoff_reason: str | None = None
+    retention_fix_advice: str | None = None
 
 
 _SYSTEM = (
@@ -345,7 +372,11 @@ _SYSTEM = (
     "LANGUAGE: risks și fixes scrise în limba română."
 )
 _IMAGE_PROMPT = _SYSTEM.format(what="ONE ad image")
-_VIDEO_PROMPT = _SYSTEM.format(what="the opening frame of a video ad")
+_VIDEO_PROMPT = _SYSTEM.format(what="the opening frame of a video ad") + (
+    "\n- Think like a retention-prediction algorithm: would this frame stop a thumb in the "
+    "first half second (a face, motion, bold text naming the viewer's problem or gain)? If "
+    "not, make that your first risk and fix."
+)
 _PAGE_PROMPT = _SYSTEM.format(what="ONE image for a web page (landing page or blog)") + (
     "\n- shows_data: the image is a chart, a diagram, a table or an infographic."
 )
@@ -555,6 +586,8 @@ class _Video:
     true_peak: float | None
     #: Segmentele vorbite (start, final, text); ``None`` = netranscris.
     speech: list[tuple[float, float, str]] | None
+    #: Primul cadru e inghetat sau negru (nicio miscare in secunda zero).
+    opening_still: bool = False
 
     @property
     def cuts(self) -> int:
@@ -783,6 +816,7 @@ def _video_facts(data: bytes, transcribe: Transcriber | None) -> _Video:
         freezes = _intervals(scan, rb"freeze_start:", rb"freeze_end:", duration)
         blacks = _intervals(scan, rb"black_start:", rb"black_end:", duration)
         hook_dead_air = any(start <= hook_end for start, _ in [*freezes, *blacks])
+        opening_still = any(start <= 0.1 for start, _ in [*freezes, *blacks])
         later = {round(s, 1) for s, _ in blacks if s > hook_end} | {
             round(s, 1) for s, e in freezes if s > hook_end and e - s >= LONG_FREEZE_SECONDS
         }
@@ -811,6 +845,7 @@ def _video_facts(data: bytes, transcribe: Transcriber | None) -> _Video:
         loudness=_summary(sound, rb"Integrated loudness"),
         true_peak=_summary(sound, rb"True peak"),
         speech=speech,
+        opening_still=opening_still,
     )
 
 
@@ -1106,6 +1141,12 @@ def _observe(
             dict.fromkeys(m.group().strip() for line in every for m in _METRIC.finditer(line.text))
         )[:5],
         readable_words=sum(len(line.text.split()) for line in every),
+        first_frame_text=_texts(read[0]) if read else [],
+        text_change_times=[
+            second
+            for second, before, after in zip(times[1:], read, read[1:], strict=False)
+            if {line.text for line in after} - {line.text for line in before}
+        ],
         # Vazut real: modelul mic scrie uneori in engleza, orice i-ai cere.
         risks=[risk for risk in seen.risks if _in_romanian(risk)],
         fixes=[fix for fix in seen.fixes if _in_romanian(fix)],
@@ -1283,6 +1324,86 @@ def _retention(video: _Video, seen: _Facts, risks: list[str], fixes: list[str]) 
         risks.append("finalul nu spune ce să facă privitorul (fără CTA)")
         fixes.append("Închide cu un CTA clar, pe ecran și în voce")
     return _clamp(max(score, 1))
+
+
+def _pacing(video: _Video, seen: _Facts) -> tuple[int, float | None]:
+    """Ritmul vizual in primele secunde si inceputul primei stagnari (``None`` = niciuna).
+
+    Ceva nou pe ecran = o taietura de scena (``scdet``) sau text nou citit pe cadre.
+    """
+    window = min(PACING_WINDOW_SECONDS, video.duration)
+    if window <= PACING_GAP_SECONDS:
+        return 10, None  # clipul se termina inainte sa poata stagna
+    # ponytail: scdet prinde taieturile, nu zoom-urile subtile; un prag mic de "scene"
+    # (select='gt(scene,0.02)') le-ar prinde, cu o trecere ffmpeg in plus.
+    cuts = [t for t in video.cut_times if 0 < t < window]
+    events = sorted({*cuts, *(t for t in seen.text_change_times if 0 < t < window)})
+    marks = [0.0, *events, window]
+    gap, start = max((end - begin, begin) for begin, end in pairwise(marks))
+    score = (
+        10 if gap <= PACING_GAP_SECONDS else 8 if gap <= 4 else 6 if gap <= 5
+        else 5 if gap <= 6 else 4 if gap <= 8 else 2
+    )
+    if video.voice and not events and window >= 6:
+        score = min(score, 3)  # talking head: aceeasi imagine, doar vorbe
+    return score, (start if gap > PACING_GAP_SECONDS else None)
+
+
+def _first_frame(video: _Video, seen: _Facts, risks: list[str], fixes: list[str]) -> str:
+    """Ce se intampla in secunda zero: miscare si textul primului cadru."""
+    text = " / ".join(seen.first_frame_text)
+    motion = "cadru static" if video.opening_still else "mișcare din primul cadru"
+    if not text:
+        if video.opening_still:
+            risks.append("primul cadru nu oprește degetul: static și fără text")
+            fixes.append("Deschide cu mișcare și cu problema sau câștigul scris mare")
+        return f"Secunda 0: {motion}, fără text pe ecran."
+    benefit = bool(seen.main_hook) and seen.main_hook in seen.first_frame_text
+    said = "spune câștigul" if benefit else "nu spune încă problema sau câștigul"
+    return f"Secunda 0: {motion}; textul de pe ecran («{text}») {said}."
+
+
+def _speech_pause(video: _Video) -> float | None:
+    """Prima pauza lunga intre doua fraze, fara un cadru nou in ea."""
+    spoken = video.speech or []
+    for (_, end, _), (start, _, _) in pairwise(spoken):
+        quiet = start - end >= SPEECH_PAUSE_SECONDS
+        if quiet and not any(end <= cut <= start for cut in video.cut_times):
+            return end
+    return None
+
+
+def _dropoff(video: _Video, seen: _Facts, stall: float | None) -> tuple[int, str, str]:
+    """Secunda la care atentia pica, motivul si remedierea: primul risc masurat."""
+    candidates: list[tuple[float, str, str]] = [
+        (video.duration, "nicio cădere clară: atenția scade firesc spre final",
+         "Păstrează ritmul și testează și o variantă mai scurtă"),
+    ]
+    if video.hook_dead_air:
+        candidates.append((1.0, "cadru înghețat sau negru în primele secunde",
+                           "Începe direct cu mișcare, din prima secundă"))
+    if seen.opens_with_brand_intro:
+        candidates.append((1.0, "începe cu un intro de brand/logo",
+                           "Mută logo-ul la final; primele secunde sunt pentru hook"))
+    if seen.story is not None and not seen.story.big_question:
+        candidates.append((HOOK_SECONDS, "deschiderea nu ridică nicio întrebare",
+                           "Deschide cu o întrebare sau o situație nerezolvată"))
+    if stall is not None:
+        candidates.append((
+            stall + PACING_GAP_SECONDS,
+            f"de la secunda {stall:.0f} nu se mai schimbă nimic pe ecran "
+            "(nicio tăietură, niciun text nou)",
+            PACING_FIX,
+        ))
+    pause = _speech_pause(video)
+    if pause is not None:
+        candidates.append((pause, "speakerul face o pauză lungă și nu apare niciun cadru nou "
+                           "(B-roll)", "Taie pauza sau acoper-o cu B-roll"))
+    if video.dead_air_later:
+        candidates.append((video.dead_air_later[0], "pauză moartă: ecran negru sau cadru "
+                           "static lung", "Taie pauzele moarte"))
+    second, reason, fix = min(candidates, key=lambda item: item[0])
+    return int(second), reason, fix
 
 
 def _virality(
@@ -1611,7 +1732,16 @@ def evaluate_creative(
         )
     audio = retention = virality = None
     facts = None
+    pacing = dropoff = None
+    first_frame = dropoff_reason = advice = None
     if video is not None:
+        pacing, stall = _pacing(video, seen)
+        first_frame = _first_frame(video, seen, risks, fixes)
+        dropoff, dropoff_reason, drop_fix = _dropoff(video, seen, stall)
+        if pacing < PACING_FLOOR:
+            risks.insert(0, f"ritm vizual slab ({pacing}/10): {dropoff_reason}")
+            fixes.insert(0, PACING_FIX)
+        advice = " ".join(_unique([*([PACING_FIX] if pacing < PACING_FLOOR else []), drop_fix]))
         audio = _audio(video, seen, risks, fixes)
         retention = _retention(video, seen, risks, fixes)
         virality = _virality(video, seen, risks, fixes)
@@ -1642,10 +1772,13 @@ def evaluate_creative(
     )
     # Regulile intai (sigure, in ordinea prioritatii: incredere, ierarhie, hook, audio,
     # retentie, poveste, format), apoi ce a mai vazut modelul.
+    decision = _decide(scores, context.purpose)
+    if pacing is not None and pacing < PACING_FLOOR and decision == "ELIGIBLE_FOR_TEST":
+        decision = "REVISE_BEFORE_TEST"
     return CreativeEvaluation(
         asset_type=asset,
         purpose=context.purpose,
-        decision=_decide(scores, context.purpose),
+        decision=decision,
         scores=scores,
         detected_risks=_unique([*risks, *seen.risks]),
         priority_fixes=_unique([*fixes, *seen.fixes])[:3],
@@ -1654,6 +1787,11 @@ def evaluate_creative(
         concept=seen.concept,
         concept_template=concept_for(context),
         follows_concept=seen.follows_concept,
+        visual_pacing_score=pacing,
+        first_frame_impact=first_frame,
+        predicted_dropoff_second=dropoff,
+        dropoff_reason=dropoff_reason,
+        retention_fix_advice=advice,
     ).model_dump()
 
 
