@@ -76,6 +76,9 @@ class _LearningMeta(_FakeMetaProvider):
     async def learning_state(self, adset_id: str) -> LearningState | None:  # type: ignore[override]
         return self.state
 
+    async def campaign_learning_states(self, campaign_id: str) -> list[LearningState]:  # type: ignore[override]
+        return [self.state] if self.state is not None else []
+
 
 def _learning(days: float = 1) -> LearningState:
     return LearningState(status="LEARNING", since=datetime.now(tz=UTC) - timedelta(days=days))
@@ -259,3 +262,53 @@ def test_o_campanie_deja_pe_lead_calificat_nu_primeste_upgrade(session: Session)
     _leads(session, account, (60, 60))
 
     assert propose_upgrades(session, account, learning=lambda _: None, now=NOW)["proposed"] == []
+
+
+# --- bugetul campaniei (CBO) ---------------------------------------------------------
+
+
+def _cbo(spend: str) -> ProposedChange:
+    return _proposal(
+        op=ChangeOp.UPDATE, resource="meta_campaign/camp_1", resource_type="campaign", spend=spend
+    )
+
+
+def test_bugetul_cbo_se_amana_cand_un_ad_set_al_campaniei_invata() -> None:
+    provider = _LearningMeta(_learning(), current_budget=Decimal("50"))
+
+    with pytest.raises(LearningPhaseHold, match="CBO"):
+        execute_proposal(_cbo("100"), provider, current_status="pending", max_daily_spend=_CAP)
+    assert provider.budgets == []
+
+
+def test_bugetul_cbo_trece_cand_ad_set_urile_au_iesit_din_invatare() -> None:
+    provider = _LearningMeta(LearningState(status="SUCCESS"), current_budget=Decimal("50"))
+
+    result = execute_proposal(_cbo("100"), provider, current_status="pending", max_daily_spend=_CAP)
+
+    assert result.executed
+    assert provider.budgets == [("camp_1", Decimal("100"))]
+
+
+def test_providerul_citeste_doar_ad_set_urile_active_ale_campaniei() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        learning = {"status": "LEARNING", "last_sig_edit_ts": 1_760_000_000}
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "as_1", "effective_status": "ACTIVE", "learning_stage_info": learning},
+                    {"id": "as_2", "effective_status": "PAUSED", "learning_stage_info": learning},
+                    {"id": "as_3", "effective_status": "ACTIVE"},  # fara stare: necunoscuta
+                ]
+            },
+        )
+
+    provider = LiveMetaMarketingProvider(access_token="t", transport=httpx.MockTransport(handler))
+    states = asyncio.run(provider.campaign_learning_states("camp_1"))
+
+    assert [state.status for state in states] == ["LEARNING"]
+    assert "/camp_1/adsets" in seen[0]

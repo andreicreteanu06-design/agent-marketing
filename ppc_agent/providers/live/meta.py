@@ -259,6 +259,34 @@ def _image_hash(response: dict[str, Any]) -> str:
 _NOTHING_CREATED = "Nimic nu a fost creat in contul Meta."
 
 
+#: Ce citim despre invatarea unui ad set: starea, de cand, cheltuiala si conversiile pe 7 zile.
+_LEARNING_FIELDS = (
+    "learning_stage_info,created_time,insights.date_preset(last_7d){spend,actions}"
+)
+
+
+def _learning_state(data: dict[str, Any]) -> LearningState | None:
+    """Starea de invatare dintr-un ad set citit cu :data:`_LEARNING_FIELDS`."""
+    info = data.get("learning_stage_info") or {}
+    status = str(info.get("status", ""))
+    if not status:
+        return None
+    since: datetime | None = None
+    if info.get("last_sig_edit_ts"):
+        since = datetime.fromtimestamp(int(info["last_sig_edit_ts"]), tz=UTC)
+    elif data.get("created_time"):
+        since = datetime.strptime(str(data["created_time"]), "%Y-%m-%dT%H:%M:%S%z")
+    rows = (data.get("insights") or {}).get("data") or []
+    row = rows[0] if rows else {}
+    conversions, _ = _conversion_totals(row)
+    return LearningState(
+        status=status,
+        since=since,
+        spend=Decimal(str(row.get("spend", "0"))),
+        conversions=conversions,
+    )
+
+
 async def download_image(
     image_url: str,
     *,
@@ -764,31 +792,23 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
 
     async def learning_state(self, adset_id: str) -> LearningState | None:
         """Faza de invatare a ad set-ului, de cand invata si CPA-ul ultimelor 7 zile."""
+        return _learning_state(await self._get(adset_id, {"fields": _LEARNING_FIELDS}))
+
+    async def campaign_learning_states(self, campaign_id: str) -> list[LearningState]:
+        """Faza de invatare a ad set-urilor active ale unei campanii (bugetul CBO).
+
+        Ad set-urile oprite nu conteaza: o schimbare de buget nu le reporneste invatarea.
+        """
         data = await self._get(
-            adset_id,
-            {
-                "fields": "learning_stage_info,created_time,"
-                "insights.date_preset(last_7d){spend,actions}"
-            },
+            f"{campaign_id}/adsets",
+            {"fields": f"effective_status,{_LEARNING_FIELDS}", "limit": "100"},
         )
-        info = data.get("learning_stage_info") or {}
-        status = str(info.get("status", ""))
-        if not status:
-            return None
-        since: datetime | None = None
-        if info.get("last_sig_edit_ts"):
-            since = datetime.fromtimestamp(int(info["last_sig_edit_ts"]), tz=UTC)
-        elif data.get("created_time"):
-            since = datetime.strptime(str(data["created_time"]), "%Y-%m-%dT%H:%M:%S%z")
-        rows = (data.get("insights") or {}).get("data") or []
-        row = rows[0] if rows else {}
-        conversions, _ = _conversion_totals(row)
-        return LearningState(
-            status=status,
-            since=since,
-            spend=Decimal(str(row.get("spend", "0"))),
-            conversions=conversions,
-        )
+        return [
+            state
+            for row in data.get("data") or []
+            if row.get("effective_status") == "ACTIVE"
+            and (state := _learning_state(row)) is not None
+        ]
 
     async def _wait_video_ready(self, video_id: str) -> None:
         """Asteapta pana cand Meta termina procesarea video-ului urcat.

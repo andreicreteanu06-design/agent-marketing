@@ -80,6 +80,9 @@ class _FakeMetaProvider:
     async def learning_state(self, adset_id: str) -> None:
         return None
 
+    async def campaign_learning_states(self, campaign_id: str) -> list[object]:
+        return []
+
     @property
     def touched(self) -> bool:
         """Adevarat daca providerul a fost chemat in vreun fel."""
