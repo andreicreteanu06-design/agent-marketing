@@ -113,7 +113,7 @@ curl -X POST "https://<domeniul-platformei>/api/v1/tracking/conversion/<ID clien
 | `value`, `currency` | nu | Valoarea comenzii. La lead-uri, fără valoare, se folosește valoarea stabilită cu agenția |
 | `customer_email`, `customer_phone` | recomandat | În clar; serverul nostru le transformă ireversibil (hash SHA-256) înainte să le salveze sau să le trimită |
 | `ad_id`, `ad_platform` | recomandat | Din cookie-ul de la pasul 2; `ad_platform` e `meta` |
-| `lead_status` | nu | Marchează un lead necalificat: `unqualified`, `disqualified` sau `spam` |
+| `lead_status` | nu | `pending` = îl califică vânzările mai târziu; `unqualified`, `disqualified` sau `spam` = necalificat |
 | `event_time` | nu | Momentul conversiei (secunde Unix); lipsă = la primire |
 | `event_source_url`, `client_user_agent`, `client_ip_address` | recomandat | Din cererea vizitatorului; cu ele, Meta potrivește mai bine conversia cu persoana |
 | `fbp`, `fbc` | recomandat | Cookie-urile `_fbp` / `_fbc` puse de pixel |
@@ -131,7 +131,21 @@ Ce se întâmplă apoi:
 
 Campaniile mici pornesc pe `Lead`, ca Meta să iasă repede din faza de învățare. Când o campanie aduce două săptămâni la rând peste 50 de lead-uri calificate pe săptămână, platforma îți propune să o treci pe `SubmitApplication`. Atunci Meta caută doar oameni ca cei calificați.
 
-> Statusul se trimite **o singură dată**, odată cu lead-ul. Dacă același `event_id` e trimis din nou mai târziu (de exemplu după ce vânzările au sunat clientul), a doua trimitere e ignorată.
+### Calificare din CRM (după apelul vânzărilor)
+
+Dacă vânzările decid abia după ce vorbesc cu clientul:
+
+1. La completarea formularului, trimite lead-ul cu `"lead_status": "pending"`. Nu pleacă încă nimic de la server; Meta are deja `Lead`-ul de la pixel.
+2. Când vânzările decid, trimite **același `event_id`** cu noul status. Ajung doar ID-ul și statusul:
+
+```json
+{"event_id": "lead_6f1c2a90-8d1e-4b7a-9c55-2f0e8a1b3c44", "source_platform": "custom_web", "lead_status": "qualified"}
+```
+
+- `qualified`: pleacă `SubmitApplication` la Meta (fără un al doilea `Lead`), iar lead-ul se numără la reclama lui;
+- `unqualified`: rămâne la noi. Un lead deja trimis ca și calificat nu se poate retrage de la Meta, dar se scade din cifrele noastre.
+
+Răspunsul are atunci `"requalified": true`. Califică lead-urile **în maximum 7 zile**: Meta nu mai acceptă evenimente mai vechi de la un site.
 
 ### Magazin Gomag (`gomag`)
 

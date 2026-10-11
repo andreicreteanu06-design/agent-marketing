@@ -148,8 +148,14 @@ def forward_conversion(
     conversion: StandardizedConversion,
     *,
     transport: httpx.BaseTransport | None = None,
+    qualified_only: bool = False,
 ) -> CapiStatus | None:
     """Trimite conversia ``conversion.event_id`` la Meta, daca e cazul.
+
+    Args:
+        qualified_only: Lead-ul a fost calificat mai tarziu (CRM): pleaca doar
+            evenimentul calificat. ``Lead``-ul l-a trimis pixelul la completare, iar Meta
+            contopeste dublurile doar in 48 de ore - unul trimis acum s-ar numara de doua ori.
 
     Returns:
         ``"sent"`` / ``"failed"`` cand s-a incercat; ``None`` cand nu e cazul:
@@ -179,7 +185,8 @@ def forward_conversion(
         payload = build_event(event, conversion)
         payloads = [payload]
         if event.event_type.value in _QUALIFIED_LEAD_TYPES:
-            payloads.append({**payload, "event_name": QUALIFIED_LEAD_EVENT})
+            qualified = {**payload, "event_name": QUALIFIED_LEAD_EVENT}
+            payloads = [qualified] if qualified_only else [payload, qualified]
         # ponytail: un POST per eveniment; la retrimitere, Meta le contopeste pe event_id.
         for item in payloads:
             send_event(

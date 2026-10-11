@@ -213,6 +213,8 @@ def record_conversion(
 
     Idempotent pe ``event_id``: o conversie deja vazuta (webhook retrimis) nu
     se re-numara — returneaza verdictul salvat prima data, ``deduplicated=True``.
+    Exceptie: un ``lead_status`` nou (vanzarile au calificat lead-ul in CRM) reface
+    verdictul - vezi :func:`_requalify`.
 
     Args:
         session: Sesiunea DB activa.
@@ -225,6 +227,9 @@ def record_conversion(
     """
     existing_event = find_event(session, client_account.id or 0, conversion.event_id)
     if existing_event is not None:
+        status = (conversion.lead_status or "").strip().lower()
+        if status and status != (existing_event.lead_status or "").strip().lower():
+            return _requalify(session, client_account, existing_event, conversion)
         return ConversionOutcome(
             event_id=conversion.event_id,
             qualified=existing_event.qualified,
@@ -260,18 +265,77 @@ def record_conversion(
     )
     session.add(event)
 
-    if result.qualified:
-        record = _get_or_create_ad_record(session, client_account, qualified_conversion)
-        if record is not None:
-            record.conversions += 1
-            if qualified_conversion.value is not None:
-                record.revenue += Decimal(str(qualified_conversion.value))
-            record.updated_at = datetime.now(tz=UTC)
-            session.add(record)
+    # Randul anuntului se creeaza la prima aparitie, chiar si pentru un lead in asteptare:
+    # CRM-ul care il califica mai tarziu trimite doar statusul, fara platforma.
+    record = _get_or_create_ad_record(session, client_account, qualified_conversion)
+    if result.qualified and record is not None:
+        record.conversions += 1
+        if qualified_conversion.value is not None:
+            record.revenue += Decimal(str(qualified_conversion.value))
+        record.updated_at = datetime.now(tz=UTC)
+        session.add(record)
 
     session.commit()
     return ConversionOutcome(
         event_id=qualified_conversion.event_id, qualified=result.qualified, reason=result.reason
+    )
+
+
+def _requalify(
+    session: Session,
+    client_account: ClientAccount,
+    event: ConversionEvent,
+    conversion: StandardizedConversion,
+) -> ConversionOutcome:
+    """Statusul unui lead deja primit s-a schimbat (CRM): verdictul si contoarele se refac.
+
+    CRM-ul poate trimite doar ``event_id`` si statusul: tipul, valoarea si durata
+    apelului raman cele salvate la prima primire.
+    """
+    qualifier = ConversionQualifier(
+        default_lead_value=float(client_account.default_lead_value),
+        objective=client_account.objective,
+    )
+    result = qualifier.qualify(
+        conversion.model_copy(
+            update={
+                "event_type": event.event_type.value,
+                "value": float(event.value) if event.value is not None else conversion.value,
+                "call_duration_seconds": (
+                    conversion.call_duration_seconds or event.call_duration_seconds
+                ),
+            }
+        )
+    )
+    changed = result.qualified != event.qualified
+    event.lead_status = conversion.lead_status
+    event.qualified = result.qualified
+    event.disqualification_reason = result.reason
+    session.add(event)
+    if changed and event.ad_id is not None:
+        # Calificat acum: randul anuntului se poate crea (un lead in asteptare nu l-a creat);
+        # descalificat: doar unul existent se corecteaza.
+        lookup = conversion.model_copy(
+            update={
+                "ad_id": event.ad_id,
+                "ad_platform": conversion.ad_platform if result.qualified else None,
+            }
+        )
+        record = _get_or_create_ad_record(session, client_account, lookup)
+        if record is not None:
+            step = 1 if result.qualified else -1
+            record.conversions = max(0, record.conversions + step)
+            if event.value is not None:
+                record.revenue = max(Decimal("0"), record.revenue + step * event.value)
+            record.updated_at = datetime.now(tz=UTC)
+            session.add(record)
+    session.commit()
+    return ConversionOutcome(
+        event_id=event.event_id,
+        qualified=result.qualified,
+        reason=result.reason,
+        deduplicated=True,
+        requalified=True,
     )
 
 
