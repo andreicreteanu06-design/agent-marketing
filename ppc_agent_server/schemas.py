@@ -510,6 +510,8 @@ class ConversionOutcome(BaseModel):
     qualified: bool
     reason: str | None = None
     deduplicated: bool = False
+    #: Conversia era deja primita, dar ``lead_status`` s-a schimbat (CRM): verdictul s-a refacut.
+    requalified: bool = False
     #: Meta Conversions API: ``sent``/``failed`` cand s-a incercat acum, ``None``
     #: cand nu era cazul (necalificata, deja trimisa, fara pixel, mod mock).
     meta_capi: Literal["sent", "failed"] | None = None

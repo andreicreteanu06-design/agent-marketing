@@ -11,7 +11,10 @@
    durata cunoscuta) e descalificat: NU se numara ca o conversie reusita.
 3. ``lead_status`` - backend-ul clientului poate marca un lead necalificat (ex. a
    raspuns la intrebarea de calificare din formular sub pragul de buget):
-   ``unqualified``, ``disqualified`` sau ``spam``. Fara status, lead-ul ramane calificat.
+   ``unqualified``, ``disqualified`` sau ``spam``; ori il poate lasa in asteptare
+   (``pending``, ``new``) pana il califica vanzarile din CRM. Fara status, lead-ul ramane
+   calificat. Un status schimbat mai tarziu reface verdictul
+   (``pipeline.record_conversion``).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from ppc_agent_server.tracking.models import StandardizedConversion
 
 _MIN_CALL_DURATION_SECONDS = 60
 _UNQUALIFIED_STATUSES = frozenset({"unqualified", "disqualified", "spam"})
+_PENDING_STATUSES = frozenset({"pending", "new"})
 
 
 class QualificationResult(BaseModel):
@@ -69,6 +73,10 @@ class ConversionQualifier:
         if status in _UNQUALIFIED_STATUSES:
             return QualificationResult(
                 conversion=resolved, qualified=False, reason=f"marcat de client: {status}"
+            )
+        if status in _PENDING_STATUSES:
+            return QualificationResult(
+                conversion=resolved, qualified=False, reason="in asteptarea calificarii (CRM)"
             )
 
         if resolved.event_type == "phone_call":

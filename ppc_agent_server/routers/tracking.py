@@ -98,7 +98,9 @@ def ingest_conversion(
 
     outcome = record_conversion(session, account, conversion)
     # Si dupa o deduplicare: un webhook retrimis reincearca o trimitere esuata.
-    outcome.meta_capi = forward_conversion(session, account, conversion)
+    outcome.meta_capi = forward_conversion(
+        session, account, conversion, qualified_only=outcome.requalified
+    )
     platforms = forward_to_platforms(session, account, conversion)
     outcome.google_ads = platforms.get("google_ads")
     outcome.tiktok = platforms.get("tiktok")
