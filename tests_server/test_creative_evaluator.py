@@ -1300,3 +1300,48 @@ def test_un_clip_cu_taieturi_dese_are_ritm_bun(tmp_path: Path) -> None:
 
     assert result["visual_pacing_score"] >= 8
     assert ce.PACING_FIX not in result["priority_fixes"]
+
+
+# --- miscarea de camera (zoom, panoramare) ---------------------------------------------
+
+
+def test_parserul_ia_doar_cadrele_cu_o_parte_mare_din_imagine_schimbata() -> None:
+    log = (
+        b"[Parsed_metadata_5 @ 0x1] frame:0 pts:1 pts_time:0.5\n"
+        b"[Parsed_metadata_5 @ 0x1] lavfi.signalstats.YAVG=105.3\n"
+        b"[Parsed_metadata_5 @ 0x1] frame:1 pts:2 pts_time:1\n"
+        b"[Parsed_metadata_5 @ 0x1] lavfi.signalstats.YAVG=8.1\n"
+    )
+    assert ce._motion_times(log) == [0.5]  # 105/255 = 41%; 8/255 = 3% e sub prag
+
+
+def test_un_zoom_tine_ritmul_ca_o_taietura() -> None:
+    assert ce._pacing(_clip(motion_times=[2.0, 4.5, 7.0]), _facts()) == (10, None)
+
+
+def test_talking_head_cu_zoom_nu_mai_e_static() -> None:
+    talking = _clip(sound_start=0.0, speech=[(0.0, 11.0, "vorbesc")], motion_times=[3.0, 6.0])
+    score, _ = ce._pacing(talking, _facts())
+    assert score > 3
+
+
+#: O textura fina, statica; ZOOM o mareste lent (0,06% pe cadru), fara nicio taietura.
+STILL = "color=c=gray:s=720x1280:r=25,noise=alls=80:allf=u"
+ZOOM = STILL + ",zoompan=z='1+0.0006*in':d=1:s=720x1280:fps=25"
+
+
+@needs_ffmpeg
+def test_un_zoom_lent_fara_taieturi_e_detectat_si_nu_opreste_lansarea(tmp_path: Path) -> None:
+    result = _run(_video(tmp_path, ZOOM, seconds=12))
+
+    assert result["visual_pacing_score"] == 10
+    assert ce.PACING_FIX not in result["priority_fixes"]
+    assert result["video_facts"]["scene_cuts"] == 0  # scdet nu vede zoom-ul
+
+
+@needs_ffmpeg
+def test_aceeasi_textura_fara_zoom_e_statica(tmp_path: Path) -> None:
+    result = _run(_video(tmp_path, STILL, seconds=12))
+
+    assert result["visual_pacing_score"] == 2
+    assert result["decision"] == "REVISE_BEFORE_TEST"
