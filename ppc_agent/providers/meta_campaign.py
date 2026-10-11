@@ -129,6 +129,14 @@ CAPI_EVENT_TYPES = frozenset({"PURCHASE", "LEAD", "CONTACT", "SUBMIT_APPLICATION
 STANDARD_LEAD_EVENT = "LEAD"
 QUALIFIED_LEAD_EVENT = "SUBMIT_APPLICATION"
 
+#: Parametrii adaugati la link-ul fiecarei reclame lansate (parametri dinamici Meta):
+#: site-ul clientului citeste ``ad_id`` la intrare si il trimite inapoi cu conversia
+#: (``docs/ghid-tracking-clienti.md``), ca lead-ul sa se lege de reclama care l-a adus.
+AD_URL_TAGS = (
+    "utm_source=facebook&utm_medium=paid_social&utm_campaign={{campaign.id}}"
+    "&utm_content={{ad.id}}&ad_id={{ad.id}}"
+)
+
 #: Singura optimizare acceptata: conversii urmarite prin pixel + CAPI.
 CONVERSION_OPTIMIZATION_GOAL = "OFFSITE_CONVERSIONS"
 
@@ -613,7 +621,11 @@ def creative_fields(
             "image_hash": image_hash,
             "call_to_action": call_to_action,
         }
-    return {"name": f"{spec.campaign_name} - {suffix}", "object_story_spec": _json(story)}
+    return {
+        "name": f"{spec.campaign_name} - {suffix}",
+        "object_story_spec": _json(story),
+        "url_tags": AD_URL_TAGS,
+    }
 
 
 def ad_fields(
