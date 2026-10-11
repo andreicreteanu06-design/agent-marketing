@@ -29,6 +29,7 @@ from ppc_agent.providers.factory import ProviderFactory
 from ppc_agent.providers.live.meta import download_media
 from ppc_agent.providers.meta_campaign import (
     DEFAULT_CALL_TO_ACTION,
+    CarouselCard,
     MetaAdCreative,
     MetaLaunchSpec,
     build_meta_campaign_payload,
@@ -46,7 +47,11 @@ from ppc_agent_server.models import (
 )
 from ppc_agent_server.routers import queen
 from ppc_agent_server.routers.client_auth import get_current_client_user
-from ppc_agent_server.schemas import CampaignLaunchRequest, ProposedChangeRead
+from ppc_agent_server.schemas import (
+    CampaignLaunchRequest,
+    CarouselCardRequest,
+    ProposedChangeRead,
+)
 from ppc_agent_server.services.avatar_builder import profile_missing
 from ppc_agent_server.services.campaign_orders import (
     ORDERS_KEY,
@@ -195,6 +200,7 @@ def _build_spec(
             call_to_action=payload.call_to_action or DEFAULT_CALL_TO_ACTION[account.objective],
             video_url=(payload.video_url or "").strip(),
             concept_template=payload.concept_template or orders.concept_template or "",
+            carousel=_cards(payload.carousel),
             extra_ads=tuple(
                 MetaAdCreative(
                     headline=ad.headline.strip(),
@@ -203,6 +209,7 @@ def _build_spec(
                     angle=ad.angle.strip(),
                     video_url=(ad.video_url or "").strip(),
                     concept_template=ad.concept_template or "",
+                    carousel=_cards(ad.carousel),
                 )
                 for ad in payload.extra_ads
             ),
@@ -210,6 +217,17 @@ def _build_spec(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _cards(cards: list[CarouselCardRequest]) -> tuple[CarouselCard, ...]:
+    return tuple(
+        CarouselCard(
+            headline=card.headline.strip(),
+            image_url=card.image_url.strip(),
+            description=card.description.strip(),
+        )
+        for card in cards
+    )
 
 
 def _ad_context(

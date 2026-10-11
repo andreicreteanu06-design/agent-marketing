@@ -189,6 +189,14 @@ class WeeklyReportListItem(BaseModel):
     summary_source: str
 
 
+class CarouselCardRequest(BaseModel):
+    """Un card de carusel: imaginea si titlul de sub ea."""
+
+    headline: str = Field(min_length=1, max_length=255)
+    image_url: str = Field(min_length=9, max_length=2048)
+    description: str = Field(default="", max_length=255)
+
+
 class ExtraAdRequest(BaseModel):
     """O reclama in plus in acelasi ad set (post-Andromeda: diversitate de mesaj)."""
 
@@ -201,6 +209,8 @@ class ExtraAdRequest(BaseModel):
     video_url: str | None = Field(default=None, min_length=9, max_length=2048)
     #: Sablonul de concept (poveste de fondator, noi vs. ei, inainte/dupa...).
     concept_template: ConceptTemplate | None = None
+    #: Carusel: 2-10 carduri (``image_url`` ramane imaginea judecata de CCO).
+    carousel: list[CarouselCardRequest] = Field(default_factory=list, max_length=10)
 
 
 class CampaignLaunchRequest(BaseModel):
@@ -231,6 +241,8 @@ class CampaignLaunchRequest(BaseModel):
     video_url: str | None = Field(default=None, min_length=9, max_length=2048)
     #: Implicit: sablonul cerut de CMO pentru bariera clientului.
     concept_template: ConceptTemplate | None = None
+    #: Prima reclama ca carusel: 2-10 carduri.
+    carousel: list[CarouselCardRequest] = Field(default_factory=list, max_length=10)
     #: Reclame in plus in acelasi ad set; prima ramane cea din campurile de mai sus.
     extra_ads: list[ExtraAdRequest] = Field(default_factory=list, max_length=5)
 

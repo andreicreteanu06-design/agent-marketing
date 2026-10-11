@@ -56,7 +56,7 @@ class AdOrder(BaseModel):
     """Ce spune CCO-ul despre o reclama a lansarii."""
 
     position: int = Field(ge=1)
-    format: Literal["image", "video"]
+    format: Literal["image", "video", "carousel"]
     concept_template: ConceptTemplate | None
     #: ``cmo_variant`` = varianta testului CMO-ului; ``diversity`` = Andromeda, alt unghi.
     role: AdRole

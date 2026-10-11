@@ -133,9 +133,9 @@ def portfolio_findings(
                 "situatia), altfel algoritmul nu are de ce sa se agate."
             )
 
-    if len(ads) >= 2 and all(ad.format == "image" for ad in ads):
+    if len(ads) >= 2 and not any(ad.format == "video" for ad in ads):
         result.suggestions.append(
-            "toate reclamele sunt imagini. Imaginea si video-ul intra in licitatii diferite: "
+            "nicio reclama video. Imaginea si video-ul intra in licitatii diferite: "
             "un video (chiar simplu, filmat cu telefonul) ajunge la oameni pe care imaginile "
             "nu-i prind."
         )

@@ -1010,7 +1010,9 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
         """
         account = normalize_ad_account_id(ad_account_id)
         try:
-            images = [await self._download_image(ad.image_url) for ad in spec.ads]
+            images = [
+                [await self._download_image(url) for url in ad.upload_images] for ad in spec.ads
+            ]
             for ad in spec.ads:
                 if ad.video_url:
                     # Meta descarca video-ul singura; noi verificam doar ca exista si e video.
@@ -1054,14 +1056,18 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                 "setului de reclame",
             )
             launched: list[tuple[str, str, str]] = []
-            for index, (ad, image) in enumerate(zip(spec.ads, images, strict=True)):
+            for index, (ad, ad_images) in enumerate(zip(spec.ads, images, strict=True)):
                 stage = "image_upload"
-                image_hash = _image_hash(
-                    await self._mutate(
-                        f"{account}/adimages",
-                        {"bytes": base64.b64encode(image).decode("ascii")},
+                hashes = [
+                    _image_hash(
+                        await self._mutate(
+                            f"{account}/adimages",
+                            {"bytes": base64.b64encode(image).decode("ascii")},
+                        )
                     )
-                )
+                    for image in ad_images
+                ]
+                image_hash = hashes[0]
                 video_id: str | None = None
                 if ad.video_url:
                     stage = "video_upload"
@@ -1078,7 +1084,12 @@ class LiveMetaMarketingProvider(MetaMarketingProvider):
                     await self._mutate(
                         f"{account}/adcreatives",
                         creative_fields(
-                            spec, image_hash=image_hash, ad=ad, index=index, video_id=video_id
+                            spec,
+                            image_hash=image_hash,
+                            ad=ad,
+                            index=index,
+                            video_id=video_id,
+                            card_hashes=tuple(hashes) if ad.carousel else (),
                         ),
                     ),
                     "creative-ului",

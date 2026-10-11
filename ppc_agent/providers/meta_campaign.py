@@ -213,6 +213,51 @@ def _require_https(name: str, value: str) -> str:
     return cleaned
 
 
+#: Meta: un carusel are intre 2 si 10 carduri.
+MIN_CAROUSEL_CARDS = 2
+MAX_CAROUSEL_CARDS = 10
+
+
+@dataclass(frozen=True, slots=True)
+class CarouselCard:
+    """Un card dintr-un carusel: imaginea lui si titlul de sub ea."""
+
+    headline: str
+    image_url: str
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        _require_text("headline", self.headline)
+        _require_https("image_url", self.image_url)
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "headline": self.headline,
+            "image_url": self.image_url,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> CarouselCard:
+        return cls(
+            headline=str(payload["headline"]),
+            image_url=str(payload["image_url"]),
+            description=str(payload.get("description", "")),
+        )
+
+
+def _check_carousel(cards: tuple[CarouselCard, ...], video_url: str) -> None:
+    if not cards:
+        return
+    if not MIN_CAROUSEL_CARDS <= len(cards) <= MAX_CAROUSEL_CARDS:
+        raise ValueError(
+            f"un carusel are intre {MIN_CAROUSEL_CARDS} si {MAX_CAROUSEL_CARDS} carduri "
+            f"({len(cards)})"
+        )
+    if video_url:
+        raise ValueError("o reclama e fie video, fie carusel, nu amandoua")
+
+
 @dataclass(frozen=True, slots=True)
 class MetaAdCreative:
     """O reclama in plus in acelasi ad set: alt text, alta imagine, alt unghi.
@@ -231,11 +276,15 @@ class MetaAdCreative:
     video_url: str = ""
     #: Sablonul de concept (``creative/concepts.py``); gol = neetichetata.
     concept_template: str = ""
+    #: Carduri de carusel (2-10); gol = o singura imagine. ``image_url`` ramane imaginea
+    #: judecata de CCO - de regula cea a primului card.
+    carousel: tuple[CarouselCard, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text("headline", self.headline)
         _require_text("primary_text", self.primary_text)
         _require_https("image_url", self.image_url)
+        _check_carousel(self.carousel, self.video_url)
         if self.video_url:
             _require_https("video_url", self.video_url)
         if self.concept_template and self.concept_template not in CONCEPT_TEMPLATES:
@@ -245,16 +294,23 @@ class MetaAdCreative:
             )
 
     @property
-    def format(self) -> Literal["image", "video"]:
+    def format(self) -> Literal["image", "video", "carousel"]:
+        if self.carousel:
+            return "carousel"
         return "video" if self.video_url else "image"
+
+    @property
+    def upload_images(self) -> list[str]:
+        """Imaginile de urcat in Meta: cardurile caruselului, altfel imaginea (coperta)."""
+        return [card.image_url for card in self.carousel] or [self.image_url]
 
     @property
     def media_url(self) -> str:
         """Ce se evalueaza: video-ul, cand exista; altfel imaginea."""
         return self.video_url or self.image_url
 
-    def to_payload(self) -> dict[str, str]:
-        payload = {
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "headline": self.headline,
             "primary_text": self.primary_text,
             "image_url": self.image_url,
@@ -264,6 +320,8 @@ class MetaAdCreative:
             payload["video_url"] = self.video_url
         if self.concept_template:
             payload["concept_template"] = self.concept_template
+        if self.carousel:
+            payload["carousel"] = [card.to_payload() for card in self.carousel]
         return payload
 
     @classmethod
@@ -276,6 +334,9 @@ class MetaAdCreative:
                 angle=str(payload.get("angle", "")),
                 video_url=str(payload.get("video_url", "")),
                 concept_template=str(payload.get("concept_template", "")),
+                carousel=tuple(
+                    CarouselCard.from_payload(card) for card in payload.get("carousel") or []
+                ),
             )
         except KeyError as exc:
             raise ValueError(f"reclama in plus nu are campul {exc}") from exc
@@ -315,6 +376,8 @@ class MetaLaunchSpec:
     video_url: str = ""
     #: Sablonul de concept al primei reclame - de regula cel cerut de CMO.
     concept_template: str = ""
+    #: Prima reclama ca carusel (2-10 carduri); gol = o singura imagine.
+    carousel: tuple[CarouselCard, ...] = ()
     #: Reclame in plus, in acelasi ad set; prima reclama ramane cea din campurile de sus.
     extra_ads: tuple[MetaAdCreative, ...] = ()
 
@@ -327,6 +390,7 @@ class MetaLaunchSpec:
             self.image_url,
             video_url=self.video_url,
             concept_template=self.concept_template,
+            carousel=self.carousel,
         )
         return (first, *self.extra_ads)
 
@@ -382,7 +446,9 @@ class MetaLaunchSpec:
         Bugetul pleaca SIR, nu float: ``25.10`` ca float ar deveni
         ``25.099999999999998`` dupa un drum prin JSON.
         """
-        extended = bool(self.extra_ads or self.video_url or self.concept_template)
+        extended = bool(
+            self.extra_ads or self.video_url or self.concept_template or self.carousel
+        )
         payload = {
             "launch_spec_version": (
                 LAUNCH_SPEC_VERSION_MULTI_AD if extended else LAUNCH_SPEC_VERSION
@@ -413,6 +479,8 @@ class MetaLaunchSpec:
             payload["video_url"] = self.video_url
         if self.concept_template:
             payload["concept_template"] = self.concept_template
+        if self.carousel:
+            payload["carousel"] = [card.to_payload() for card in self.carousel]
         if self.extra_ads:
             payload["extra_ads"] = [ad.to_payload() for ad in self.extra_ads]
         return payload
@@ -451,6 +519,9 @@ class MetaLaunchSpec:
                 radius_km=Decimal(location["radius_km"]) if location else None,
                 video_url=str(payload.get("video_url", "")),
                 concept_template=str(payload.get("concept_template", "")),
+                carousel=tuple(
+                    CarouselCard.from_payload(card) for card in payload.get("carousel") or []
+                ),
                 extra_ads=tuple(
                     MetaAdCreative.from_payload(ad) for ad in payload.get("extra_ads") or []
                 ),
@@ -593,15 +664,19 @@ def creative_fields(
     ad: MetaAdCreative | None = None,
     index: int = 0,
     video_id: str | None = None,
+    card_hashes: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """``POST /act_{id}/adcreatives`` - textul, imaginea (sau video-ul) si pagina.
 
     Fara ``ad``, creative-ul e cel principal al specificatiei (``index`` 0). Cu
     ``video_id``, creative-ul e video: ``image_hash`` e coperta, iar link-ul sta in
-    call-to-action (forma ceruta de Meta pentru ``video_data``).
+    call-to-action (forma ceruta de Meta pentru ``video_data``). Cu ``card_hashes``
+    (cate unul pe card), creative-ul e carusel: ``child_attachments``, ordonate de Meta
+    dupa performanta (``multi_share_optimized``).
     """
-    headline = ad.headline if ad else spec.headline
-    primary_text = ad.primary_text if ad else spec.primary_text
+    ad = ad or spec.ads[0]
+    headline = ad.headline
+    primary_text = ad.primary_text
     suffix = "Creative" if index == 0 else f"Creative {index + 1}"
     call_to_action = {"type": spec.call_to_action, "value": {"link": spec.target_url}}
     story: dict[str, Any] = {"page_id": spec.page_id}
@@ -611,6 +686,23 @@ def creative_fields(
             "image_hash": image_hash,
             "message": primary_text,
             "title": headline,
+            "call_to_action": call_to_action,
+        }
+    elif ad.carousel:
+        story["link_data"] = {
+            "link": spec.target_url,
+            "message": primary_text,
+            "child_attachments": [
+                {
+                    "link": spec.target_url,
+                    "image_hash": card_hash,
+                    "name": card.headline,
+                    **({"description": card.description} if card.description else {}),
+                    "call_to_action": call_to_action,
+                }
+                for card, card_hash in zip(ad.carousel, card_hashes, strict=True)
+            ],
+            "multi_share_optimized": True,
             "call_to_action": call_to_action,
         }
     else:
