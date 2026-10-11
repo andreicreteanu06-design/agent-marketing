@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ppc_agent_server.auth import get_current_tenant
@@ -22,6 +22,7 @@ from ppc_agent_server.schemas import (
     ClientEconomicsRead,
     ClientEconomicsUpdate,
 )
+from ppc_agent_server.security import webhook_key
 from ppc_agent_server.services.geocoding import Geocoder
 
 router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
@@ -83,6 +84,28 @@ def update_client(
     session.commit()
     session.refresh(account)
     return account
+
+
+@router.get("/{client_id}/webhook-key")
+def get_client_webhook_key(
+    client_id: int,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    session: Annotated[Session, Depends(get_session)],
+) -> dict[str, str]:
+    """Cheia de webhook a clientului: pe ea o primeste site-ul lui, nu cheia agentiei.
+
+    Merge doar pe ``/api/v1/tracking/conversion/{client_id}`` - vezi
+    ``docs/ghid-tracking-clienti.md``.
+
+    Raises:
+        HTTPException: 404 client care nu e al agentiei; 503 server fara ``JWT_SECRET_KEY``.
+    """
+    account = get_owned_client(client_id, tenant, session)
+    try:
+        key = webhook_key(account.id or 0)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"key": key, "webhook_path": f"/api/v1/tracking/conversion/{account.id}"}
 
 
 @router.get("/{client_id}/economics", response_model=ClientEconomicsRead)
