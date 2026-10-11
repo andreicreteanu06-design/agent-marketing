@@ -55,7 +55,8 @@ from tests_server.llm_fakes import FakeJev
 KEYS = {
     "asset_type", "purpose", "decision", "scores", "detected_risks", "priority_fixes",
     "video_facts", "context_notes", "evaluation_id", "concept", "concept_template",
-    "follows_concept",
+    "follows_concept", "visual_pacing_score", "first_frame_impact", "predicted_dropoff_second",
+    "dropoff_reason", "retention_fix_advice",
 }
 #: Tesseract-ul adevarat (fixture-ul ``ocr`` il inlocuieste in toate celelalte teste).
 REAL_READ_TEXT = ce._read_text
@@ -1194,3 +1195,108 @@ def test_fara_ipoteza_si_fara_concept_nu_se_intreaba_nimic(ocr: _FakeOcr) -> Non
 
     assert "concept" not in judge.calls[0][1]
     assert result["concept_template"] is None and result["follows_concept"] is None
+
+
+# --- predictia retentiei: ritm, secunda zero, abandon -----------------------------------
+
+
+def _clip(**overrides: Any) -> ce._Video:
+    fields: dict[str, Any] = {
+        "frames": [b"x"], "frame_times": [0.0], "width": 720, "height": 1280,
+        "duration": 12.0, "hook_dead_air": False, "dead_air_later": [], "cut_times": [],
+        "sound_start": None, "sound_seconds": 0.0, "loudness": None, "true_peak": None,
+        "speech": None,
+    }
+    return ce._Video(**{**fields, **overrides})
+
+
+def _facts(**overrides: Any) -> ce._Facts:
+    return ce._Facts(**_seen(**overrides))
+
+
+def test_o_schimbare_la_doua_secunde_da_ritm_maxim() -> None:
+    assert ce._pacing(_clip(cut_times=[2.0, 4.0, 6.0, 8.0]), _facts()) == (10, None)
+
+
+def test_fara_nimic_nou_pe_ecran_ritmul_cade_si_stagnarea_porneste_de_la_zero() -> None:
+    assert ce._pacing(_clip(), _facts()) == (2, 0.0)
+
+
+def test_textul_nou_de_pe_ecran_tine_ritmul_ca_o_taietura() -> None:
+    score, stall = ce._pacing(_clip(), _facts(text_change_times=[4.0, 7.0]))
+    assert (score, stall) == (8, 0.0)  # cel mai lung gol: 0-4 s
+
+
+def test_talking_head_fara_taieturi_e_penalizat_grav() -> None:
+    talking = _clip(sound_start=0.0, speech=[(0.0, 11.0, "vorbesc continuu")])
+    score, _ = ce._pacing(talking, _facts(text_change_times=[]))
+    assert score <= 3
+
+
+def test_un_clip_scurt_nu_are_timp_sa_stagneze() -> None:
+    assert ce._pacing(_clip(duration=3.0), _facts()) == (10, None)
+
+
+def test_abandonul_prezis_la_pauza_speakerului_fara_b_roll() -> None:
+    clip = _clip(
+        cut_times=[2.0, 4.0, 8.0, 10.0],
+        sound_start=0.0,
+        speech=[(0.0, 6.0, "prima parte"), (7.8, 12.0, "a doua parte")],
+    )
+    _, stall = ce._pacing(clip, _facts())
+    second, reason, fix = ce._dropoff(clip, _facts(), stall)
+    assert second == 6
+    assert "pauză lungă" in reason and "B-roll" in fix
+
+
+def test_fara_niciun_risc_abandonul_e_la_final() -> None:
+    clip = _clip(cut_times=[2.0, 4.0, 6.0, 8.0])
+    second, reason, _ = ce._dropoff(clip, _facts(), None)
+    assert (second, "nicio cădere clară" in reason) == (12, True)
+
+
+def test_secunda_zero_statica_si_fara_text_e_un_risc() -> None:
+    risks: list[str] = []
+    fixes: list[str] = []
+    impact = ce._first_frame(_clip(opening_still=True), _facts(), risks, fixes)
+    assert impact == "Secunda 0: cadru static, fără text pe ecran."
+    assert "nu oprește degetul" in risks[0] and fixes
+
+
+def test_secunda_zero_cu_castigul_scris_pe_ecran() -> None:
+    facts = _facts(first_frame_text=["Revizie completă în 24h"])
+    impact = ce._first_frame(_clip(), facts, [], [])
+    assert impact.startswith("Secunda 0: mișcare din primul cadru;")
+    assert "spune câștigul" in impact
+
+
+def test_imaginea_nu_are_predictie_de_retentie() -> None:
+    result = _evaluate()
+    assert result["visual_pacing_score"] is None
+    assert result["predicted_dropoff_second"] is None
+    assert result["first_frame_impact"] is None
+
+
+@needs_ffmpeg
+def test_un_clip_lung_fara_taieturi_opreste_lansarea_cu_sfatul_de_ritm(tmp_path: Path) -> None:
+    result = _run(_video(tmp_path, MOTION, seconds=12))
+
+    assert result["visual_pacing_score"] == 2
+    assert result["decision"] == "REVISE_BEFORE_TEST"
+    assert result["priority_fixes"][0] == ce.PACING_FIX
+    assert result["predicted_dropoff_second"] == 3
+    assert "nu se mai schimbă nimic" in result["dropoff_reason"]
+    assert ce.PACING_FIX in result["retention_fix_advice"]
+    assert result["first_frame_impact"].startswith("Secunda 0: mișcare")
+
+
+@needs_ffmpeg
+def test_un_clip_cu_taieturi_dese_are_ritm_bun(tmp_path: Path) -> None:
+    segments = "".join(
+        f"{'testsrc2' if i % 2 else 'testsrc'}=s=720x1280:r=25:d=2[s{i}];" for i in range(5)
+    )
+    source = segments + "".join(f"[s{i}]" for i in range(5)) + "concat=n=5:v=1:a=0"
+    result = _run(_video(tmp_path, source, seconds=10))
+
+    assert result["visual_pacing_score"] >= 8
+    assert ce.PACING_FIX not in result["priority_fixes"]
