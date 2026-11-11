@@ -1,36 +1,22 @@
 import Link from "next/link";
 import { AnimatedHeading } from "./AnimatedHeading";
-import { NearViewport } from "./NearViewport";
 import { RevealSection } from "./RevealSection";
-import { AsciiArt } from "./ui/robot-human";
 
 export function About() {
   return (
     <section id="despre" className="mx-auto max-w-7xl px-6 py-28 lg:px-8">
       <div className="grid grid-cols-1 items-center gap-14 lg:grid-cols-[0.8fr_1.2fr]">
-        <RevealSection className="relative aspect-square w-full max-w-sm overflow-hidden rounded-3xl border border-border-subtle bg-background-elevated">
-          {/* Robot + om, animatie ASCII (21st.dev) - potrivita tematic cu
-              "nu vinzi unei agentii, vorbesti cu cine scrie codul": omul care
-              scrie codul si agentul AI pe care il construieste, unul langa
-              altul, nu unul in locul celuilalt. Video-ul (autoplay, de pe
-              un CDN extern) se monteaza abia langa ecran - nu mai concureaza
-              la incarcare cu clipurile scroll-world din primul ecran. */}
-          <NearViewport className="absolute inset-0">
-            <AsciiArt className="h-full w-full opacity-90" />
-          </NearViewport>
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                "linear-gradient(to top, var(--background-elevated) 0%, transparent 35%)",
-            }}
-          />
+        <RevealSection className="founder-surface">
+          <div className="founder-surface__light" aria-hidden="true" />
+          <div className="founder-surface__mark" aria-hidden="true">AC</div>
+          <p>Tu decizi.<br /><span>Sistemul execută.</span></p>
+          <span className="founder-surface__signature">Andrei · Fondator AC Media</span>
         </RevealSection>
 
         <RevealSection delay={0.1}>
           <AnimatedHeading
-            text="Nu vinzi unei agenții. Vorbești cu cine scrie codul."
-            className="text-3xl font-bold tracking-tight text-foreground md:text-4xl"
+            text="Lucrezi direct cu omul din spatele sistemului."
+            className="section-display"
           />
           <div className="mt-6 space-y-4 text-base leading-relaxed text-foreground-muted">
             <p>

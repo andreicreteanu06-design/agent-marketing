@@ -1,39 +1,33 @@
 "use client";
 
 import { motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { revealUp } from "@/lib/motion";
 
-/**
- * Intrare pe scroll (o singura data, whileInView) - varianta usoara, fara
- * GSAP ScrollTrigger, pentru sectiuni care doar trebuie sa apara la scroll
- * (nu sa se ancoreze/pineze). Vezi StickyStack/HorizontalPan pentru pin.
- *
- * Doar pentru continut care exista de la incarcarea paginii. Pentru ce apare
- * ca raspuns la o actiune, vezi ``ResultReveal``.
- */
-export function RevealSection({
-  children,
-  className,
-  delay = 0,
-}: {
+/** CSS stagger, one observer per group. Text is readable before hydration. */
+export function RevealSection({ children, className, delay = 0 }: {
   children: ReactNode;
   className?: string;
   delay?: number;
 }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      className={className}
-      initial={reduce ? false : "hidden"}
-      whileInView="visible"
-      viewport={{ once: true, amount: 0.3 }}
-      variants={revealUp}
-      transition={{ delay }}
-    >
-      {children}
-    </motion.div>
-  );
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const items = Array.from(root.querySelectorAll<HTMLElement>("h1, h2, h3, p, a, button, [data-reveal]"))
+      .filter(node => node.closest(".reveal-section") === root && !node.matches(".kinetic-heading") && !(node.matches("a") && node.querySelector("h1, h2, h3, p")));
+    items.forEach((node, index) => {
+      node.setAttribute("data-reveal-item", "");
+      node.style.setProperty("--reveal-order", String(Math.min(index, 4)));
+    });
+    const observer = new IntersectionObserver(([entry]) => {
+      root.classList.toggle("is-visible", entry.isIntersecting);
+      if (entry.isIntersecting) root.classList.add("is-in-view");
+    }, { threshold: 0.06, rootMargin: "0px 0px -24px 0px" });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={ref} className={`reveal-section ${className ?? ""}`} style={{ "--reveal-delay": `${Math.min(delay, 0.12)}s` } as CSSProperties}>{children}</div>;
 }
 
 /**

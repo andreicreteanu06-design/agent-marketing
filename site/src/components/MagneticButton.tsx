@@ -24,14 +24,14 @@ export function MagneticButton({
   const reduce = useReducedMotion();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
-  const springX = useSpring(x, { stiffness: 200, damping: 18 });
-  const springY = useSpring(y, { stiffness: 200, damping: 18 });
+  const springX = useSpring(x, { stiffness: 360, damping: 34, mass: 0.6 });
+  const springY = useSpring(y, { stiffness: 360, damping: 34, mass: 0.6 });
 
   function handleMove(e: MouseEvent<HTMLAnchorElement>) {
-    if (reduce) return;
+    if (reduce || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    x.set((e.clientX - rect.left - rect.width / 2) * 0.25);
-    y.set((e.clientY - rect.top - rect.height / 2) * 0.25);
+    x.set(Math.max(-4, Math.min(4, (e.clientX - rect.left - rect.width / 2) * 0.09)));
+    y.set(Math.max(-4, Math.min(4, (e.clientY - rect.top - rect.height / 2) * 0.09)));
   }
 
   function handleLeave() {
@@ -47,7 +47,7 @@ export function MagneticButton({
       onMouseMove={handleMove}
       onMouseLeave={handleLeave}
       style={reduce ? undefined : { x: springX, y: springY }}
-      whileTap={{ scale: 0.96 }}
+      whileTap={reduce ? undefined : { scale: 0.98 }}
       className={className}
     >
       {children}

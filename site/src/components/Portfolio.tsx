@@ -1,72 +1,74 @@
+import Image from "next/image";
 import { ArrowUpRight } from "@phosphor-icons/react/dist/ssr";
 import { AnimatedHeading } from "./AnimatedHeading";
 import { RevealSection } from "./RevealSection";
-import { Portfolio3DCardLazy } from "./Portfolio3DCardLazy";
 
 const PROJECTS = [
   {
     name: "ArtingAuto",
-    category: "Service auto, București",
-    description:
-      "Rezervare online și preț anunțat înainte de reparație, pentru un atelier cu peste 5.000 de mașini reparate și rating 5.0 pe Google.",
+    category: "Servicii auto · București",
+    headline: "Încredere, de la primul contact.",
+    description: "Serviciile, modul de lucru și programarea au un traseu clar. O identitate directă, construită în jurul atelierului.",
+    detail: "Programarea și accesul la servicii sunt vizibile din primul ecran.",
+    tags: ["Ierarhie clară", "Programare la îndemână"],
     href: "https://artingauto.ro",
+    domain: "artingauto.ro",
     image: "/portfolio/artingauto.webp",
+    theme: "auto",
+    width: 1400,
+    height: 757,
   },
   {
     name: "ArtingCoffee",
-    category: "Cafea de specialitate, online",
-    description:
-      "Magazin online pentru cafea gustată intern înainte să ajungă pe site, cu livrare în 24-48h.",
+    category: "Cafea de specialitate · E-commerce",
+    headline: "O experiență cu gust propriu.",
+    description: "Tipografie editorială, tonuri calde și o prezentare amplă a cafelei. Povestea brandului conduce natural spre produse.",
+    detail: "Două puncte de intrare: explorează cafeaua sau descoperă cum este aleasă.",
+    tags: ["Direcție editorială", "Descoperirea produselor"],
     href: "https://artingcoffee.ro",
+    domain: "artingcoffee.ro",
     image: "/portfolio/artingcoffee.webp",
+    theme: "coffee",
+    width: 1400,
+    height: 735,
   },
-];
+] as const;
 
 export function Portfolio() {
   return (
-    <section id="portofoliu" className="mx-auto max-w-7xl px-6 py-28 lg:px-8">
-      <RevealSection>
-        <span className="text-shimmer text-sm font-semibold uppercase tracking-widest">
-          Portofoliu
-        </span>
-        <AnimatedHeading
-          text="Site-uri live, nu machete."
-          className="mt-4 max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
-        />
-        <p className="mt-4 max-w-xl text-base leading-relaxed text-foreground-muted">
-          Fiecare proiect de mai jos rulează live, pentru un client real.
-          Design construit pentru conversie, nu doar pentru un portofoliu.
-        </p>
+    <section id="portofoliu" className="portfolio-section marketing-section mx-auto max-w-7xl px-6 py-28 lg:px-8" aria-labelledby="portfolio-title">
+      <RevealSection className="portfolio-intro">
+        <div id="portfolio-title">
+          <AnimatedHeading text={"Idei clare.\nExperiențe reale."} className="section-display" />
+        </div>
+        <p className="section-description">Două afaceri, două identități distincte. Același respect pentru detalii și pentru oamenii care le folosesc.</p>
       </RevealSection>
-
-      <div className="mt-12 grid grid-cols-1 gap-6 md:grid-cols-2">
-        {PROJECTS.map((project, i) => (
-          <RevealSection key={project.name} delay={0.05 + i * 0.05}>
-            <a
-              href={project.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group block overflow-hidden rounded-3xl border border-border-subtle bg-background-elevated"
-            >
-              <Portfolio3DCardLazy
-                src={project.image}
-                alt={`Captură de ecran a site-ului ${project.name}`}
-              />
-              <div className="p-6 md:p-8">
-                <p className="text-shimmer text-xs font-semibold uppercase tracking-widest">
-                  {project.category}
-                </p>
-                <div className="mt-2 flex items-center gap-2">
-                  <h3 className="text-xl font-semibold text-foreground">{project.name}</h3>
-                  <ArrowUpRight
-                    size={16}
-                    weight="bold"
-                    className="text-foreground-muted transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-brand-cyan"
-                  />
-                </div>
-                <p className="mt-3 leading-relaxed text-foreground-muted">{project.description}</p>
+      <div className="portfolio-projects">
+        {PROJECTS.map((project, index) => (
+          <RevealSection key={project.name} className={"portfolio-project portfolio-project--" + project.theme}>
+            <div className="portfolio-project__header">
+              <div><h3>{project.name}</h3></div>
+              <span className="portfolio-project__category">{project.category}</span>
+            </div>
+            <a href={project.href} target="_blank" rel="noopener noreferrer" className="portfolio-project__visual" aria-label={"Deschide " + project.name + " într-o filă nouă"}>
+              <div className="portfolio-browser">
+                <div className="portfolio-browser__chrome" aria-hidden="true"><span><i /><i /><i /></span><span>{project.domain}</span><ArrowUpRight size={14} /></div>
+                <Image src={project.image} alt={"Captură reală a paginii principale " + project.name} width={project.width} height={project.height} sizes="(max-width: 860px) 100vw, 1100px" className="portfolio-browser__capture" />
               </div>
+              <span className="portfolio-project__open"><ArrowUpRight size={22} /><span>Explorează site-ul</span></span>
             </a>
+            <div className="portfolio-project__story">
+              <div><h4>{project.headline}</h4><p>{project.description}</p></div>
+              <div className="portfolio-project__decisions"><span>În detaliu</span><p>{project.detail}</p><ul>{project.tags.map(tag => <li key={tag}>{tag}</li>)}</ul></div>
+            </div>
+            {index === 0 && <div className="portfolio-case">
+              <div className="portfolio-case__brief"><h4>De la interes<br />la programare.</h4><div><h5>Obiectivul experienței</h5><p>Vizitatorul înțelege ce oferă atelierul și găsește imediat următorul pas: o programare sau o privire asupra serviciilor.</p></div></div>
+              <div className="portfolio-case__details">
+                <figure><div className="portfolio-detail portfolio-detail--identity"><Image src={project.image} alt="Detaliu din ArtingAuto: titlul și identitatea atelierului" width={1400} height={757} sizes="1000px" /></div><figcaption><strong>Un mesaj cu personalitate.</strong><span>Titlul, accentul roșu și fotografia vorbesc aceeași limbă.</span></figcaption></figure>
+                <figure><div className="portfolio-detail portfolio-detail--action"><Image src={project.image} alt="Detaliu din ArtingAuto: butonul de programare și accesul la servicii" width={1400} height={757} sizes="1000px" /></div><figcaption><strong>Următorul pas, la vedere.</strong><span>Programarea are prioritate; explorarea serviciilor rămâne aproape.</span></figcaption></figure>
+              </div>
+              <div className="portfolio-case__scope"><span>Ce poți vedea în proiect</span><p>Identitate vizuală <i /> Ierarhie de conținut <i /> Traseu spre programare</p><span>Detalii din captura desktop</span></div>
+            </div>}
           </RevealSection>
         ))}
       </div>

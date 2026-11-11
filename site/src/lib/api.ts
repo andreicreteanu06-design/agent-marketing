@@ -649,3 +649,33 @@ export async function askQueenStream(
   }
   return reply;
 }
+
+/* MCP access uses dedicated agent keys, never the browser's login token in client configuration. */
+export interface McpKey { id: number; name: string; created_at: string; revoked_at: string | null; }
+export interface CreatedMcpKey extends McpKey { key: string; mcp_url: string; }
+export const MCP_ENDPOINT = `${API_BASE_URL.replace(/\/$/, "")}/api/v1/mcp/stream`;
+export function listMcpKeys(token: string, signal?: AbortSignal): Promise<McpKey[]> {
+  return apiFetch<McpKey[]>("/api/v1/me/mcp-keys", { headers: { Authorization: `Bearer ${token}` }, signal });
+}
+export function createMcpKey(token: string, name: string): Promise<CreatedMcpKey> {
+  return apiFetch<CreatedMcpKey>("/api/v1/me/mcp-keys", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ name }) });
+}
+export function revokeMcpKey(token: string, id: number): Promise<McpKey> {
+  return apiFetch<McpKey>(`/api/v1/me/mcp-keys/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+}
+
+export type NativeField = { name: string; label: string; type: string; required: boolean; default: string | number | boolean | null; maxLength?: number };
+export type NativeConfig = { enabled: boolean; delivery_mode: "review" | "automatic"; company_name: string; team_email: string; company_context: string; stock_threshold: number; review_days: number; onboarding_reminder_days: number; onboarding_checkin_days: number; timezone: string };
+export type NativeWorkflow = { id: string; title: string; scheduled: boolean; fields: NativeField[]; example: Record<string, unknown>; config: NativeConfig; webhook_url: string | null; webhook_key_set: boolean };
+export type NativePlan = { stage: string; summary: string; steps: string[]; skipped: boolean; messages: {recipient: string; subject: string; body: string; requires_review: boolean}[]; output: Record<string, unknown> };
+export type NativeRun = { id: number; workflow: string; status: string; error: string | null; created_at: string; result: Partial<NativePlan> };
+export type NativeMessage = { id: number; run_id: number; workflow: string; recipient: string; subject: string; body: string; status: string; requires_review: boolean; error: string | null };
+export type NativeRecord = { id: number; workflow: string; external_id: string; payload: Record<string, unknown> };
+export type NativeOverview = { email_ready: boolean; workflows: NativeWorkflow[]; runs: NativeRun[]; messages: NativeMessage[]; records: NativeRecord[] };
+const NATIVE_PATH = "/api/v1/me/automations";
+export function getNativeAutomations(token: string, signal?: AbortSignal): Promise<NativeOverview> {
+  return apiFetch(NATIVE_PATH, { headers: { Authorization: `Bearer ${token}` }, signal });
+}
+export function nativeAutomationAction<T>(token: string, path: string, method = "POST", body?: unknown): Promise<T> {
+  return apiFetch<T>(NATIVE_PATH + path, { method, headers: { Authorization: `Bearer ${token}` }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+}

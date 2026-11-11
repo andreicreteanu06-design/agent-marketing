@@ -19,6 +19,25 @@ al doilea fiind un wrapper subtire peste exact aceleasi pipeline-uri pure.
 > — crawler (peste motorul de audit din `seo_geo_agent`), Search Console, Keyword
 > Planner si Business Profile. Fish Speech/Flick (Modulul 5) raman stub-uri.
 
+## Automatizări native, fără n8n
+
+Cele nouă procese de lead-uri, facturi, suport, conținut, onboarding, candidaturi,
+comenzi, stoc și review-uri rulează direct în backend. În `/cont/automatizari`
+clientul configurează fluxurile, previzualizează exemple, aprobă mesaje și vede istoricul.
+Pagina publică `/servicii/automatizari#automatizari` explică procesele prin diagrame.
+
+- Migrarea aditivă `d91005a7b001` urmează `c8a2d4f6e135`.
+- Programările necesită workerul nativ (`python -m ppc_agent_server.automations.worker`)
+  sau workerul ARQ existent; n8n și Google Sheets nu sunt necesare.
+- SMTP se configurează separat prin `AUTOMATION_EMAIL_ENABLED` și `AUTOMATION_SMTP_*`
+  din `.env.example`. Trimiterea este implicit oprită.
+- Datele intră din formular/API/webhook autentificat. Gmail sau magazinele trebuie
+  conectate printr-un adaptor care trimite schema fluxului; nu sunt conectate automat.
+- Răspunsurile AI sunt ciorne pentru aprobare. Recrutarea rămâne o verificare umană.
+
+**[Ghid complet: pornire, SMTP, webhook-uri, deduplicare și erori](docs/native-automations.md)**
+
+
 ## Stare
 
 | Faza | Continut | Stare |

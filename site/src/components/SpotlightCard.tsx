@@ -1,67 +1,49 @@
 "use client";
 
-import { motion, useMotionTemplate, useMotionValue, useSpring, useTransform } from "motion/react";
-import type { MouseEvent, ReactNode } from "react";
+import { useEffect, useRef, type PointerEvent, type ReactNode } from "react";
 
-const TILT_RANGE = 8; // grade maxime de inclinare - suficient sa se simta 3D, nu de circ
+/** Pointer work is event-driven and applied directly to the moving layers. */
+export function SpotlightCard({ children, className }: { children: ReactNode; className?: string }) {
+  const frame = useRef(0);
+  const light = useRef<HTMLSpanElement>(null);
+  const point = useRef({ x: 0, y: 0 });
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
-/**
- * Card cu inclinare 3D pe cursor (perspective + rotateX/rotateY) plus un glow
- * radial care il urmareste pe aceeasi pozitie - amandoua pe motion values
- * (nu useState), vezi taste-skill 3.B despre valori continue din input.
- */
-export function SpotlightCard({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  const mouseX = useMotionValue(0);
-  const mouseY = useMotionValue(0);
-  // Procent 0..1 in card, pentru inclinare - separat de mouseX/Y (pixeli, pt glow).
-  const px = useMotionValue(0.5);
-  const py = useMotionValue(0.5);
-  const springConfig = { stiffness: 200, damping: 20, mass: 0.5 };
-  const rotateX = useSpring(useTransform(py, [0, 1], [TILT_RANGE, -TILT_RANGE]), springConfig);
-  const rotateY = useSpring(useTransform(px, [0, 1], [-TILT_RANGE, TILT_RANGE]), springConfig);
-
-  function handleMove(e: MouseEvent<HTMLDivElement>) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    mouseX.set(e.clientX - rect.left);
-    mouseY.set(e.clientY - rect.top);
-    px.set((e.clientX - rect.left) / rect.width);
-    py.set((e.clientY - rect.top) / rect.height);
+  function trackLight(event: PointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "touch" || !window.matchMedia("(hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference)").matches) return;
+    const card = event.currentTarget;
+    point.current = { x: event.clientX, y: event.clientY };
+    if (frame.current) return;
+    frame.current = requestAnimationFrame(() => {
+      // One geometry read per frame. Correct for the sticky deck's CSS scale.
+      const rect = card.getBoundingClientRect();
+      const width = card.clientWidth;
+      const height = card.clientHeight;
+      if (!rect.width || !rect.height || !width || !height) { frame.current = 0; return; }
+      const x = (point.current.x - rect.left) * width / rect.width;
+      const y = (point.current.y - rect.top) * height / rect.height;
+      const dx = x / width - 0.5;
+      const dy = y / height - 0.5;
+      if (light.current) light.current.style.transform = `translate3d(${x - 220}px,${y - 220}px,0)`;
+      card.style.setProperty("--spotlight-x", `${x}px`);
+      card.style.setProperty("--spotlight-y", `${y}px`);
+      card.dataset.pointerLit = "true";
+      const art = card.querySelector<HTMLElement>(".service-card__art");
+      if (art) art.style.transform = `perspective(900px) rotateX(${-dy * 7}deg) rotateY(${dx * 10}deg) translate3d(${dx * 13}px,${dy * 10}px,0)`;
+      frame.current = 0;
+    });
   }
 
-  function handleLeave() {
-    px.set(0.5);
-    py.set(0.5);
+  function reset(event: PointerEvent<HTMLDivElement>) {
+    cancelAnimationFrame(frame.current);
+    frame.current = 0;
+    delete event.currentTarget.dataset.pointerLit;
+    event.currentTarget.querySelector<HTMLElement>(".service-card__art")?.style.removeProperty("transform");
   }
 
-  const spotlight = useMotionTemplate`radial-gradient(260px circle at ${mouseX}px ${mouseY}px, rgba(63,216,232,0.14), transparent 70%)`;
-
-  return (
-    <motion.div
-      onMouseMove={handleMove}
-      onMouseLeave={handleLeave}
-      whileHover={{ y: -4 }}
-      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-      style={{ perspective: 900 }}
-      className="group relative h-full"
-    >
-      {/* Randul care se inclina e cel cu bordura/fundal (className-ul primit) -
-          altfel continutul s-ar inclina separat de propria lui bordura. */}
-      <motion.div
-        style={{ rotateX, rotateY, transformStyle: "preserve-3d" }}
-        className={`relative h-full overflow-hidden ${className ?? ""}`}
-      >
-        <motion.div
-          className="pointer-events-none absolute inset-0 z-10 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-          style={{ background: spotlight }}
-        />
-        {children}
-      </motion.div>
-    </motion.div>
-  );
+  return <div onPointerEnter={trackLight} onPointerMove={trackLight} onPointerLeave={reset} onPointerCancel={reset} className={`spotlight-card group ${className ?? ""}`}>
+    <span className="spotlight-card__light" ref={light} aria-hidden="true" />
+    <span className="spotlight-card__refraction" aria-hidden="true" />
+    {children}
+  </div>;
 }

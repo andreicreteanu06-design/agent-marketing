@@ -127,6 +127,8 @@ export function AccountDashboard() {
         </Link>
       </RevealSection>
 
+      <RevealSection delay={0.08}><Link href="/cont/automatizari" className="native-account-link"><div><strong>Automatizările echipei</strong><p>Nouă fluxuri, aprobări și istoric, direct în contul tău.</p></div><ArrowUpRight size={20} /></Link></RevealSection>
+
       <RevealSection delay={0.1}>
         <CredentialsForm
           token={session.token}

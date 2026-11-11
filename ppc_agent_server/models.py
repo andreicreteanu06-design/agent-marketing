@@ -893,3 +893,64 @@ class WeeklyReport(SQLModel, table=True):
     week_end: date
     generated_at: datetime = Field(default_factory=_now)
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+# Native automations are isolated from campaign budgets and ad execution.
+class NativeAutomation(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("client_account_id", "workflow", name="uq_native_config"),)
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    workflow: str = Field(max_length=30)
+    enabled: bool = False
+    options: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    webhook_hash: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class NativeAutomationRecord(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("client_account_id", "workflow", "external_id", name="uq_native_record"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    workflow: str = Field(max_length=30)
+    external_id: str = Field(max_length=160)
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class NativeAutomationRun(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("client_account_id", "workflow", "run_key", name="uq_native_run"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    workflow: str = Field(max_length=30)
+    record_id: int = Field(foreign_key="nativeautomationrecord.id", index=True)
+    run_key: str = Field(max_length=220)
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="queued", max_length=25, index=True)
+    attempt_token: str | None = Field(default=None, max_length=36)
+    result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class NativeAutomationMessage(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("run_id", "step", name="uq_native_message"),)
+    id: int | None = Field(default=None, primary_key=True)
+    client_account_id: int = Field(foreign_key="clientaccount.id", index=True)
+    run_id: int = Field(foreign_key="nativeautomationrun.id", index=True)
+    step: int
+    recipient: str = Field(max_length=254)
+    subject: str = Field(max_length=250)
+    body: str
+    status: str = Field(default="pending", max_length=25, index=True)
+    requires_review: bool = True
+    approved_by: int | None = Field(default=None, foreign_key="clientuser.id")
+    approved_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    sent_at: datetime | None = None
+    sending_at: datetime | None = None
+    error: str | None = None

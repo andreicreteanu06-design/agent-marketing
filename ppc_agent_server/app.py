@@ -26,6 +26,7 @@ from ppc_agent_server.audit_log import configure_audit_logging
 from ppc_agent_server.db import init_db
 from ppc_agent_server.routers import (
     auth,
+    automations,
     campaigns,
     client_auth,
     clients,
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth.router)
+    app.include_router(automations.router)
     app.include_router(campaigns.router)
     app.include_router(client_auth.router)
     app.include_router(clients.router)

@@ -1,5 +1,7 @@
 "use client";
 
+import { ShinyButton } from "@/components/ui/shiny-button";
+
 import { useState, type FormEvent } from "react";
 // Varianta din nextjs-toploader: router.push porneste si bara de incarcare de sus
 // (click-urile pe <Link> o pornesc singure; navigarile din cod, nu).
@@ -32,7 +34,7 @@ export function LoginForm() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="space-y-5 rounded-3xl border border-border-subtle bg-background-elevated p-6 md:p-8">
+      <div className="space-y-5">
         <Field
           label="Email"
           type="email"
@@ -63,13 +65,13 @@ export function LoginForm() {
         </p>
       )}
 
-      <button
+      <ShinyButton
         type="submit"
         disabled={submitting}
-        className="w-full rounded-full bg-brand-blue px-6 py-3.5 text-sm font-semibold text-white transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-xl px-6 py-3.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
       >
         {submitting ? "Se autentifică..." : "Autentificare"}
-      </button>
+      </ShinyButton>
 
       <p className="text-center text-sm text-foreground-muted">
         Nu ai încă un cont?{" "}

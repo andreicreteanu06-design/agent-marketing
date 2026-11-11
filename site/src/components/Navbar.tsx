@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { AnimatePresence, motion, useMotionValueEvent, useScroll } from "motion/react";
-import { List, X } from "@phosphor-icons/react/dist/ssr";
+import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, LayoutGroup, motion, useMotionValueEvent, useReducedMotion, useScroll } from "motion/react";
+import { ArrowUpRight, List, X, PlugsConnected } from "@phosphor-icons/react/dist/ssr";
 import { Logo } from "./Logo";
 import { MagneticButton } from "./MagneticButton";
 import { getToken } from "@/lib/auth";
@@ -19,166 +19,78 @@ export function Navbar() {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState("");
+  const toggle = useRef<HTMLButtonElement>(null);
+  const reduce = useReducedMotion();
   const { scrollY } = useScroll();
-
-  useMotionValueEvent(scrollY, "change", (latest) => {
-    setScrolled(latest > 24);
-  });
-
-  // Navbar-ul sta in layout-ul radacina si NU se remonteaza la navigare, deci
-  // token-ul se reciteste la fiecare schimbare de ruta - altfel dupa login
-  // (/login -> /cont) sau logout ar ramane butoanele vechi pana la un refresh.
-  // Nu urmarim schimbari intre tab-uri; pagina /cont oricum reverifica
-  // token-ul cu serverul (GET /me), aici e doar despre ce arata navbar-ul.
-  // localStorage nu exista pe server, deci nu poate porni ca stare initiala
-  // (ar rupe hidratarea) - setat corect dupa montare e patternul corect aici,
-  // nu o "cascada" (react-hooks/set-state-in-effect e prea stricta pentru asta).
+  useMotionValueEvent(scrollY, "change", latest => setScrolled(latest > 24));
   const pathname = usePathname();
   useEffect(() => {
+    // Existing auth follows client navigation. Hash tracking is visual only.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAuthenticated(Boolean(getToken()));
+    const sync = () => setAnchor(window.location.hash);
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
   }, [pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setOpen(false); toggle.current?.focus(); }
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [open]);
 
-  return (
-    <motion.header
-      animate={{
-        backgroundColor: scrolled ? "rgba(9,9,11,0.72)" : "rgba(9,9,11,0)",
-        borderBottomColor: scrolled ? "var(--border-subtle)" : "rgba(0,0,0,0)",
-        backdropFilter: scrolled ? "blur(12px)" : "blur(0px)",
-      }}
-      transition={{ duration: 0.35 }}
-      className="fixed inset-x-0 top-0 z-50 border-b"
-    >
-      <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6 lg:px-8">
-        <div className="flex items-center gap-8">
-          <Link href="/" onClick={() => setOpen(false)}>
-            <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}>
-              <Logo />
-            </motion.div>
-          </Link>
-          <ul className="hidden items-center gap-7 lg:flex">
-            {NAV_LINKS.map((link) => (
-              <li key={link.href}>
-                <Link
-                  href={link.href}
-                  className="group relative text-sm text-foreground-muted transition-colors hover:text-foreground"
-                >
-                  {link.label}
-                  <span className="absolute -bottom-1 left-0 h-px w-full origin-left scale-x-0 bg-brand-cyan transition-transform duration-300 group-hover:scale-x-100" />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
+  const selected = pathname.startsWith("/servicii/") ? "/#servicii" : pathname === "/" && anchor ? "/" + anchor : null;
+  const illuminated = focused ?? hovered ?? selected;
+  const transition = reduce ? { duration: 0 } : { type: "spring" as const, stiffness: 430, damping: 36, mass: 0.65 };
 
-        <div className="hidden items-center gap-5 lg:flex">
-          {authenticated ? (
-            <Link
-              href="/cont"
-              className="text-sm font-medium text-foreground-muted transition-colors hover:text-foreground"
-            >
-              Contul meu
-            </Link>
-          ) : (
-            <>
-              <Link
-                href="/login"
-                className="text-sm text-foreground-muted transition-colors hover:text-foreground"
-              >
-                Autentificare
-              </Link>
-              <Link
-                href="/creeaza-cont"
-                className="text-sm font-medium text-foreground-muted transition-colors hover:text-foreground"
-              >
-                Creează cont
-              </Link>
-            </>
-          )}
-          <MagneticButton
-            href="/#programeaza"
-            className="rounded-full bg-brand-blue px-4 py-2 text-sm font-semibold text-white"
-          >
-            Programează un apel
-          </MagneticButton>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-label={open ? "Închide meniul" : "Deschide meniul"}
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-border-subtle text-foreground lg:hidden"
-        >
-          {open ? <X size={20} /> : <List size={20} />}
-        </button>
-      </nav>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden border-t border-border-subtle bg-background lg:hidden"
-          >
-            <ul className="flex flex-col gap-1 px-6 py-4">
-              {NAV_LINKS.map((link) => (
-                <li key={link.href}>
-                  <Link
-                    href={link.href}
-                    onClick={() => setOpen(false)}
-                    className="block py-2 text-base text-foreground-muted"
-                  >
-                    {link.label}
-                  </Link>
-                </li>
-              ))}
-              {authenticated ? (
-                <li className="pt-2">
-                  <Link
-                    href="/cont"
-                    onClick={() => setOpen(false)}
-                    className="block py-2 text-base text-foreground"
-                  >
-                    Contul meu
-                  </Link>
-                </li>
-              ) : (
-                <>
-                  <li className="pt-2">
-                    <Link
-                      href="/login"
-                      onClick={() => setOpen(false)}
-                      className="block py-2 text-base text-foreground-muted"
-                    >
-                      Autentificare
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href="/creeaza-cont"
-                      onClick={() => setOpen(false)}
-                      className="block py-2 text-base text-foreground"
-                    >
-                      Creează cont
-                    </Link>
-                  </li>
-                </>
-              )}
-              <li className="pt-2">
-                <Link
-                  href="/#programeaza"
-                  onClick={() => setOpen(false)}
-                  className="block rounded-full bg-brand-blue px-4 py-3 text-center text-base font-semibold text-white"
-                >
-                  Programează un apel
-                </Link>
-              </li>
-            </ul>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.header>
-  );
+  return <header className={`site-header site-header--optical fixed z-50 ${scrolled ? "site-header--scrolled" : ""} ${open ? "site-header--open" : ""}`}>
+    <nav className="site-nav" aria-label="Navigație principală">
+      <Link href="/" aria-label="AC Media — Acasă" onClick={() => setOpen(false)} className="site-logo"><Logo /></Link>
+      <LayoutGroup id="primary-navigation">
+        <ul className="site-nav-cluster hidden items-center gap-1 lg:flex" onMouseLeave={() => setHovered(null)}>
+          {NAV_LINKS.map(link => <li key={link.href}>
+            <a href={pathname === "/" ? link.href.slice(1) : link.href} className="site-nav-link"
+              aria-current={selected === link.href ? "location" : undefined}
+              onMouseEnter={() => setHovered(link.href)} onFocus={() => setFocused(link.href)} onBlur={() => setFocused(null)}>
+              {illuminated === link.href && <motion.span className="site-nav-lens" layoutId="navigation-lens" initial={false} transition={transition} aria-hidden="true" />}
+              <span className="site-nav-label">{link.label}</span>
+              <span className="site-nav-glint" aria-hidden="true" />
+            </a>
+          </li>)}
+        </ul>
+      </LayoutGroup>
+      <Link href="/mcp" className="site-mcp-link" aria-current={pathname === "/mcp" ? "page" : undefined} aria-label="Conectează AI prin MCP" onClick={() => setOpen(false)}>
+        <span className="site-mcp-icon" aria-hidden="true"><PlugsConnected size={18} /></span><span>MCP</span><ArrowUpRight className="site-mcp-arrow" size={12} aria-hidden="true" />
+      </Link>
+      <div className="site-nav-account ml-auto hidden items-center gap-2 lg:flex">
+        {authenticated ? <Link href="/cont" className="site-nav-action" aria-current={pathname.startsWith("/cont") ? "page" : undefined}><span>Contul meu</span><ArrowUpRight size={13} aria-hidden="true" /></Link> : <>
+          <Link href="/login" className="site-nav-action" aria-current={pathname === "/login" ? "page" : undefined}><span>Autentificare</span></Link>
+          <Link href="/creeaza-cont" className="site-nav-action site-nav-register" aria-current={pathname === "/creeaza-cont" ? "page" : undefined}><span>Creează cont</span><ArrowUpRight size={13} aria-hidden="true" /></Link>
+        </>}
+        <MagneticButton href="/#programeaza" className="enterprise-button nav-cta">Solicită o programare <ArrowUpRight size={16} /></MagneticButton>
+      </div>
+      <button ref={toggle} type="button" onClick={() => setOpen(v => !v)} aria-label={open ? "Închide meniul" : "Deschide meniul"} aria-expanded={open} aria-controls="mobile-navigation" className="site-menu-button lg:hidden">
+        {open ? <X size={22} /> : <List size={22} />}
+      </button>
+    </nav>
+    <AnimatePresence>
+      {open && <motion.div id="mobile-navigation" initial={reduce ? false : { opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: reduce ? 0 : -4 }} transition={{ duration: reduce ? 0 : 0.18, ease: [0.16, 1, 0.3, 1] }} className="site-mobile-menu lg:hidden">
+        <ul>{NAV_LINKS.map((link, index) => <motion.li key={link.href} initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.18, delay: reduce ? 0 : index * 0.035 }}>
+          <a href={pathname === "/" ? link.href.slice(1) : link.href} onClick={() => setOpen(false)}>{link.label}<ArrowUpRight size={18} /></a>
+        </motion.li>)}
+          {authenticated ? <li><Link href="/cont" onClick={() => setOpen(false)}>Contul meu</Link></li> : <>
+            <li><Link href="/login" onClick={() => setOpen(false)}>Autentificare</Link></li>
+            <li><Link href="/creeaza-cont" onClick={() => setOpen(false)}>Creează cont</Link></li>
+          </>}
+        </ul>
+        <Link href="/#programeaza" onClick={() => setOpen(false)} className="enterprise-button">Solicită o programare <ArrowUpRight size={18} /></Link>
+      </motion.div>}
+    </AnimatePresence>
+  </header>;
 }

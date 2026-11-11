@@ -79,6 +79,16 @@ class ServerSettings(BaseSettings):
     # Seteaza pentru coada reala ARQ+Redis (Faza F).
     redis_url: str = ""
 
+    # Native workflow email. Remains disabled until explicitly configured by the operator.
+    automation_email_enabled: bool = False
+    automation_smtp_host: str = ""
+    automation_smtp_port: int = Field(default=587, ge=1, le=65535)
+    automation_smtp_username: str = ""
+    automation_smtp_password: str = ""
+    automation_smtp_from: str = ""
+    automation_smtp_ssl: bool = False
+
+
     # Cheie de semnare pentru token-urile JWT ale clientilor (POST /signup,
     # /login) - fara ea, create_client_token()/decode_client_token() ridica
     # RuntimeError (nu exista un implicit nesigur). Genereaz-o o singura data:

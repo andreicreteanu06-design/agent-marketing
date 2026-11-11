@@ -1,170 +1,93 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ArrowRight } from "@phosphor-icons/react/dist/ssr";
+import { ArrowRight, ArrowUpRight, Check } from "@phosphor-icons/react/dist/ssr";
 import { Footer } from "@/components/Footer";
 import { AnimatedHeading } from "@/components/AnimatedHeading";
 import { RevealSection } from "@/components/RevealSection";
-import { SpotlightCard } from "@/components/SpotlightCard";
 import { MagneticButton } from "@/components/MagneticButton";
 import { ServiceVisual3DLazy } from "@/components/ServiceVisual3DLazy";
+import { ServiceShowcase } from "@/components/ServiceShowcase";
+import { SpatialSculpture } from "@/components/SpatialSculpture";
+import { ServiceScrollHero } from "@/components/ServiceScrollHero";
+import { AutomationCatalog } from "@/components/AutomationCatalog";
 import { SERVICES, getServiceBySlug } from "@/lib/services";
 
 export function generateStaticParams() {
   return SERVICES.map((service) => ({ slug: service.slug }));
 }
 
-export async function generateMetadata(
-  props: PageProps<"/servicii/[slug]">,
-): Promise<Metadata> {
+export async function generateMetadata(props: PageProps<"/servicii/[slug]">): Promise<Metadata> {
   const { slug } = await props.params;
   const service = getServiceBySlug(slug);
   if (!service) return {};
-  return {
-    title: `${service.title}: AC Media Marketing`,
-    description: service.subtitle,
-  };
+  return { title: service.title + ": AC Media Marketing", description: service.subtitle };
 }
 
 export default async function ServiceDetailPage(props: PageProps<"/servicii/[slug]">) {
   const { slug } = await props.params;
   const service = getServiceBySlug(slug);
   if (!service) notFound();
-
   const otherServices = SERVICES.filter((s) => s.slug !== service.slug);
 
-  return (
-    <>
-      <main>
-        <section className="mx-auto max-w-7xl px-6 pb-16 pt-32 lg:px-8">
-          <Link
-            href="/#servicii"
-            className="mb-8 inline-flex items-center gap-1.5 text-sm text-foreground-muted hover:text-foreground"
-          >
-            <ArrowLeft size={14} />
-            Toate serviciile
-          </Link>
-
-          <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
-            <RevealSection>
-              <span className="text-shimmer text-sm font-semibold uppercase tracking-widest">
-                {service.eyebrow}
-              </span>
-              <AnimatedHeading
-                as="h1"
-                text={service.title}
-                className="mt-4 text-4xl font-bold tracking-tight text-foreground md:text-5xl"
-              />
-              <p className="mt-5 max-w-lg text-lg leading-relaxed text-foreground-muted">
-                {service.subtitle}
-              </p>
-              <div className="mt-8 flex flex-wrap items-center gap-5">
-                <MagneticButton
-                  href="/creeaza-cont"
-                  className="rounded-full bg-brand-blue px-6 py-3 text-sm font-semibold text-white"
-                >
-                  Creează cont
-                </MagneticButton>
-                <Link
-                  href="/#programeaza"
-                  className="text-sm font-semibold text-foreground hover:text-brand-cyan"
-                >
-                  Programează un apel
-                </Link>
-              </div>
-            </RevealSection>
-
-            <RevealSection
-              delay={0.1}
-              className="aspect-square w-full overflow-hidden rounded-3xl border border-border-subtle bg-background-elevated bg-[radial-gradient(circle_at_50%_45%,rgba(20,80,216,0.28),transparent_70%)]"
-            >
-              <ServiceVisual3DLazy variant={service.variant} />
-            </RevealSection>
-          </div>
-        </section>
-
-        <section className="border-t border-border-subtle bg-background-elevated/40">
-          <div className="mx-auto max-w-7xl px-6 py-24 lg:px-8">
-            <RevealSection>
-              <AnimatedHeading
-                text="Cum funcționează"
-                className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
-              />
-            </RevealSection>
-            <div className="mt-12 grid grid-cols-1 gap-10 md:grid-cols-3">
-              {service.howItWorks.map((step, i) => (
-                <RevealSection key={step.title} delay={0.05 + i * 0.05}>
-                  <span className="text-sm font-semibold text-brand-cyan">0{i + 1}</span>
-                  <h3 className="mt-3 text-lg font-semibold text-foreground">{step.title}</h3>
-                  <p className="mt-2 leading-relaxed text-foreground-muted">{step.body}</p>
-                </RevealSection>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="mx-auto max-w-7xl px-6 py-24 lg:px-8">
-          <RevealSection>
-            <AnimatedHeading
-              text="Beneficii concrete"
-              className="max-w-xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
-            />
+  return <>
+    <main className={"service-detail service-detail--" + service.variant}>
+      <ServiceScrollHero variant={service.variant} title={service.title} />
+      <div className="service-page-content">
+        <section className="service-editorial mx-auto max-w-7xl px-6 lg:px-8">
+          <RevealSection className="service-editorial__intro">
+            <AnimatedHeading text={service.title} className="section-display" />
+            <p className="section-description">{service.subtitle}</p>
           </RevealSection>
-          <div className="mt-12 grid grid-cols-1 gap-5 md:grid-cols-3">
-            {service.benefits.map((benefit, i) => (
-              <RevealSection key={benefit.title} delay={0.05 + i * 0.05}>
-                <SpotlightCard className="h-full rounded-3xl border border-border-subtle bg-background-elevated p-8">
-                  <h3 className="text-lg font-semibold text-foreground">{benefit.title}</h3>
-                  <p className="mt-3 leading-relaxed text-foreground-muted">{benefit.body}</p>
-                </SpotlightCard>
-              </RevealSection>
-            ))}
-          </div>
+          <RevealSection className={"service-editorial__exhibit service-editorial__exhibit--" + service.variant}>
+            <ServiceShowcase variant={service.variant} />
+            <div className="service-editorial__principle">
+              {service.variant === "automations" && <SpatialSculpture variant="relay" className="service-editorial__sculpture" />}
+              <h3>{service.variant === "ppc" ? "Vezi motivul din spatele fiecărei propuneri." : service.variant === "web" ? "O identitate care se simte în fiecare pagină." : "Un traseu clar, de la solicitare la răspuns."}</h3>
+              <p>{service.cardBody[0]}</p>
+              {service.variant === "web" && <Link href="/#portofoliu" className="enterprise-text-link">Vezi proiectele reale <ArrowUpRight size={18} /></Link>}
+              {service.variant === "ppc" && <Link href="/#consiliu" className="enterprise-text-link">Descoperă consiliul AI <ArrowUpRight size={18} /></Link>}
+            </div>
+          </RevealSection>
         </section>
 
-        <section className="border-t border-border-subtle">
-          <div className="mx-auto max-w-7xl px-6 py-24 text-center lg:px-8">
-            <RevealSection>
-              <AnimatedHeading
-                text="Hai să vedem dacă se potrivește pentru tine."
-                align="center"
-                className="mx-auto max-w-2xl text-3xl font-bold tracking-tight text-foreground md:text-4xl"
-              />
-              <div className="mt-8 flex flex-wrap items-center justify-center gap-5">
-                <MagneticButton
-                  href="/creeaza-cont"
-                  className="rounded-full bg-brand-blue px-6 py-3 text-sm font-semibold text-white"
-                >
-                  Creează cont
-                </MagneticButton>
-                <Link
-                  href="/#programeaza"
-                  className="text-sm font-semibold text-foreground hover:text-brand-cyan"
-                >
-                  Programează un apel
-                </Link>
-              </div>
-            </RevealSection>
+        {service.variant === "automations" && <AutomationCatalog />}
 
-            <div className="mx-auto mt-16 grid max-w-3xl grid-cols-1 gap-4 text-left sm:grid-cols-2">
-              {otherServices.map((s) => (
-                <Link
-                  key={s.slug}
-                  href={`/servicii/${s.slug}`}
-                  className="group flex items-center justify-between rounded-2xl border border-border-subtle bg-background-elevated px-6 py-4 transition-colors hover:border-brand-blue/40"
-                >
-                  <span className="font-medium text-foreground">{s.title}</span>
-                  <ArrowRight
-                    size={16}
-                    className="text-foreground-muted transition-transform group-hover:translate-x-1"
-                  />
-                </Link>
-              ))}
+        <section id="proces" className="service-journey mx-auto max-w-7xl px-6 lg:px-8" aria-labelledby="service-process-title">
+          <RevealSection><div id="service-process-title"><AnimatedHeading text="Cum prinde formă." className="section-display" /></div></RevealSection>
+          <div className="service-journey__layout">
+            <div className="service-journey__visual">
+              <div className="service-journey__lens"><i /><i /></div>
+              <ServiceVisual3DLazy variant={service.variant} />
+              <p>De la intenție, la execuție.</p>
+            </div>
+            <div className="service-journey__steps">
+              {service.howItWorks.map((step, index) => <RevealSection key={step.title} className="service-journey__step">
+                <span className="service-journey__number">0{index + 1}</span>
+                <div><h3>{step.title}</h3><p>{step.body}</p></div>
+              </RevealSection>)}
             </div>
           </div>
         </section>
-      </main>
-      <Footer />
-    </>
-  );
+
+        <section className="service-value mx-auto max-w-7xl px-6 lg:px-8">
+          <RevealSection className="service-value__layout">
+            <AnimatedHeading text={"Ce câștigi,\nîn practică."} className="section-display" />
+            <div className="service-value__list">{service.benefits.map(benefit => <div key={benefit.title}>
+              <Check size={20} /><div><h3>{benefit.title}</h3><p>{benefit.body}</p></div>
+            </div>)}</div>
+          </RevealSection>
+        </section>
+
+        <section className="service-next mx-auto max-w-7xl px-6 lg:px-8">
+          <RevealSection className="service-next__invitation">
+            <div><AnimatedHeading text="Să pornim de la obiectivul tău." className="section-display" /><p>O conversație despre ce ai nevoie și cum putem construi împreună.</p></div>
+            <MagneticButton href="/#programeaza" className="enterprise-button">Programează un apel <ArrowUpRight size={18} /></MagneticButton>
+          </RevealSection>
+          <RevealSection className="service-next__links">{otherServices.map(s => <Link key={s.slug} href={"/servicii/" + s.slug}><span>{s.title}</span><ArrowRight size={20} /></Link>)}</RevealSection>
+        </section>
+      </div>
+    </main>
+    <Footer />
+  </>;
 }

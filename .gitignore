@@ -49,3 +49,12 @@ ppc_agent_server.db
 
 # Fisierul intermediar al scripts/trend_scraper.py
 trends.json
+
+# Orice variantă de .env (.env.local, .env.production...) — doar exemplul se comite
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Transcrieri ale videoclipurilor altor autori — doar pentru cercetare locală
+docs/research-yt/

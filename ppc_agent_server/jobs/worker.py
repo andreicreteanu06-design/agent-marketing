@@ -29,6 +29,9 @@ from arq.connections import RedisSettings
 from arq.cron import CronJob
 from arq.worker import Function, func
 
+from ppc_agent_server.automations.delivery import deliver_message
+from ppc_agent_server.automations.service import run_automation_job
+from ppc_agent_server.automations.worker import run_native_tick
 from ppc_agent_server.jobs.tasks import (
     AdPlatform,
     list_client_account_ids,
@@ -153,12 +156,26 @@ async def _weekly_reports_task(ctx: dict[str, Any]) -> dict[str, Any]:
     return await asyncio.to_thread(run_weekly_reports_job)
 
 
+async def _native_run_task(ctx: dict[str, Any], *, run_id: int) -> dict[str, Any]:
+    return await asyncio.to_thread(run_automation_job, run_id=run_id)
+
+
+async def _native_email_task(ctx: dict[str, Any], *, message_id: int) -> dict[str, Any]:
+    return await asyncio.to_thread(deliver_message, message_id=message_id)
+
+
+async def _native_tick_task(ctx: dict[str, Any]) -> dict[str, Any]:
+    return await asyncio.to_thread(run_native_tick)
+
+
 class WorkerSettings:
     """Configuratia consumata de comanda ``arq``. Clasa nu e instantiata
     niciodata — ``arq`` ii citeste atributele direct (patternul documentat
     al bibliotecii), de-asta sunt ``ClassVar``, nu campuri de instanta."""
 
     functions: ClassVar[list[Function]] = [
+        func(_native_run_task, name=run_automation_job.__name__, timeout=1200, max_tries=1),
+        func(_native_email_task, name=deliver_message.__name__, timeout=90, max_tries=1),
         func(_plan_task, name=run_plan_job.__name__),
         func(_copy_task, name=run_copy_job.__name__),
         func(_creative_task, name=run_creative_job.__name__),
@@ -175,6 +192,10 @@ class WorkerSettings:
         ),
     ]
     cron_jobs: ClassVar[list[CronJob]] = [
+        cron(
+            _native_tick_task, name="native_automations",
+            minute=set(range(0, 60, 5)), timeout=1200, max_tries=1,
+        ),
         cron(
             _daily_maintenance_task,
             name="daily_maintenance",

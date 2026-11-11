@@ -19,20 +19,23 @@ export function SmoothScroll({ children }: { children: ReactNode }) {
     if (reduceMotion) return;
 
     const lenis = new Lenis({
-      lerp: 0.1,
+      lerp: 0.18,
       wheelMultiplier: 1,
+      // Keep section links in sync with Lenis, including repeated anchor clicks.
+      anchors: { immediate: true },
+      stopInertiaOnNavigate: true,
     });
 
     lenis.on("scroll", ScrollTrigger.update);
 
-    gsap.ticker.add((time) => {
-      lenis.raf(time * 1000);
-    });
+    const tick = (time: number) => lenis.raf(time * 1000);
+    gsap.ticker.add(tick);
     gsap.ticker.lagSmoothing(0);
 
     return () => {
+      gsap.ticker.remove(tick);
+      lenis.off("scroll", ScrollTrigger.update);
       lenis.destroy();
-      gsap.ticker.remove(ScrollTrigger.update);
     };
   }, [reduceMotion]);
 

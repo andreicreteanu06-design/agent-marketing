@@ -54,9 +54,9 @@ export function PageTransition({ children }: { children: ReactNode }) {
   return (
     <ParentEntering.Provider value={entering}>
       <motion.div
-        initial={animate ? { opacity: 0, y: slide ? 10 : 0 } : false}
+        initial={animate ? { opacity: 0.82, y: slide ? 5 : 0 } : false}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, ease: EASE_OUT }}
+        transition={{ duration: 0.18, ease: EASE_OUT }}
         onAnimationComplete={() => setEntering(false)}
       >
         {children}

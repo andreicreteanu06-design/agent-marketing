@@ -123,11 +123,11 @@ export const SERVICES: ServiceDetail[] = [
       },
       {
         title: "Construim fluxul",
-        body: "Automatizarea rulează pe infrastructura ta (n8n self-hosted), fără să depindă de un abonament extern care poate dispărea.",
+        body: "Automatizarea rulează direct în AC Media: evenimente, verificări periodice, aprobări și istoric, într-un singur cont.",
       },
       {
         title: "Om în buclă unde contează",
-        body: "Pentru decizii sensibile, cum ar fi filtrarea CV-urilor, fluxul cere validare umană, nu decide singur.",
+        body: "Stabilim înainte de activare ce poate rula automat și unde este necesară verificarea unui coleg, inclusiv în procesele de recrutare.",
       },
     ],
     benefits: [

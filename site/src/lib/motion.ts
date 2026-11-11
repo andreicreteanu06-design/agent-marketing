@@ -5,11 +5,11 @@ import type { Variants } from "motion/react";
 export const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 
 export const revealUp: Variants = {
-  hidden: { opacity: 0, y: 28 },
+  hidden: { opacity: 0.78, y: 14 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.7, ease: EASE_OUT },
+    transition: { duration: 0.42, ease: EASE_OUT },
   },
 };
 

@@ -112,6 +112,8 @@ def test_map_result_none_is_transient_running() -> None:
 def test_worker_settings_registers_all_functions_with_original_names() -> None:
     names = {registered.name for registered in WorkerSettings.functions}
     assert names == {
+        "run_automation_job",
+        "deliver_message",
         run_plan_job.__name__,
         run_copy_job.__name__,
         run_creative_job.__name__,
@@ -132,7 +134,7 @@ def test_client_maintenance_has_its_own_timeout_and_no_blind_retry() -> None:
 
 def test_worker_settings_registers_daily_maintenance_cron() -> None:
     names = {job.name for job in WorkerSettings.cron_jobs}
-    assert names == {"daily_maintenance", "weekly_reports"}
+    assert names == {"daily_maintenance", "weekly_reports", "native_automations"}
 
 
 def test_weekly_reports_run_monday_morning() -> None:

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Space_Grotesk } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import NextTopLoader from "nextjs-toploader";
 import "./globals.css";
 import { Navbar } from "@/components/Navbar";
@@ -8,29 +8,20 @@ import { ScrollProgress } from "@/components/ScrollProgress";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
-  subsets: ["latin"],
+  subsets: ["latin", "latin-ext"],
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-// Doar titlurile (vezi --font-display in globals.css) - corpul de text ramane
-// Geist. Space Grotesk are un caracter geometric/tehnic distinct, nu se
-// confunda cu Geist-ul de pe orice alt site facut cu un agent AI.
-const spaceGrotesk = Space_Grotesk({
-  variable: "--font-space-grotesk",
-  subsets: ["latin"],
-  weight: ["500", "600", "700"],
+  subsets: ["latin", "latin-ext"],
 });
 
 const BRAND_CYAN = "#3fd8e8";
 
 export const metadata: Metadata = {
-  title: "AC Media Marketing: PPC gestionat de un agent AI",
+  title: "AC Media | Agency in a Box",
   description:
-    "Management PPC pe Google, Meta, TikTok și ChatGPT Ads printr-un agent AI cu aprobare umană, plus web design și automatizări AI.",
+    "O agenție de marketing coordonată de cinci agenți AI: strategie, buget, tehnologie, ofertă și piață. Decizii explicabile, cu aprobare umană.",
 };
 
 /**
@@ -44,7 +35,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="ro"
       data-theme="dark"
-      className={`${geistSans.variable} ${geistMono.variable} ${spaceGrotesk.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-background text-foreground">
         {/* Porneste in momentul click-ului pe un link intern, inainte ca
@@ -56,10 +47,15 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           shadow={`0 0 10px ${BRAND_CYAN},0 0 5px ${BRAND_CYAN}`}
           showForHashAnchor={false}
         />
-        <div className="grain-overlay" />
+        <div className="site-atmosphere" aria-hidden="true">
+          <span className="site-atmosphere__light" />
+        </div>
+        <div className="grain-overlay" aria-hidden="true" />
         <ScrollProgress />
         <Navbar />
-        <SmoothScroll>{children}</SmoothScroll>
+        <div className="site-content">
+          <SmoothScroll>{children}</SmoothScroll>
+        </div>
       </body>
     </html>
   );
