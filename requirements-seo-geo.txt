@@ -11,6 +11,10 @@
 fastapi>=0.115,<1
 uvicorn[standard]>=0.32,<1
 
+# Testul de prezenta GEO (seo_geo_agent/presence.py): cautare DuckDuckGo fara
+# cheie - aceeasi biblioteca si versiune ca in requirements-server.txt.
+ddgs>=9.16,<10
+
 # Doar decodarea token-ului JWT partajat cu ppc_agent_server (vezi settings.py) -
 # fara hashing de parole/stocare de secrete, acelea raman in ppc_agent_server.
 pyjwt>=2.9,<3

@@ -35,6 +35,7 @@ from typing import Final, Literal
 
 from seo_geo_agent.audit.geo_reporters import CONTENT_PAGE_MIN_WORDS
 from seo_geo_agent.audit.issues import AUDIT_ISSUE_TYPES, IssuePillar
+from seo_geo_agent.audit.nap import is_location_page
 from seo_geo_agent.audit.page_reporters import DetectedIssue
 from seo_geo_agent.audit.types import CrawledPage
 
@@ -88,6 +89,7 @@ CHECKS: Final[tuple[CheckDefinition, ...]] = (
     CheckDefinition("heading-order", "seo", INFO_WEIGHT, "page", _is_fetched_html),
     CheckDefinition("canonical", "seo", WARNING_WEIGHT, "page", _is_fetched_html),
     CheckDefinition("content-depth", "seo", WARNING_WEIGHT, "page", _is_fetched_html),
+    CheckDefinition("no-placeholder-content", "seo", WARNING_WEIGHT, "page", _is_fetched_html),
     CheckDefinition("images-alt", "seo", WARNING_WEIGHT, "page", _is_fetched_html),
     CheckDefinition("outgoing-links", "seo", WARNING_WEIGHT, "page", _is_fetched_html),
     CheckDefinition("response-time", "seo", INFO_WEIGHT, "page", _is_fetched_html),
@@ -101,6 +103,9 @@ CHECKS: Final[tuple[CheckDefinition, ...]] = (
     # --- GEO, per pagina ---------------------------------------------------
     CheckDefinition("server-rendered-content", "geo", CRITICAL_WEIGHT, "page", _is_fetched_html),
     CheckDefinition("structured-data", "geo", WARNING_WEIGHT, "page", _is_fetched_html),
+    # Se deschide doar pentru paginile de locatie, cu ACEEASI functie care decide
+    # si emiterea problemei (``nap.is_location_page``) - vezi ``_is_content_page``.
+    CheckDefinition("local-business-schema", "geo", WARNING_WEIGHT, "page", is_location_page),
     CheckDefinition("entity-salience", "geo", WARNING_WEIGHT, "page", _is_content_page),
     CheckDefinition("answerable-headings", "geo", INFO_WEIGHT, "page", _is_content_page),
     CheckDefinition("passage-length", "geo", INFO_WEIGHT, "page", _is_content_page),
@@ -132,6 +137,11 @@ ISSUE_TO_CHECK: Final[dict[str, str | None]] = {
     "canonicalized-page": None,  # de multe ori intentionat
     "noindex-page": None,  # de multe ori intentionat
     "thin-content": "content-depth",
+    "cms-placeholder-page": "no-placeholder-content",
+    # Depinde de listarile externe date (sau nu) la pornire: in scor ar face ca
+    # acelasi site sa ia note diferite dupa cat de multe referinte s-au dat.
+    "nap-mismatch": None,
+    "missing-local-business-schema": "local-business-schema",
     "images-missing-alt": "images-alt",
     "no-outgoing-links": "outgoing-links",
     "slow-response": "response-time",

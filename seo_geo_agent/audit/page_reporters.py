@@ -23,8 +23,10 @@ orfane) sunt in ``multipage.py``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from seo_geo_agent.audit.types import CrawledPage
 
@@ -35,6 +37,41 @@ META_DESCRIPTION_MIN_CHARS = 70
 THIN_CONTENT_WORDS = 150
 SLOW_RESPONSE_MS = 1500
 DEEP_PAGE_DEPTH = 5
+
+#: Adresele pe care CMS-urile le creeaza singure la instalare (WordPress in
+#: engleza si in romana). Raman publice si indexabile daca nu le sterge nimeni.
+_PLACEHOLDER_PATHS = frozenset(
+    {"/hello-world", "/sample-page", "/salut-lume", "/pagina-exemplu", "/exemplu-de-pagina"}
+)
+#: Titlurile implicite. Se cauta DOAR in titlul paginii: "Hello world!" apare
+#: si in widget-ul "Recent Posts" din bara laterala a tuturor paginilor unui
+#: blog WordPress lasat asa, iar raportarea fiecarei pagini ar ingropa singura
+#: pagina care trebuie stearsa.
+_PLACEHOLDER_TITLE_RE = re.compile(
+    r"^\s*(hello world!|salut lume!|sample page|pagina exemplu)", re.I
+)
+#: Fraze de umplutura care nu apar intr-un continut scris de om, oriunde in pagina.
+_PLACEHOLDER_BODY_RE = re.compile(
+    r"\b(lorem ipsum dolor sit amet|"
+    r"welcome to wordpress\. this is your first post|"
+    r"bun venit in wordpress\. acesta este primul tau articol)",
+    re.I,
+)
+
+
+def is_placeholder_page(page: CrawledPage) -> bool:
+    """``True`` pentru paginile implicite ale unui CMS lasate publice."""
+    path = urlsplit(page.url).path.rstrip("/").lower()
+    if path in _PLACEHOLDER_PATHS:
+        return True
+    return bool(
+        _PLACEHOLDER_TITLE_RE.search(page.title) or _PLACEHOLDER_BODY_RE.search(page.body_text)
+    )
+
+
+def content_word_count(page: CrawledPage) -> int:
+    """Cuvintele de continut: fara meniu/subsol cand le-am putut separa."""
+    return page.main_word_count if page.main_word_count is not None else page.word_count
 
 
 @dataclass(slots=True)
@@ -131,9 +168,13 @@ def run_page_reporters(page: CrawledPage) -> list[DetectedIssue]:
     if effective_canonical and effective_canonical != page.url:
         report("canonicalized-page", canonical_url=effective_canonical)
 
-    # Calitatea continutului
-    if page.is_indexable and page.word_count < THIN_CONTENT_WORDS:
-        report("thin-content", word_count=page.word_count)
+    # Calitatea continutului. Pragul se aplica textului fara meniu si subsol:
+    # altfel o pagina goala cu un meniu lung trece drept pagina cu continut.
+    content_words = content_word_count(page)
+    if page.is_indexable and content_words < THIN_CONTENT_WORDS:
+        report("thin-content", word_count=content_words, total_word_count=page.word_count)
+    if page.is_indexable and is_placeholder_page(page):
+        report("cms-placeholder-page")
     if page.images_missing_alt > 0:
         report(
             "images-missing-alt",

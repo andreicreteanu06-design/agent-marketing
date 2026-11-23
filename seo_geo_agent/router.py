@@ -19,6 +19,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from seo_geo_agent.audit.nap import ReferenceListing
 from seo_geo_agent.audit.service import AuditConfig, AuditProgress, AuditResult, run_audit
 from seo_geo_agent.audit.store import AuditRecord, AuditStore, TooManyAuditsError, audit_store
 from seo_geo_agent.audit.url_policy import CrawlTargetBlockedError, normalize_and_validate_start_url
@@ -27,6 +28,7 @@ from seo_geo_agent.engine import SeoGeoAnalyzer
 from seo_geo_agent.errors import CrawlTargetError
 from seo_geo_agent.external_data import fetch_page_content, fetch_pagespeed_insights
 from seo_geo_agent.llm import BaseLLMClient, LiveLLMClient, MockLLMClient
+from seo_geo_agent.presence import DuckDuckGoSearchProvider, SearchProvider, probe_presence
 from seo_geo_agent.schemas import (
     AnalysisRequest,
     AnalysisResponse,
@@ -34,6 +36,10 @@ from seo_geo_agent.schemas import (
     AuditResultsResponse,
     AuditStartedResponse,
     AuditStatusResponse,
+    CompetingDomain,
+    PresenceRequest,
+    PresenceResponse,
+    QuestionPresenceResponse,
 )
 from seo_geo_agent.settings import ProviderMode, get_seo_geo_settings
 
@@ -212,6 +218,16 @@ async def start_audit(
         max_pages=min(payload.max_pages, settings.audit_max_pages),
         time_budget_seconds=settings.audit_time_budget_seconds,
         brand=payload.brand,
+        reference_listings=tuple(
+            ReferenceListing(
+                source=listing.source,
+                phone=listing.phone,
+                postal_code=listing.postal_code,
+                hours=tuple(listing.hours),
+                page_url=listing.page_url,
+            )
+            for listing in payload.reference_listings
+        ),
     )
     task = asyncio.create_task(_execute_audit(record, start_url, config, runner, store))
     _running_tasks.add(task)
@@ -265,3 +281,53 @@ def get_audit_results(
     if record.result is None:
         raise HTTPException(status_code=409, detail="Auditul inca ruleaza.")
     return AuditResultsResponse.from_result(record.audit_id, record.domain, record.result)
+
+
+# ---------------------------------------------------------------------------
+# Testul de prezenta GEO
+# ---------------------------------------------------------------------------
+
+
+def _get_search_provider() -> SearchProvider:
+    """Sursa cautarii. Injectabila: testele o inlocuiesc cu una fara retea."""
+    return DuckDuckGoSearchProvider()
+
+
+@router.post("/presence", response_model=PresenceResponse)
+async def check_presence(
+    payload: PresenceRequest,
+    provider: Annotated[SearchProvider, Depends(_get_search_provider)],
+    _client_id: Annotated[int, Depends(get_current_client_id)],
+) -> PresenceResponse:
+    """Apare brandul cand clientii intreaba? (vezi ``seo_geo_agent/presence.py``).
+
+    Completeaza scorul GEO al auditului, care masoara pregatirea paginilor, nu
+    prezenta brandului in sursele pe care le citesc motoarele generative.
+    """
+    questions = [question.strip() for question in payload.questions if question.strip()]
+    if not questions:
+        raise HTTPException(status_code=422, detail="Scrie cel putin o intrebare.")
+    report = await probe_presence(
+        payload.brand.strip(), payload.domain.strip(), questions, provider
+    )
+    return PresenceResponse(
+        brand=report.brand,
+        domain=report.domain,
+        brand_presence_rate=round(report.brand_presence_rate, 3),
+        own_domain_rate=round(report.own_domain_rate, 3),
+        competing_domains=[
+            CompetingDomain(domain=domain, count=count)
+            for domain, count in report.competing_domains
+        ],
+        questions=[
+            QuestionPresenceResponse(
+                question=item.question,
+                status=item.status,
+                brand_mentioned=item.brand_mentioned,
+                own_domain_position=item.own_domain_position,
+                result_domains=item.result_domains,
+                error=item.error,
+            )
+            for item in report.questions
+        ],
+    )

@@ -41,6 +41,18 @@ _BLOCK_TAGS = frozenset(
         "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
     }
 )
+#: Repere HTML al caror text se repeta pe toate paginile (meniul, subsolul,
+#: bara laterala). Textul lor intra in ``body_text``/``word_count`` (alte
+#: verificari au nevoie de tot ce vede un crawler), dar NU in
+#: ``main_word_count``: fara separarea asta, o pagina de locatie care are doar
+#: program si telefon trecea de pragul "thin-content" doar cu cuvintele din
+#: meniul de navigare repetat (cazul real care a dus la schimbare: un meniu cu
+#: 12 locatii, de doua ori, plus subsolul, ~150 de cuvinte pe o pagina goala).
+#: ``<header>`` lipseste deliberat: multe pagini isi pun titlul si introducerea
+#: intr-un ``<header>`` de articol, deci excluderea lui ar inventa pagini subtiri.
+_BOILERPLATE_TAGS = frozenset({"nav", "footer", "aside"})
+_TEL_HREF_RE = re.compile(r"^tel:", re.I)
+_MAX_PHONE_LINKS = 20
 _MAX_ANCHOR_CHARS = 200
 #: Plafoane per pagina. Paginile-capcana si meniurile uriase pot avea mii de
 #: linkuri/imagini, iar paginile crawlate stau in memorie cat dureaza auditul.
@@ -70,6 +82,12 @@ class StructuredData:
     types: list[str] = field(default_factory=list)
     has_author: bool = False
     has_date: bool = False
+    #: Valorile ``telephone`` si ``address.postalCode`` declarate in JSON-LD -
+    #: le compara verificarea NAP (``nap.py``) cu ce apare vizibil in pagina si
+    #: cu sursele externe (Google Business Profile, platformele de livrare).
+    telephones: list[str] = field(default_factory=list)
+    postal_codes: list[str] = field(default_factory=list)
+    has_opening_hours: bool = False
 
 
 @dataclass(slots=True)
@@ -89,7 +107,11 @@ class PageAnalysis:
     heading_order: list[int] = field(default_factory=list)
     headings: list[tuple[int, str]] = field(default_factory=list)
     word_count: int = 0
+    #: Cuvintele din afara reperelor repetate (``_BOILERPLATE_TAGS``).
+    main_word_count: int = 0
     body_text: str = ""
+    #: Numerele din linkurile ``tel:`` (asa cum sunt scrise, nenormalizate).
+    phone_links: list[str] = field(default_factory=list)
     images: list[tuple[str | None, str | None]] = field(default_factory=list)
     links: list[PageLink] = field(default_factory=list)
     structured_data: StructuredData = field(default_factory=StructuredData)
@@ -119,6 +141,16 @@ def _collect_json_ld_types(payload: object, into: StructuredData) -> None:
         into.has_author = True
     if payload.get("datePublished") or payload.get("dateModified"):
         into.has_date = True
+    telephone = payload.get("telephone")
+    if isinstance(telephone, str) and telephone.strip():
+        into.telephones.append(telephone.strip())
+    address = payload.get("address")
+    if isinstance(address, dict):
+        postal_code = address.get("postalCode")
+        if isinstance(postal_code, (str, int)) and str(postal_code).strip():
+            into.postal_codes.append(str(postal_code).strip())
+    if payload.get("openingHours") or payload.get("openingHoursSpecification"):
+        into.has_opening_hours = True
 
     for key in ("@graph", "mainEntity", "mainEntityOfPage", "hasPart", "itemListElement"):
         if key in payload:
@@ -146,6 +178,10 @@ class _PageParser(HTMLParser):
         self._saw_body = False
         self._body_parts: list[str] = []
         self._fallback_parts: list[str] = []
+        # Textul din afara reperelor repetate (meniu, subsol, bara laterala).
+        self._boilerplate_depth = 0
+        self._main_parts: list[str] = []
+        self._phone_links: list[str] = []
 
         self._open_heading: tuple[int, list[str]] | None = None
         self._open_anchor: tuple[str, str, list[str]] | None = None
@@ -209,6 +245,8 @@ class _PageParser(HTMLParser):
             self._body_parts.append(" ")
         elif self._head_depth == 0:
             self._fallback_parts.append(" ")
+        if self._head_depth == 0:
+            self._main_parts.append(" ")
 
     def _close_heading(self, level: int) -> None:
         if self._open_heading is None or self._open_heading[0] != level:
@@ -262,8 +300,14 @@ class _PageParser(HTMLParser):
             # deschis, iar tokenizer-ul nu corecteaza arborele - facem la fel.
             self._close_anchor()
             href = attributes.get("href")
-            if href and not _SKIPPED_LINK_PROTOCOLS.match(href):
+            if href and _TEL_HREF_RE.match(href):
+                if len(self._phone_links) < _MAX_PHONE_LINKS:
+                    self._phone_links.append(href[4:].strip())
+            elif href and not _SKIPPED_LINK_PROTOCOLS.match(href):
                 self._open_anchor = (href, (attributes.get("rel") or "").lower(), [])
+
+        if tag in _BOILERPLATE_TAGS:
+            self._boilerplate_depth += 1
 
         if tag in _BLOCK_TAGS:
             self._push_block_separator()
@@ -309,6 +353,8 @@ class _PageParser(HTMLParser):
             self._close_heading(level)
         if tag in _BLOCK_TAGS:
             self._push_block_separator()
+        if tag in _BOILERPLATE_TAGS and self._boilerplate_depth > 0:
+            self._boilerplate_depth -= 1
 
     def handle_data(self, data: str) -> None:
         if self._in_json_ld:
@@ -329,6 +375,8 @@ class _PageParser(HTMLParser):
             self._body_parts.append(data)
         elif self._head_depth == 0:
             self._fallback_parts.append(data)
+        if self._head_depth == 0 and self._boilerplate_depth == 0:
+            self._main_parts.append(data)
 
     def finish(self) -> PageAnalysis:
         """Inchide elementele ramase deschise si calculeaza textul/numarul de cuvinte."""
@@ -344,6 +392,9 @@ class _PageParser(HTMLParser):
         self.result.title = "".join(self._title_parts).strip() if self._saw_title else ""
         self.result.body_text = body_text
         self.result.word_count = len(body_text.split()) if body_text else 0
+        main_text = _WHITESPACE_RE.sub(" ", "".join(self._main_parts)).strip()
+        self.result.main_word_count = len(main_text.split()) if main_text else 0
+        self.result.phone_links = self._phone_links
         self.result.links = list(self._links.values())
         return self.result
 

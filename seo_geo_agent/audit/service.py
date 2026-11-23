@@ -36,6 +36,7 @@ from seo_geo_agent.audit.geo_reporters import (
 )
 from seo_geo_agent.audit.issues import IssuePillar
 from seo_geo_agent.audit.multipage import run_multipage_checks
+from seo_geo_agent.audit.nap import ReferenceListing, find_nap_mismatches
 from seo_geo_agent.audit.page_reporters import DetectedIssue, run_page_reporters
 from seo_geo_agent.audit.robots import RobotsTxt, parse_robots_txt
 from seo_geo_agent.audit.safe_transport import SafeAsyncTransport
@@ -46,6 +47,7 @@ from seo_geo_agent.audit.url_utils import (
     canonical_url_key,
     get_origin,
     is_same_origin,
+    is_utility_url,
     normalize_url,
 )
 
@@ -69,6 +71,10 @@ class AuditConfig:
     time_budget_seconds: float = 150.0
     #: Numele exact al brandului, daca il stie clientul. Gol => se deduce din domeniu.
     brand: str = ""
+    #: Listari externe ale aceleiasi afaceri (Google Business Profile, platforme
+    #: de livrare) cu care se compara telefonul, codul postal si programul de pe
+    #: site. Gol => verificarea NAP nu ruleaza (vezi ``nap.py``).
+    reference_listings: tuple[ReferenceListing, ...] = ()
 
 
 @dataclass(slots=True)
@@ -171,10 +177,15 @@ async def _resolve_start_url(client: httpx.AsyncClient, start_url: str) -> str:
 
 
 def _should_crawl(url: str, origin: str, robots: RobotsTxt) -> bool:
-    """Filtrul prin care trece FIECARE URL, indiferent de unde a fost descoperit."""
+    """Filtrul prin care trece FIECARE URL, indiferent de unde a fost descoperit.
+
+    Paginile utilitare (cos, checkout, cont) nu se crawleaza: nu au continut de
+    auditat si, intrate din sitemap sau din meniu, ocupau bugetul de pagini.
+    """
     return (
         is_same_origin(url, origin)
         and is_crawlable_url(url)
+        and not is_utility_url(url)
         and robots.is_allowed(url, CRAWL_USER_AGENT)
     )
 
@@ -270,6 +281,10 @@ async def run_audit(
         issues.extend(run_page_reporters(page))
         issues.extend(run_geo_page_reporters(page, brand))
     issues.extend(run_multipage_checks(pages, start_url, crawl_completed=completed))
+    if config.reference_listings:
+        issues.extend(
+            find_nap_mismatches(pages, list(config.reference_listings), site_url=start_url)
+        )
 
     start_key = canonical_url_key(start_url)
     homepage = next((page for page in pages if canonical_url_key(page.url) == start_key), None)
