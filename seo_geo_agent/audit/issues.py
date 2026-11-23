@@ -281,6 +281,37 @@ AUDIT_ISSUE_TYPES: Final[dict[str, AuditIssueDescriptor]] = {
             "JavaScript, asigura-te ca e livrat si in HTML-ul de la server."
         ),
     ),
+    "cms-placeholder-page": AuditIssueDescriptor(
+        severity="warning",
+        pillar="seo",
+        title="Pagina implicita a CMS-ului e publica",
+        explanation=(
+            "Pagina e una pe care CMS-ul o creeaza singur la instalare (ex. 'Hello world!' sau "
+            "'Sample Page' in WordPress) sau contine text de umplutura (lorem ipsum). E publica "
+            "si indexabila: apare in cautari si in sitemap in locul continutului real si spune "
+            "vizitatorului si motoarelor ca site-ul nu e intretinut."
+        ),
+        how_to_fix=(
+            "Sterge pagina sau articolul implicit (si redirectioneaza adresa 301 catre o pagina "
+            "relevanta, daca a fost indexata), apoi regenereaza sitemap-ul."
+        ),
+    ),
+    "nap-mismatch": AuditIssueDescriptor(
+        severity="warning",
+        pillar="seo",
+        title="Date de contact diferite fata de alta listare (NAP)",
+        explanation=(
+            "Telefonul, codul postal sau programul de pe pagina locatiei difera de cele dintr-o "
+            "listare externa a aceleiasi afaceri (Google Business Profile, platforma de livrare, "
+            "director). Cand datele nu se potrivesc, motoarele de cautare si cele generative nu "
+            "stiu care e corect, iar clientii suna la un numar vechi sau vin cand e inchis. "
+            "Verificarea ruleaza doar pe listarile date explicit la pornirea auditului."
+        ),
+        how_to_fix=(
+            "Alege o singura versiune corecta (de obicei cea din Google Business Profile) si "
+            "copiaz-o identic pe site, in JSON-LD si pe toate platformele unde e listata afacerea."
+        ),
+    ),
     "images-missing-alt": AuditIssueDescriptor(
         severity="warning",
         pillar="seo",
@@ -492,6 +523,24 @@ AUDIT_ISSUE_TYPES: Final[dict[str, AuditIssueDescriptor]] = {
         how_to_fix=(
             "Adauga JSON-LD potrivit tipului paginii (Article, Product, FAQPage, "
             "LocalBusiness) in <head>, cu aceleasi valori ca cele vizibile in pagina."
+        ),
+    ),
+    "missing-local-business-schema": AuditIssueDescriptor(
+        severity="warning",
+        pillar="geo",
+        title="Pagina de locatie nu declara LocalBusiness",
+        explanation=(
+            "Pagina prezinta un loc fizic (are telefon si program), dar datele ei structurate "
+            "nu declara LocalBusiness sau un subtip (Restaurant, Store, Dentist...). Pluginurile "
+            "SEO pun de obicei doar WebPage si Organization, care nu spun unde e locul, cand e "
+            "deschis si ce telefon are. Exact datele astea le folosesc Google si motoarele "
+            "generative cand raspund la intrebari ca 'unde mananc X langa Y'."
+        ),
+        how_to_fix=(
+            "Adauga pe pagina locatiei un JSON-LD cu subtipul potrivit (ex. Restaurant), cu name, "
+            "address (strada, oras, postalCode), geo (latitudine/longitudine), telephone, "
+            "openingHoursSpecification, url si, pentru restaurante, servesCuisine si hasMenu. "
+            "Valorile trebuie sa fie identice cu cele din Google Business Profile."
         ),
     ),
     "missing-organization-schema": AuditIssueDescriptor(

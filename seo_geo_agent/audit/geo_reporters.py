@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
+from seo_geo_agent.audit.nap import is_location_page
 from seo_geo_agent.audit.page_reporters import DetectedIssue
 from seo_geo_agent.audit.robots import AI_CRAWLERS, RobotsTxt
 from seo_geo_agent.audit.types import CrawledPage
@@ -37,6 +38,32 @@ ENTITY_SALIENCE_MIN_MENTIONS = 3
 CONTENT_PAGE_MIN_WORDS = 300
 MAX_AVERAGE_SENTENCE_WORDS = 30
 MIN_SENTENCES_FOR_LENGTH_CHECK = 5
+
+#: ``LocalBusiness`` si subtipurile lui din schema.org folosite des de afacerile
+#: locale. O pagina de locatie trebuie sa declare unul dintre ele: Organization
+#: sau WebPage (ce pune implicit un plugin SEO) nu spun unde e locul, cand e
+#: deschis si ce telefon are - exact ce cauta un motor cand raspunde la
+#: "unde mananc X langa Y".
+LOCAL_BUSINESS_TYPES = frozenset(
+    {
+        "localbusiness", "foodestablishment", "restaurant", "cafeorcoffeeshop", "bakery",
+        "barorpub", "fastfoodrestaurant", "icecreamshop", "winery", "brewery",
+        "store", "clothingstore", "electronicsstore", "furniturestore", "grocerystore",
+        "homegoodsstore", "jewelrystore", "petstore", "shoestore", "sportinggoodsstore",
+        "autorepair", "autodealer", "automotivebusiness", "autobodyshop", "autopartsstore",
+        "dentist", "medicalbusiness", "medicalclinic", "physician", "pharmacy", "optician",
+        "healthandbeautybusiness", "beautysalon", "hairsalon", "nailsalon", "dayspa",
+        "healthclub", "exercisegym", "sportsactivitylocation", "professionalservice",
+        "legalservice", "attorney", "notary", "accountingservice", "financialservice",
+        "realestateagent", "travelagency", "lodgingbusiness", "hotel", "hostel",
+        "bedandbreakfast", "homeandconstructionbusiness", "electrician", "plumber",
+        "hvacbusiness", "locksmith", "roofingcontractor", "generalcontractor",
+        "childcare", "educationalorganization", "entertainmentbusiness", "nightclub",
+        "animalshelter", "veterinarycare", "drycleaningorlaundry", "emergencyservice",
+        "employmentagency", "governmentoffice", "librarysystem", "radiostation",
+        "recyclingcenter", "selfstorage", "shoppingcenter", "touristinformationcenter",
+    }
+)
 
 #: Tipurile JSON-LD care declara entitatea detinatoare a site-ului.
 _ORGANIZATION_TYPES = frozenset(
@@ -137,6 +164,14 @@ def run_geo_page_reporters(page: CrawledPage, brand: str) -> list[DetectedIssue]
 
     if not page.structured_data.present:
         report("missing-structured-data")
+
+    # O pagina de locatie (telefon + program) fara LocalBusiness: un plugin SEO
+    # pune de obicei WebPage/Organization, deci "missing-structured-data" tace,
+    # desi exact datele locului (adresa, program, telefon) lipsesc.
+    if is_location_page(page):
+        declared = {value.lower() for value in page.structured_data.types}
+        if not declared & LOCAL_BUSINESS_TYPES:
+            report("missing-local-business-schema", declared_types=sorted(declared))
 
     if brand and page.word_count >= CONTENT_PAGE_MIN_WORDS:
         mentions = count_brand_mentions(page.body_text, brand)

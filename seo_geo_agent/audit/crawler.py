@@ -271,7 +271,9 @@ def page_from_html(
         heading_order=analysis.heading_order,
         headings=analysis.headings,
         word_count=analysis.word_count,
+        main_word_count=analysis.main_word_count,
         body_text=analysis.body_text,
+        phone_links=analysis.phone_links,
         content_hash=(
             hashlib.sha256(analysis.body_text.encode("utf-8")).hexdigest()
             if analysis.body_text

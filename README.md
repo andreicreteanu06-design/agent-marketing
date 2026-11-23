@@ -1664,7 +1664,28 @@ pentru registrul complet si `audit/page_reporters.py` pentru praguri.
 | `page_reporters.py` | verificari pure per pagina |
 | `multipage.py` | duplicate, lanturi/bucle de redirect, linkuri rupte, pagini orfane |
 | `geo_reporters.py` | citabilitate in motoare generative (vezi mai jos) |
+| `nap.py` | afaceri locale: telefon, program, cod postal; pagina de locatie; comparatia cu listari externe |
 | `scoring.py` | scorurile SEO/GEO, ca rata de trecere ponderata peste verificari |
+
+Patru abateri fata de `open-seo`, venite dintr-un caz real (un restaurant dintr-un lant
+cu francize, noiembrie 2026), fiecare cu teste in `tests_seo_geo/test_audit_local.py`:
+
+- **Continut subtire fara meniu si subsol.** `thin-content` numara cuvintele din afara
+  `<nav>`, `<footer>` si `<aside>` (`main_word_count`). Altfel o pagina de locatie cu doar
+  program si telefon trecea de prag datorita meniului cu 12 locatii, repetat. `word_count`
+  ramane textul complet, pentru verificarile care au nevoie de el.
+- **Pagina de locatie fara `LocalBusiness`** (`missing-local-business-schema`, GEO): o pagina
+  cu telefon si interval orar care nu declara `LocalBusiness` sau un subtip (Restaurant,
+  Store, Dentist...). `missing-structured-data` tacea, pentru ca pluginul SEO punea WebPage.
+- **Pagini implicite de CMS** (`cms-placeholder-page`): "Hello world!", "Sample Page",
+  lorem ipsum, lasate publice si indexabile.
+- **NAP fata de listari externe** (`nap-mismatch`): `POST /audit` accepta optional
+  `reference_listings` (sursa, telefon, cod postal, program, pagina locatiei - ex. din
+  Google Business Profile sau Wolt) si raporteaza fiecare diferenta, cu ambele valori. Nu
+  intra in scor (depinde de cate referinte se dau). Auditul nu cauta singur listarile.
+
+Paginile utilitare (cos, checkout, cont, autentificare) nu se mai crawleaza: intrau din
+sitemap si din meniu si ocupau bugetul de pagini.
 
 Partea **GEO** e adaugirea fata de `open-seo` (care masoara vizibilitatea AI din
 afara site-ului, prin DataForSEO). Aici masuram ce controleaza site-ul si se
@@ -1683,6 +1704,18 @@ GET  /api/v1/seo-geo/audit/{id}             -> stare + progres
 GET  /api/v1/seo-geo/audit/{id}/results     -> raportul complet
 GET  /api/v1/seo-geo/audit/latest           -> ultimul raport terminat (pagina de ansamblu)
 ```
+
+**Testul de prezenta GEO (`POST /api/v1/seo-geo/presence`, `seo_geo_agent/presence.py`).**
+Scorul GEO al auditului masoara cat de pregatite sunt paginile sa fie citate, nu daca
+brandul chiar apare in sursele din care isi compun raspunsurile motoarele generative. In
+cazul real de mai sus, auditul dadea GEO 93/100, dar brandul lipsea la "cea mai buna pinsa
+romana din Bucuresti", desi revendica un premiu exact pentru asta. Endpoint-ul primeste
+brandul, domeniul si pana la 10 intrebari de client si intoarce, pe intrebare: daca brandul
+apare in rezultate, pe ce pozitie e domeniul lui si ce domenii apar in locul lui (sursele de
+cucerit prin PR, listari, recenzii). Sursa e cautarea DuckDuckGo (`ddgs`, fara cheie,
+regiunea Romania), ca proxy: un motor AI poate cita si alte surse, iar rezultatele variaza
+de la o rulare la alta - repeta testul inainte de concluzii. O cautare picata ramane in
+raport ca `failed` si nu intra in rate; "niciun rezultat" conteaza ca brand absent.
 
 Auditul traieste in memoria procesului (`audit/store.py`) — agentul trebuie
 rulat cu **un singur worker uvicorn**, altfel cererea de stare poate ajunge in

@@ -53,11 +53,13 @@ jobs:
             requirements*.txt
 
       # Ca in Dockerfile.backend: torch doar CPU (cel implicit aduce CUDA, cativa GB),
-      # apoi restul la versiunile exacte pe care au trecut testele.
+      # apoi restul la versiunile exacte pe care au trecut testele. requirements-worker.txt
+      # aduce doar pachetul Playwright (fara browser): mypy --strict are nevoie de tipurile
+      # lui pentru jobs/synthetic.py; testele cu Chromium real se sar fara browser.
       - name: Dependintele Python
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu "$(grep -E '^torch==' constraints.txt)"
-          pip install -c constraints.txt -r requirements-dev.txt -r requirements-server.txt -r requirements-seo-geo.txt
+          pip install -c constraints.txt -r requirements-dev.txt -r requirements-server.txt -r requirements-seo-geo.txt -r requirements-worker.txt
 
       # CCO-ul: ffmpeg masoara video-ul, tesseract (cu romana) citeste textul de pe creative.
       - name: ffmpeg si tesseract

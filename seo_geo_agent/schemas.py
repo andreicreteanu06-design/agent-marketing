@@ -85,6 +85,64 @@ MAX_AUDIT_PAGES = 100
 MIN_AUDIT_PAGES = 1
 
 
+class PresenceRequest(BaseModel):
+    """Testul de prezenta: intrebarile clientilor si brandul cautat in raspunsuri."""
+
+    brand: str = Field(min_length=1, max_length=200, description="Numele brandului, ex. Exemplu")
+    domain: str = Field(
+        min_length=1, max_length=2048, description="Domeniul brandului, ex. exemplu.ro"
+    )
+    questions: list[str] = Field(
+        min_length=1,
+        max_length=10,
+        description="Intrebarile pe care le-ar pune un client, ex. 'cea mai buna pinsa Bucuresti'",
+    )
+
+
+class QuestionPresenceResponse(BaseModel):
+    question: str
+    status: Literal["ok", "failed"]
+    brand_mentioned: bool
+    own_domain_position: int | None
+    result_domains: list[str]
+    error: str | None = None
+
+
+class CompetingDomain(BaseModel):
+    domain: str
+    count: int
+
+
+class PresenceResponse(BaseModel):
+    """Raportul testului de prezenta (proxy: rezultatele de cautare, nu raspunsul AI)."""
+
+    brand: str
+    domain: str
+    brand_presence_rate: float
+    own_domain_rate: float
+    competing_domains: list[CompetingDomain]
+    questions: list[QuestionPresenceResponse]
+    method: str = (
+        "Rezultatele de cautare DuckDuckGo (regiunea Romania) pentru fiecare intrebare, ca "
+        "proxy pentru sursele citate de motoarele generative. Un motor AI poate cita si alte "
+        "surse decat primele rezultate."
+    )
+
+
+class ReferenceListingRequest(BaseModel):
+    """O listare externa a afacerii (Google Business Profile, Wolt...), pentru NAP."""
+
+    source: str = Field(min_length=1, max_length=100, description="Ex. 'Google Business Profile'")
+    phone: str | None = Field(default=None, max_length=40)
+    postal_code: str | None = Field(default=None, max_length=20)
+    hours: list[str] = Field(
+        default_factory=list, max_length=14, description="Intervale orare, ex. '10:30-22:00'"
+    )
+    page_url: str | None = Field(
+        default=None, max_length=2048, description="Pagina locatiei de pe site, daca o stii"
+    )
+
+
 class AuditRequest(BaseModel):
     """Cererea de audit pentru un domeniu."""
 
@@ -107,6 +165,14 @@ class AuditRequest(BaseModel):
         description=(
             "Numele exact al brandului, pentru verificarea GEO de entity salience. "
             "Gol => se deduce din domeniu (vezi audit/geo_reporters.py)."
+        ),
+    )
+    reference_listings: list[ReferenceListingRequest] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Listari externe ale aceleiasi afaceri, comparate cu site-ul (telefon, cod postal, "
+            "program). Gol => verificarea NAP nu ruleaza."
         ),
     )
 

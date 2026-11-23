@@ -45,7 +45,13 @@ class CrawledPage:
     heading_order: list[int] = field(default_factory=list)
     headings: list[tuple[int, str]] = field(default_factory=list)
     word_count: int = 0
+    #: Cuvintele din afara meniului, subsolului si barei laterale (``nav``,
+    #: ``footer``, ``aside``). ``None`` = necalculat (pagini construite de mana in
+    #: teste vechi): verificarile cad atunci pe ``word_count``.
+    main_word_count: int | None = None
     body_text: str = ""
+    #: Numerele din linkurile ``tel:`` ale paginii, asa cum sunt scrise.
+    phone_links: list[str] = field(default_factory=list)
     content_hash: str | None = None
     #: ``True`` doar cand s-a descarcat SI analizat un document HTML. Separa
     #: verificarile de continut: un PDF nu are cum sa-i lipseasca tagul title,

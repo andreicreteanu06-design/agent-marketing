@@ -427,14 +427,17 @@ def test_the_ppc_posts_its_numbers_and_gets_the_lessons(
 def test_the_agency_fills_the_trends_db(
     client: TestClient, auth_headers: dict[str, str]
 ) -> None:
+    # Data relativa la azi: lista arata doar tendintele neexpirate, iar o data fixa ar
+    # face testul sa pice singur dupa ce trece termenul.
+    observed = datetime.now(tz=UTC).date()
     created = client.post(
         "/api/v1/creative/trends", headers=auth_headers,
         json={"platform": "tiktok", "industry": "service auto", "insight": "Hook vorbit în 1s",
-              "source": "TikTok Creative Center", "observed_at": "2026-10-01",
+              "source": "TikTok Creative Center", "observed_at": observed.isoformat(),
               "valid_days": 30},
     )
     assert created.status_code == 201, created.text
-    assert created.json()["expires_at"] == "2026-10-31"
+    assert created.json()["expires_at"] == (observed + timedelta(days=30)).isoformat()
     listed = client.get("/api/v1/creative/trends", headers=auth_headers).json()
     assert [trend["insight"] for trend in listed] == ["Hook vorbit în 1s"]
 

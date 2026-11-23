@@ -123,6 +123,29 @@ def is_same_origin(url: str, origin: str) -> bool:
     )
 
 
+#: Segmente de cale ale paginilor tranzactionale/de cont (WooCommerce, Shopify,
+#: WordPress si echivalentele romanesti). Sunt aproape mereu ``noindex`` si nu au
+#: continut de auditat, dar intra in sitemap-uri si in meniuri - fara filtrul
+#: asta consumau bugetul de pagini al crawl-ului in locul paginilor reale.
+_UTILITY_PATH_SEGMENTS = frozenset(
+    {
+        "cart", "checkout", "my-account", "account", "login", "logout", "register",
+        "wp-login.php", "wp-admin", "cos", "cosul-meu", "cos-de-cumparaturi", "contul-meu",
+        "finalizare-comanda", "autentificare", "inregistrare",
+    }
+)
+_UTILITY_QUERY_KEYS = frozenset({"add-to-cart", "wc-ajax", "remove_item"})
+
+
+def is_utility_url(url: str) -> bool:
+    """``True`` pentru coș, checkout, cont, autentificare - pagini fara continut public."""
+    parts = urlsplit(url)
+    segments = {segment.lower() for segment in parts.path.split("/") if segment}
+    if segments & _UTILITY_PATH_SEGMENTS:
+        return True
+    return any(key.lower() in _UTILITY_QUERY_KEYS for key, _ in parse_qsl(parts.query))
+
+
 def get_origin(url: str) -> str:
     """``scheme://host[:port]`` pentru ``url`` (fara cale, query sau fragment)."""
     parts = urlsplit(url)
